@@ -7,43 +7,89 @@ sdk: docker
 pinned: false
 app_port: 8080
 ---
-<div align="center">
-  <h1>⚡ Destiny Bypass Engine</h1>
-  <p><b>High-Speed Telegram Restricted Content Bypasser & Auto-Sync System</b></p>
-  <p>
-    <a href="https://www.python.org/"><img src="https://img.shields.io/badge/Python-3.10+-blue?style=for-the-badge&logo=python&logoColor=white" alt="Python"></a>
-    <a href="https://www.mongodb.com/"><img src="https://img.shields.io/badge/Database-MongoDB-green?style=for-the-badge&logo=mongodb" alt="MongoDB"></a>
-    <a href="https://docs.pyrogram.org/"><img src="https://img.shields.io/badge/Framework-Pyrogram-red?style=for-the-badge&logo=telegram" alt="Pyrogram"></a>
-  </p>
-</div>
+# ⚡ Destiny Bypass Engine
+**High-Speed Telegram Restricted Content Bypasser & Auto-Sync System**
 ---
 ## 🚀 Core Infrastructure
-A lightweight, bulletproof engine designed to covertly extract and route data from highly restricted Telegram environments.
-*   **Bypass Protocol:** Seamlessly fetches files from channels with "Restrict Saving Content" enabled.
-*   **Stateful Memory:** Powered by MongoDB. If the server crashes, the bot remembers the exact message ID and resumes automatically.
-*   **Heavy Lifting:** Dynamically handles massive files, automatically splitting standard >2GB limits (or >4GB with a Premium Session).
-*   **Live Surveillance:** Deploy 24/7 background watchers to instantly auto-route new uploads to your target channels.
-## ⚙️ Environment Configuration
-To boot the engine on Hugging Face Spaces (or Render/Koyeb), plug in these environment variables:
-
-| Variable | Description |
-| :--- | :--- |
-| `API_ID` | Your Telegram API ID. |
-| `API_HASH` | Your Telegram API Hash. |
-| `BOT_TOKEN` | Remote control token from @BotFather. |
-| `DB_URI` | MongoDB Atlas connection string. |
-| `DB_NAME` | Database name (e.g., `RestrictBot_DB`). |
-| `ADMINS` | Comma-separated Telegram User IDs. |
-| `LOG_CHANNEL` | Chat ID for automated backend error logs. |
-
-## 🕹️ Master Commands
-*   `/login` - Bind your Telegram string session to the engine.
-*   `/dl <link>` - Extract a single file or a massive batch (e.g., `link/101-500`).
-*   `/watch <link>` - Setup a live auto-forwarder from a source channel.
-*   `/watchers` - View your active surveillance tasks.
-*   `/cancel` - Open the UI to kill active tasks.
-*   `/sos` - Live server hardware and RAM metrics.
+A lightweight, high-performance engine designed to extract and route data from Telegram environments where content saving is restricted.
+* **🔐 Bypass Protocol:** Seamlessly fetch files from channels with "Restrict Saving Content" enabled.
+* **🧠 Stateful Memory:** Powered by MongoDB. If the server crashes or restarts, the engine remembers the relevant message state and resumes automatically.
+* **📦 Heavy Lifting:** Dynamically handles large files and automatically splits them when they exceed Telegram's upload limits.
+* **👁️ Live Surveillance:** Deploy 24/7 background watchers to automatically route new uploads from configured source channels to target channels.
 ---
-<div align="center">
-  <i>Engineered for pure speed and zero data loss.</i>
-</div>
+## ⚙️ Environment Configuration
+To boot the engine on Hugging Face Spaces, Render, Koyeb, or a similar Docker-based platform, configure the following environment variables. 
+*(Click the links in the table to get your credentials)*
+
+| Variable | Description | Get it Here |
+| :--- | :--- | :--- |
+| `API_ID` | Your Telegram API ID. | [my.telegram.org](https://my.telegram.org/apps) |
+| `API_HASH` | Your Telegram API Hash. | [my.telegram.org](https://my.telegram.org/apps) |
+| `BOT_TOKEN` | Telegram bot token obtained from @BotFather. | [@BotFather](https://t.me/BotFather) |
+| `DB_URI` | MongoDB Atlas connection string. | [MongoDB Atlas](https://www.mongodb.com/cloud/atlas/register) |
+| `DB_NAME` | Database name (e.g., `RestrictBot_DB`). | *(Create in MongoDB)* |
+| `ADMINS` | Comma-separated Telegram User IDs with admin access. | [@userinfobot](https://t.me/userinfobot) |
+| `LOG_CHANNEL` | Telegram chat/channel ID used for backend error logs. | *(Your private channel ID)* |
+
+---
+## 🕹️ Master Commands
+
+| Command | Description |
+| :--- | :--- |
+| `/login` | Bind a Telegram string session to the engine. |
+| `/dl <link>` | Process a single file or a large batch (e.g., `link/101-500`). |
+| `/watch <link>` | Set up a live auto-forwarder for a source channel. |
+| `/watchers` | View active surveillance tasks. |
+| `/cancel` | Open the interface for cancelling active tasks. |
+| `/sos` | Display live server hardware, CPU, memory, and system metrics. |
+
+---
+## 🏗️ Deployment
+The engine uses a Docker-based deployment model and can be hosted on platforms supporting Docker containers. Make sure the configured application port matches the platform configuration (Default: `8080`).
+**Supported Platforms:**
+* 🤗 Hugging Face Spaces
+* 🚀 Render
+* ⚡ Koyeb
+* 🐳 Any Docker-compatible server
+---
+## 🔒 Security
+Keep the following values completely private. **Never commit these credentials directly to the repository.**
+* `API_HASH`
+* `BOT_TOKEN`
+* `DB_URI`
+* Telegram Session Strings
+* Any administrator credentials or secrets
+*Always use environment variables or the platform's secret/environment-variable manager instead.*
+---
+## 📊 System Architecture
+```text
+┌──────────────────────┐
+│       Telegram       │
+│   Source Channels    │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│    Destiny Bypass    │
+│        Engine        │
+└──────────┬───────────┘
+           │
+  ┌────────┼────────┐
+  │        │        │
+  ▼        ▼        ▼
+┌────┐  ┌─────┐  ┌─────┐
+│/dl │  │/watch│  │Queue│
+└────┘  └─────┘  └─────┘
+  │        │        │
+  └────────┼────────┘
+           │
+           ▼
+┌──────────────────────┐
+│       MongoDB        │
+│   Persistent State   │
+└──────────┬───────────┘
+           │
+           ▼
+┌──────────────────────┐
+│    Target Channel    │
+└──────────────────────┘
