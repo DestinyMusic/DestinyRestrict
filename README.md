@@ -38,10 +38,11 @@ To boot the engine on Hugging Face Spaces (or Render/Koyeb), plug in these envir
 
 ## 🕹️ Master Commands
 *   `/login` - Bind your Telegram string session to the engine.
-*   `/rdl1a <link>` - Extract a single file or a massive batch (e.g., `link/101-500`).
-*   `/watch1a <link>` - Setup a live auto-forwarder from a source channel.
-*   `/rcancel1a` - Open the UI to kill active tasks.
-*   `/sos1a` - Live server hardware and RAM metrics.
+*   `/dl <link>` - Extract a single file or a massive batch (e.g., `link/101-500`).
+*   `/watch <link>` - Setup a live auto-forwarder from a source channel.
+*   `/watchers` - View your active surveillance tasks.
+*   `/cancel` - Open the UI to kill active tasks.
+*   `/sos` - Live server hardware and RAM metrics.
 ---
 <div align="center">
   <i>Engineered for pure speed and zero data loss.</i>
