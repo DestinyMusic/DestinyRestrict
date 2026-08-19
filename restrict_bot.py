@@ -1675,7 +1675,7 @@ async def save(client: Client, message: Message):
         if PENDING_TASKS[user_id].get("status") == "waiting_id":
             await process_custom_destination(client, message)
             return
-        if PENDING_TASKS[user_id].get("status") == "waiting_speed":
+        if PENDING_TASKS[user_id].get("status") == "waiting_speed_input": # <<< FIX
             await process_speed_input(client, message)
             return
 
@@ -1736,7 +1736,7 @@ async def dl_handler(client: Client, message: Message):
             "dest_chat_id": message.chat.id,
             "dest_thread_id": message.message_thread_id,
             "dest_title": message.chat.title or "This Group",
-            "status": "waiting_speed",
+            "status": "waiting_speed_choice", # <<< FIX
             "is_restricted": is_restricted
         }
         await message.reply(f"✨ **Link Analyzed!**\n{status_text}", quote=True)
@@ -1773,6 +1773,7 @@ async def destination_callback(client: Client, query):
     if choice == "dest_dm":
         PENDING_TASKS[user_id]["dest_chat_id"] = user_id
         PENDING_TASKS[user_id]["dest_thread_id"] = None
+        PENDING_TASKS[user_id]["status"] = "waiting_speed_choice" # <<< FIX
         await ask_for_speed(query)
     elif choice == "dest_custom":
         PENDING_TASKS[user_id]["status"] = "waiting_id"
@@ -1916,7 +1917,7 @@ async def process_custom_destination(client: Client, message: Message):
         PENDING_TASKS[user_id]["dest_chat_id"] = chat.id
         PENDING_TASKS[user_id]["dest_thread_id"] = dest_thread_id
         PENDING_TASKS[user_id]["dest_title"] = title
-        PENDING_TASKS[user_id]["status"] = "waiting_speed"
+        PENDING_TASKS[user_id]["status"] = "waiting_speed_choice" # <<< FIX
         await ask_for_speed(message)
 
     except ValueError:
@@ -1946,7 +1947,7 @@ async def speed_callback(client: Client, query):
     task_data = PENDING_TASKS[user_id]
     
     if choice == "speed_manual":
-        PENDING_TASKS[user_id]["status"] = "waiting_speed"
+        PENDING_TASKS[user_id]["status"] = "waiting_speed_input" # <<< FIX
         await query.message.edit(
             "⏱ **Enter Delay (Seconds)**\n\n"
             "Every time a new message arrives, I will wait this long before forwarding it.",
