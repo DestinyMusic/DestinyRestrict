@@ -1,0 +1,9 @@
+pyrofork==2.3.69
+tgcrypto
+motor
+aiohttp
+psutil
+dnspython
+uvloop
+telegraph
+python-dotenv
