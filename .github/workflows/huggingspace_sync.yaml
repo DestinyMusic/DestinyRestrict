@@ -1,0 +1,58 @@
+name: Deploy Restrict Engine to Hugging Face Space
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+jobs:
+  sync-to-hub:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Push to Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE_ID: ${{ vars.HF_SPACE_ID }}
+        run: |
+          set -e
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE_ID" ]; then
+            echo "::error::Missing HF_TOKEN secret or HF_SPACE_ID variable."
+            exit 1
+          fi
+          HF_USER="${HF_SPACE_ID%%/*}"
+
+          # 1. Erase old git history
+          rm -rf .git
+          git init
+          git checkout -b main
+
+          # 2. Setup GitHub Actions Bot Identity
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # 3. Clean up cache files
+          find . -type d -name "__pycache__" -exec rm -r {} + || true
+
+          # 4. Initialize Git LFS and explicitly track binaries HF blocks
+          git lfs install
+          git lfs track "*.ttf"
+          git lfs track "*.pyc"
+          git lfs track "*.so"
+          git lfs track "*.sqlite3"
+          git lfs track "*.db"
+          git lfs track "*.session"
+          
+          # Catch any remaining large files over 9MB
+          find . -type f -size +9M -exec git lfs track {} +
+
+          # 5. Commit and Force Push
+          git add .
+          git commit -m "Auto-sync Restrict Engine to Hugging Face Space"
+          git push --force "https://${HF_USER}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_ID}.git" main
+
+          echo "Pushed successfully to https://huggingface.co/spaces/${HF_SPACE_ID}"
