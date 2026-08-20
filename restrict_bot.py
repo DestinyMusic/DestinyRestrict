@@ -79,37 +79,52 @@ if saved_token:
 # --- CONFIGURATION ---
 # ==============================================================================
 
+import os
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
-import os
-from config import Config
+from dotenv import load_dotenv
 
-# --- CONFIGURATION IMPORTS ---
-API_ID = Config.API_ID
-API_HASH = Config.API_HASH
-BOT_TOKEN = Config.BOT_TOKEN
-DB_URI = Config.DB_URI
-DB_NAME = Config.DB_NAME
+# Load the variables from .env or config.env file
+load_dotenv() 
 
-# Log Channel & Topic
-LOG_CHANNEL = Config.LOG_CHANNEL
-LOG_THREAD_ID = Config.LOG_THREAD_ID
+# --------------------------------------------------------------------------
+# 🔴 COMPULSORY (Core Bot Credentials & Database)
+# --------------------------------------------------------------------------
+# The "or 0" and "or ''" prevent crashes if a variable is accidentally left blank
+API_ID = int(os.environ.get("API_ID") or 0)
+API_HASH = (os.environ.get("API_HASH") or "").strip()
+BOT_TOKEN = (os.environ.get("BOT_TOKEN") or "").strip()
 
-# Settings
-PORT = Config.PORT
-LOGIN_SYSTEM = Config.LOGIN_SYSTEM
-ERROR_MESSAGE = Config.ERROR_MESSAGE
-WAITING_TIME = Config.WAITING_TIME
+DB_URI = (os.environ.get("DB_URI") or "").strip()
+DB_NAME = (os.environ.get("DB_NAME") or "").strip()
 
-# Permissions
-ADMINS = Config.ADMINS
-SUDOS = Config.SUDOS
+if not DB_URI:
+    print("CRITICAL ERROR: DB_URI is empty! Please check your Render Environment Variables.")
 
+# --------------------------------------------------------------------------
+# 🟡 OPTIONAL: LOG CHANNEL
+# --------------------------------------------------------------------------
+_raw_log = (os.environ.get("LOG_CHANNEL") or "").strip()
+LOG_CHANNEL = int(_raw_log) if _raw_log.replace("-", "").isdigit() else 0
+
+# --------------------------------------------------------------------------
+# ⚙️ OPTIONAL: SETTINGS
+# --------------------------------------------------------------------------
+PORT = int(os.environ.get("PORT") or 8080)
+LOGIN_SYSTEM = str(os.environ.get("LOGIN_SYSTEM", "True")).strip().lower() == "true"
+ERROR_MESSAGE = str(os.environ.get("ERROR_MESSAGE", "True")).strip().lower() == "true"
+WAITING_TIME = int(os.environ.get("WAITING_TIME") or 3)
+
+# --------------------------------------------------------------------------
+# 👥 ACCESS CONTROL (Comma-Separated User IDs)
+# --------------------------------------------------------------------------
+ADMINS = [int(x) for x in str(os.environ.get("ADMINS", "")).split(",") if x.strip().isdigit()]
+SUDOS = [int(x) for x in str(os.environ.get("SUDOS", "")).split(",") if x.strip().isdigit()]
+
+# --------------------------------------------------------------------------
 # --- APPLICATION STATE ---
-# Queue System
+# --------------------------------------------------------------------------
 TASK_QUEUE = defaultdict(list) 
-
-# Create a thread pool for blocking tasks dynamically based on CPU size
 io_executor = ThreadPoolExecutor(max_workers=min(16, (os.cpu_count() or 2) * 4))
 
 HELP_TXT = """<b>📚 BOT'S USAGE GUIDE</b>
