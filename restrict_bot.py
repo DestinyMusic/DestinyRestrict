@@ -79,35 +79,38 @@ if saved_token:
 # --- CONFIGURATION ---
 # ==============================================================================
 
-from dotenv import load_dotenv
-load_dotenv()
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+import os
+from config import Config
 
-# Require real environment variables, fallback via .get()
-API_ID = int(os.environ.get("API_ID", ""))
-API_HASH = os.environ.get("API_HASH", "").strip()
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "").strip()
-DB_URI = os.environ.get("DB_URI", "").strip()
-DB_NAME = os.environ.get("DB_NAME", "").strip()
-STRING_SESSION = os.environ.get("STRING_SESSION")
+# --- CONFIGURATION IMPORTS ---
+API_ID = Config.API_ID
+API_HASH = Config.API_HASH
+BOT_TOKEN = Config.BOT_TOKEN
+DB_URI = Config.DB_URI
+DB_NAME = Config.DB_NAME
 
-# Error Log Channel (Optional)
-LOG_CHANNEL = os.environ.get("LOG_CHANNEL", "") 
+# Log Channel & Topic
+LOG_CHANNEL = Config.LOG_CHANNEL
+LOG_THREAD_ID = Config.LOG_THREAD_ID
 
+# Settings
+PORT = Config.PORT
+LOGIN_SYSTEM = Config.LOGIN_SYSTEM
+ERROR_MESSAGE = Config.ERROR_MESSAGE
+WAITING_TIME = Config.WAITING_TIME
+
+# Permissions
+ADMINS = Config.ADMINS
+SUDOS = Config.SUDOS
+
+# --- APPLICATION STATE ---
 # Queue System
 TASK_QUEUE = defaultdict(list) 
 
 # Create a thread pool for blocking tasks dynamically based on CPU size
 io_executor = ThreadPoolExecutor(max_workers=min(16, (os.cpu_count() or 2) * 4))
-
-LOGIN_SYSTEM = os.environ.get("LOGIN_SYSTEM", "True").lower() == "true"
-ERROR_MESSAGE = os.environ.get("ERROR_MESSAGE", "True").lower() == "true"
-WAITING_TIME = int(os.environ.get("WAITING_TIME", 3))
-
-admin_str = os.environ.get("ADMINS", "")
-ADMINS = [int(x) for x in admin_str.split(",") if x.strip().isdigit()]
-
-sudo_str = os.environ.get("SUDOS", "")
-SUDOS = [int(x) for x in sudo_str.split(",") if x.strip().isdigit()]
 
 HELP_TXT = """<b>📚 BOT'S USAGE GUIDE</b>
 
@@ -1427,24 +1430,35 @@ async def login_handler(bot: Client, message: Message):
     if len(string_session) < SESSION_STRING_SIZE:
         return await message.reply('<b>Invalid session string</b>', reply_markup=ReplyKeyboardRemove())
         
+    is_prem = False
+    first_name = ""
     try:
-        user_data = await db.get_session(message.from_user.id)
-        if user_data is None:
-            uclient = Client(":memory:", session_string=string_session, api_id=api_id, api_hash=api_hash)
-            await uclient.connect()
-            
-            await db.set_session(message.from_user.id, session=string_session)
-            await db.set_api_id(message.from_user.id, api_id=api_id)
-            await db.set_api_hash(message.from_user.id, api_hash=api_hash)
-            
-            try:
-                await uclient.disconnect()
-            except Exception as e:
-                pass
+        uclient = Client(":memory:", session_string=string_session, api_id=api_id, api_hash=api_hash)
+        await uclient.connect()
+        me = await uclient.get_me()
+        is_prem = getattr(me, "is_premium", False)
+        first_name = me.first_name or "User"
+        
+        await db.set_session(message.from_user.id, session=string_session)
+        await db.set_api_id(message.from_user.id, api_id=api_id)
+        await db.set_api_hash(message.from_user.id, api_hash=api_hash)
+        
+        try:
+            await uclient.disconnect()
+        except Exception:
+            pass
     except Exception as e:
         return await message.reply_text(f"<b>ERROR IN LOGIN:</b> `{e}`", reply_markup=ReplyKeyboardRemove())
         
-    await bot.send_message(message.from_user.id, "<b>Account Login Successfully.\n\nIf you get any error related to AUTH KEY then /logout first and /login again.</b>", reply_markup=ReplyKeyboardRemove())
+    prem_text = "⭐ <b>Telegram Premium:</b> <code>Active (4GB Uploads Enabled)</code>" if is_prem else "🔹 <b>Account Type:</b> <code>Standard (2GB Upload Limit)</code>"
+
+    success_msg = (
+        f"✅ <b>Account Login Successful!</b>\n\n"
+        f"👤 <b>Logged in as:</b> <code>{first_name}</code>\n"
+        f"{prem_text}\n\n"
+        f"<i>If you encounter any AUTH KEY errors later, run /logout and /login again.</i>"
+    )
+    await bot.send_message(message.from_user.id, success_msg, reply_markup=ReplyKeyboardRemove())
 
 # ==============================================================================
 # --- BROADCAST ---
@@ -2927,10 +2941,10 @@ async def start_koyeb_health_check(host: str = "0.0.0.0", port: int | str = 8080
     if web is None:
         logger.info("aiohttp not installed; Koyeb health check not started.")
         return
-    try:
-        port = int(os.environ.get("PORT", str(port)))
-    except Exception:
-        port = 8080
+    
+    # Directly grab the validated PORT from your global Config class
+    port = Config.PORT
+    
     app_web = web.Application()
     app_web.router.add_get("/", _koyeb_health_handler)
     app_web.router.add_get("/health", _koyeb_health_handler)
