@@ -48,7 +48,7 @@ logger = logging.getLogger("BotLogger")
 # ----------------------------
 
 # --- TELEGRAPH SETUP FOR MEDIAINFO ---
-telegraph = Telegraph()
+telegraph = Telegraph(domain="graph.org") # Bypasses Cloudflare Datacenter IP Blocks!
 
 def load_telegraph_token():
     token_file = Path("./telegraph_token.txt")
@@ -3123,32 +3123,44 @@ async def mediainfo_handler(client: Client, message: Message):
                 
             from telegraph.utils import html_to_nodes
             import socket
+            import json # Ensure json is imported for dumps
             
             conn = aiohttp.TCPConnector(family=socket.AF_INET, force_close=True, enable_cleanup_closed=True)
             async with aiohttp.ClientSession(connector=conn) as session:
+                
+                # FIX 1 & 2: Telegraph strictly requires Form-Data (data=) 
+                # and the 'content' field MUST be a stringified JSON array!
                 payload = {
                     "access_token": token,
-                    "title": "MediaInfo",
-                    "content": html_to_nodes(formatted_html),
-                    "return_content": False
+                    "title": "MediaInfo X",
+                    "content": json.dumps(html_to_nodes(formatted_html)), # <-- THE MAGIC FIX
+                    "return_content": "false"
                 }
                 
                 max_retries = 4
                 resp_data = None
                 for attempt in range(max_retries):
                     try:
-                        async with session.post("https://api.telegra.ph/createPage", json=payload, timeout=30) as resp:
+                        # FIX 3: Route directly to api.graph.org to bypass server IP Blocks
+                        async with session.post("https://api.graph.org/createPage", data=payload, timeout=30) as resp:
                             resp_data = await resp.json()
                             if resp_data.get("ok"):
                                 break
                             else:
-                                raise Exception(resp_data.get("error", "Unknown Telegraph Error"))
+                                err_msg = resp_data.get("error", "Unknown Telegraph Error")
+                                # FIX 4: Handle FloodWait Gracefully (Like WZML)
+                                if "FLOOD_WAIT" in err_msg:
+                                    wait_time = int(err_msg.split("_")[-1])
+                                    await asyncio.sleep(wait_time + 1)
+                                    continue # Retry the loop!
+                                raise Exception(err_msg)
                     except Exception as api_err:
                         if attempt == max_retries - 1:
                             raise api_err
                         await asyncio.sleep(2)
                 
-                final_link = resp_data["result"]["url"].replace("telegra.ph", "graph.org")
+                # No string replacement needed since we directly uploaded to graph.org!
+                final_link = resp_data["result"]["url"]
                     
             await status_msg.edit_text(
                 f"✅ <b>MediaInfo Generated</b> 🦥\n\n"
