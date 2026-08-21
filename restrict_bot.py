@@ -2990,22 +2990,22 @@ except ImportError:
 async def _koyeb_health_handler(request):
     return web.Response(text="OK", status=200)
 
-async def start_koyeb_health_check(host: str = "0.0.0.0", port: int | str = 8080):
+async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None:
         logger.info("aiohttp not installed; Koyeb health check not started.")
         return
     
-    # Directly grab the validated PORT from your global Config class
-    port = Config.PORT
+    # Uses the global PORT variable defined at the top of your script
+    global PORT 
     
     app_web = web.Application()
     app_web.router.add_get("/", _koyeb_health_handler)
     app_web.router.add_get("/health", _koyeb_health_handler)
     runner = web.AppRunner(app_web)
     await runner.setup()
-    site = web.TCPSite(runner, host, port)
+    site = web.TCPSite(runner, host, PORT)
     await site.start()
-    logger.info(f"Starting Koyeb health check server on port {port}...")
+    logger.info(f"Starting Koyeb health check server on port {PORT}...")
 
 # ==============================================================================
 # --- MEDIAINFO HANDLER (Admin Only) ---
