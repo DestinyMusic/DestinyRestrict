@@ -463,12 +463,27 @@ class FloodController:
 USER_FLOOD_LOCKS = defaultdict(FloodController)
 
 # --- PAUSE & WAIT INTERCEPTOR ---
-from pyrogram.errors import ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel
-ACCESS_ERRORS = (ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel)
+from pyrogram.errors import ChatWriteForbidden, ChatAdminRequired, ChannelPrivate, UserBannedInChannel, PeerIdInvalid, FloodWait
+
+BOT_WARNING_SENT = set() # Remembers if we already warned you about a broken destination
+
+async def check_dest_access(client_to_use, dest_chat_id):
+    """Silently tests if the client still has access to the destination."""
+    if str(dest_chat_id).startswith("-"):
+        try:
+            await client_to_use.get_chat(dest_chat_id)
+            return True
+        except Exception:
+            return False
+    return True
 
 async def wait_for_access(client_to_use, dest_chat_id, user_id, error_str, task_uuid=None):
-    warning_msg = (f"⚠️ **Destination Disconnected!**\n\nTask paused because I lost access to `{dest_chat_id}`.\n"
-                   f"**Error:** `{error_str}`\n\n🔄 **Action Required:** Please add me back as an Admin to the destination chat. I will automatically resume exactly where I left off once access is restored!")
+    warning_msg = (
+        f"🛑 **CRITICAL: User Session Disconnected!**\n\n"
+        f"Task fully paused because your **User Session** ALSO lost access to the destination (`{dest_chat_id}`).\n"
+        f"**Error:** `{error_str}`\n\n"
+        f"🔄 **Action Required:** Please ensure your account has access and Admin rights. The task will resume automatically."
+    )
     notify = None
     try: notify = await app.send_message(user_id, warning_msg)
     except: pass
@@ -478,22 +493,54 @@ async def wait_for_access(client_to_use, dest_chat_id, user_id, error_str, task_
         if batch_temp.IS_BATCH.get(user_id): raise Exception("CANCELLED_BY_USER")
             
         await asyncio.sleep(10)
-        try:
-            chat = await client_to_use.get_chat(dest_chat_id)
-            if chat.type in [enums.ChatType.CHANNEL, enums.ChatType.SUPERGROUP, enums.ChatType.GROUP]:
-                member = await client_to_use.get_chat_member(dest_chat_id, "me")
-                if member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]: break 
-            else: break 
-        except Exception: pass
+        if await check_dest_access(client_to_use, dest_chat_id): break 
             
     try:
-        if notify: await notify.edit_text("✅ **Access Restored! Resuming task...**")
+        if notify: await notify.edit_text("✅ **User Session Access Restored! Resuming task...**")
     except: pass
 
-async def safe_send(client_to_use, user_id, dest_chat_id, task_uuid, coro_func, *args, **kwargs):
+async def safe_send(client_to_use, user_id, dest_chat_id, task_uuid, is_bot, coro_func, *args, **kwargs):
+    """Wraps Pyrogram methods. Falls back to User Session if Bot fails. Pauses if User Session fails."""
     while True:
-        try: return await coro_func(*args, **kwargs)
-        except ACCESS_ERRORS as e: await wait_for_access(client_to_use, dest_chat_id, user_id, str(e), task_uuid)
+        try:
+            res = await coro_func(*args, **kwargs)
+            
+            # If the Bot successfully sent it, check if we were previously broken.
+            warning_key = f"{user_id}_{dest_chat_id}"
+            if is_bot and warning_key in BOT_WARNING_SENT:
+                BOT_WARNING_SENT.remove(warning_key) # Clear the warning flag
+                try: await app.send_message(user_id, f"✅ **Bot Access Restored to `{dest_chat_id}`!**\nResuming high-speed Bot routing.")
+                except: pass
+                
+            return res
+            
+        except Exception as e:
+            if isinstance(e, FloodWait):
+                raise e # Let FloodWaits be handled safely by the outer loops
+                
+            err_str = str(e)
+            has_dest_access = await check_dest_access(client_to_use, dest_chat_id)
+            
+            # If we lost destination access, OR we got a write error (kicked/demoted)
+            if not has_dest_access or isinstance(e, (ChatWriteForbidden, ChatAdminRequired, UserBannedInChannel)):
+                if is_bot:
+                    warning_key = f"{user_id}_{dest_chat_id}"
+                    if warning_key not in BOT_WARNING_SENT:
+                        msg = (f"⚠️ **Bot Removed from Destination!**\n\n"
+                               f"I lost access to `{dest_chat_id}`. I am smoothly falling back to your **User Session** to continue forwarding!\n\n"
+                               f"🔄 **Note:** I will keep trying the Bot in the background. If you add me back as Admin, I will instantly switch back to Bot routing.")
+                        try: await app.send_message(user_id, msg)
+                        except: pass
+                        BOT_WARNING_SENT.add(warning_key)
+                    # Bubble the error up so the main script immediately triggers the User Session Fallback!
+                    raise e 
+                else:
+                    # The User Session ALSO failed. Now we must TRULY pause.
+                    await wait_for_access(client_to_use, dest_chat_id, user_id, err_str, task_uuid)
+                    continue
+            else:
+                # Source error (ChannelPrivate). Bubble up to User Session.
+                raise e
 # --------------------------------
 
 PENDING_TASKS = {}
@@ -2913,17 +2960,6 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 # ==============================================================================
 
 async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, dest_thread_id, msg, msg_type, user_id, task_uuid, delay):
-    """Core copy logic for Unrestricted Private types."""
-    if msg_type == "Text":
-        try:
-            await safe_send(client, user_id, dest_chat_id, task_uuid, client.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
-            return True
-        except Exception:
-            try:
-                await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
-                return True
-            except: return False
-            
     try:
         await USER_FLOOD_LOCKS[user_id].wait_if_locked()
         
@@ -2937,9 +2973,9 @@ async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, 
             except: group_size = 1
 
             try:
-                copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, client.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+                copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             except Exception:
-                copy_res = await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+                copy_res = await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             
             if copy_res:
                 if delay > 0 and group_size > 1: await asyncio.sleep(delay * (group_size - 1))
@@ -2948,39 +2984,27 @@ async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, 
 
         # Single Copy
         try:
-            await safe_send(client, user_id, dest_chat_id, task_uuid, client.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             return True
         except Exception:
-            owner_copy = await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            owner_copy = await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             return bool(owner_copy)
     except FloodWait as e:
         USER_FLOOD_LOCKS[user_id].set_lock(e.value + 5)
         await asyncio.sleep(e.value + 5)
         try:
-            await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             return True
         except: return False
     except Exception: return False
 
 async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, dest_thread_id, msg, msg_type, user_id, task_uuid, delay):
-    """Fixed copy logic specifically for Public links and Live Watchers."""
-    if msg_type == "Text":
-        try:
-            await safe_send(client, user_id, dest_chat_id, task_uuid, client.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
-            return True
-        except Exception:
-            try:
-                await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
-                return True
-            except: return False
-            
     try:
         await USER_FLOOD_LOCKS[user_id].wait_if_locked()
         
         # Album Logic (Public)
         if msg.media_group_id:
-            try:
-                m_group = await client.get_media_group(chat_id, msgid)
+            try: m_group = await client.get_media_group(chat_id, msgid)
             except:
                 try: m_group = await acc.get_media_group(chat_id, msgid)
                 except: m_group = [msg]
@@ -2990,10 +3014,10 @@ async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, de
                 for m in m_group: batch_temp.SKIP_IDS[task_uuid].add(m.id)
 
             try:
-                copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, client.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+                copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
                 if not copy_res: raise ValueError("Bot copy None")
             except Exception:
-                copy_res = await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+                copy_res = await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             
             if copy_res:
                 if delay > 0 and group_size > 1: await asyncio.sleep(delay * (group_size - 1))
@@ -3002,17 +3026,17 @@ async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, de
 
         # Single Copy
         try:
-            copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, client.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             if not copy_res: raise ValueError("Bot copy returned None")
             return True
         except Exception:
-            owner_copy = await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            owner_copy = await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             return bool(owner_copy)
     except FloodWait as e:
         USER_FLOOD_LOCKS[user_id].set_lock(e.value + 5)
         await asyncio.sleep(e.value + 5)
         try:
-            owner_copy = await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            owner_copy = await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             return bool(owner_copy)
         except: return False
     except Exception: return False
@@ -3055,11 +3079,11 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
     # --- FIX: Preserve pure text messages with clickable links instantly ---
     if msg_type == "Text":
         try:
-            await safe_send(client, user_id, dest_chat_id, task_uuid, client.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
+            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
             return True
         except Exception:
             try:
-                await safe_send(acc, user_id, dest_chat_id, task_uuid, acc.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
+                await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
                 return True
             except: return False
 
@@ -3131,7 +3155,10 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                             else: sent_msg = await acc.send_document(document=file_path, progress=progress, progress_args=p_args, **kwargs)
                             
                             if sent_msg:
-                                await client.copy_message(chat_id=dest_chat_id, from_chat_id=log_chat_id, message_id=sent_msg.id, message_thread_id=dest_thread_id)
+                                try:
+                                    await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_message, chat_id=dest_chat_id, from_chat_id=log_chat_id, message_id=sent_msg.id, message_thread_id=dest_thread_id)
+                                except Exception:
+                                    await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_message, chat_id=dest_chat_id, from_chat_id=log_chat_id, message_id=sent_msg.id, message_thread_id=dest_thread_id)
                         except Exception as up_err:
                             raise up_err
                         finally:
@@ -3160,7 +3187,10 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                                 while True:
                                     await USER_FLOOD_LOCKS[user_id].wait_if_locked() 
                                     try:
-                                        await safe_send(client, user_id, dest_chat_id, task_uuid, client.send_document, chat_id=dest_chat_id, document=str(part), caption=caption, caption_entities=caption_entities, message_thread_id=dest_thread_id)
+                                        try:
+                                            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_document, chat_id=dest_chat_id, document=str(part), caption=caption, caption_entities=caption_entities, message_thread_id=dest_thread_id)
+                                        except Exception:
+                                            await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_document, chat_id=dest_chat_id, document=str(part), caption=caption, caption_entities=caption_entities, message_thread_id=dest_thread_id)
                                         break
                                     except FloodWait as e: 
                                         if e.value > 300: raise e
@@ -3237,14 +3267,23 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         p_args = [status_message, "up", task_uuid] if status_message else None
                         p_func = progress if status_message else None
 
-                        if msg_type == "Document": await safe_send(uploader, user_id, dest_chat_id, task_uuid, uploader.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
-                        elif msg_type == "Video": await safe_send(uploader, user_id, dest_chat_id, task_uuid, uploader.send_video, video=file_path, duration=getattr(msg.video, 'duration', 0) or 0, width=getattr(msg.video, 'width', 0) or 0, height=getattr(msg.video, 'height', 0) or 0, progress=p_func, progress_args=p_args, **kwargs)
-                        elif msg_type == "Audio": await safe_send(uploader, user_id, dest_chat_id, task_uuid, uploader.send_audio, audio=file_path, progress=p_func, progress_args=p_args, **kwargs)
-                        elif msg_type == "Photo": await safe_send(uploader, user_id, dest_chat_id, task_uuid, uploader.send_photo, photo=file_path, **kwargs)
-                        elif msg_type == "Voice": await safe_send(uploader, user_id, dest_chat_id, task_uuid, uploader.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
-                        elif msg_type == "Animation": await safe_send(uploader, user_id, dest_chat_id, task_uuid, uploader.send_animation, animation=file_path, **kwargs)
-                        elif msg_type == "Sticker": await safe_send(uploader, user_id, dest_chat_id, task_uuid, uploader.send_sticker, chat_id=dest_chat_id, sticker=file_path, message_thread_id=dest_thread_id)
-                        
+                        try:
+                            if msg_type == "Document": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Video": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_video, video=file_path, duration=getattr(msg.video, 'duration', 0) or 0, width=getattr(msg.video, 'width', 0) or 0, height=getattr(msg.video, 'height', 0) or 0, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Audio": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_audio, audio=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Photo": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_photo, photo=file_path, **kwargs)
+                            elif msg_type == "Voice": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Animation": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_animation, animation=file_path, **kwargs)
+                            elif msg_type == "Sticker": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_sticker, chat_id=dest_chat_id, sticker=file_path, message_thread_id=dest_thread_id)
+                        except Exception:
+                            if msg_type == "Document": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Video": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_video, video=file_path, duration=getattr(msg.video, 'duration', 0) or 0, width=getattr(msg.video, 'width', 0) or 0, height=getattr(msg.video, 'height', 0) or 0, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Audio": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_audio, audio=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Photo": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_photo, photo=file_path, **kwargs)
+                            elif msg_type == "Voice": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Animation": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_animation, animation=file_path, **kwargs)
+                            elif msg_type == "Sticker": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_sticker, chat_id=dest_chat_id, sticker=file_path, message_thread_id=dest_thread_id)
+                            
                         upload_success = True
                         break 
                     except FloodWait as e:
@@ -3633,9 +3672,9 @@ async def process_watcher_message(client, message):
                     except: group_size = 1
 
                     try:
-                        copy_res = await safe_send(app, owner_id, dest_id, None, app.copy_media_group, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        copy_res = await safe_send(app, owner_id, dest_id, None, True, app.copy_media_group, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
                     except Exception:
-                        copy_res = await safe_send(owner_client, owner_id, dest_id, None, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
                     
                     if copy_res:
                         processed_successfully = True
@@ -3647,9 +3686,9 @@ async def process_watcher_message(client, message):
                 # If it's a single message
                 else:
                     try:
-                        copy_res = await safe_send(app, owner_id, dest_id, None, app.copy_message, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        copy_res = await safe_send(app, owner_id, dest_id, None, True, app.copy_message, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
                     except Exception:
-                        copy_res = await safe_send(owner_client, owner_id, dest_id, None, owner_client.copy_message, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_message, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
                     if copy_res: processed_successfully = True
 
             except FloodWait as e:
