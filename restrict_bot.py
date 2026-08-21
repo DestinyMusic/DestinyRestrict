@@ -221,14 +221,14 @@ class Database:
 
     async def get_api_id(self, id):
         user = await self.col.find_one({'id': int(id)})
-        return user.get('api_id')
+        return user.get('api_id') if user else None
 
     async def set_api_hash(self, id, api_hash):
         await self.col.update_one({'id': int(id)}, {'$set': {'api_hash': api_hash}})
 
     async def get_api_hash(self, id):
         user = await self.col.find_one({'id': int(id)})
-        return user.get('api_hash')
+        return user.get('api_hash') if user else None
 
     async def total_session_users_count(self):
         count = await self.col.count_documents({"session": {"$ne": None}})
@@ -2006,12 +2006,17 @@ async def finalize_watcher_setup(client, message, data, delay):
     api_id = await db.get_api_id(user_id)
     api_hash = await db.get_api_hash(user_id)
 
-    if not user_session:
-        return await message.reply(
+    # --- NEW: Catch ALL missing credentials safely ---
+    if not user_session or not api_id or not api_hash:
+        error_msg = (
             "❌ **You are not logged in.**\n\n"
             "Watcher mode requires your account to 'listen' for new messages.\n"
-            "Please /login first."
+            "Please use the /login command first before setting this up."
         )
+        if hasattr(message, "edit_text"):
+            return await message.edit_text(error_msg)
+        else:
+            return await message.reply(error_msg)
 
     if user_id not in USER_CLIENTS:
         status_msg = await message.reply("🔄 **Starting your Listener Client...**")
