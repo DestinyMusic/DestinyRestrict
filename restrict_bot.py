@@ -1276,12 +1276,38 @@ async def close_sos_callback(client: Client, callback_query: CallbackQuery):
 # ==============================================================================
 
 @app.on_message(filters.private & ~filters.forwarded & filters.command(["logout"]))
-async def logout(client, message):
+async def logout_cmd(client, message):
     user_id = message.from_user.id
+    
     if not await db.is_user_exist(user_id):
         return await message.reply_text("You are not logged in.")
+        
+    user_session = await db.get_session(user_id)
+    if not user_session:
+        return await message.reply_text("You are not currently logged in. Nothing to log out of!")
 
-    status_msg = await message.reply("📡 **Connecting to Telegram to terminate session...**")
+    # 🎛 Create the Inline Confirmation Buttons
+    buttons = [
+        [InlineKeyboardButton("✅ Yes, Logout", callback_data="confirm_logout")],
+        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_logout")]
+    ]
+
+    await message.reply(
+        "⚠️ **Confirm Logout**\n\n"
+        "Are you sure you want to log out? This will terminate your session and stop any active live watchers you have running.",
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
+
+@app.on_callback_query(filters.regex("^cancel_logout$"))
+async def cancel_logout_cb(client, query):
+    await query.message.edit("✅ **Logout cancelled.** Your session is still active and safe!")
+    await query.answer()
+
+@app.on_callback_query(filters.regex("^confirm_logout$"))
+async def confirm_logout_cb(client, query):
+    user_id = query.from_user.id
+    
+    await query.message.edit("📡 **Connecting to Telegram to terminate session...**")
 
     session_string = await db.get_session(user_id)
     api_id = await db.get_api_id(user_id)
@@ -1305,18 +1331,18 @@ async def logout(client, message):
             
             try:
                 await user_client.log_out()
-                await status_msg.edit("✅ **Session successfully removed from Telegram Devices.**")
+                await query.message.edit("✅ **Session successfully removed from Telegram Devices.**")
             except Exception as e:
                 if "terminated" in str(e) or "Connection" in str(e):
-                    await status_msg.edit("✅ **Session terminated successfully.**")
+                    await query.message.edit("✅ **Session terminated successfully.**")
                 else:
                     raise e
             
         except AuthKeyUnregistered:
-            await status_msg.edit("⚠️ **Session was already invalid.** Cleaning local database...")
+            await query.message.edit("⚠️ **Session was already invalid.** Cleaning local database...")
         except Exception as e:
             logger.warning(f"Remote logout warning for {user_id}: {e}")
-            await status_msg.edit("✅ **Local session cleared.** (Remote session might already be gone)")
+            await query.message.edit("✅ **Local session cleared.** (Remote session might already be gone)")
         finally:
             try:
                 if user_client and user_client.is_connected:
@@ -1324,17 +1350,20 @@ async def logout(client, message):
             except Exception as e:
                 logger.debug(f"Logout disconnect cleanup failed for {user_id}: {e}")
 
+    # Shut down the running Pyrogram client if it's currently actively listening
     runtime_client = USER_CLIENTS.pop(user_id, None)
     if runtime_client:
         try:
             await runtime_client.stop()
         except Exception: pass
 
+    # Clear the database
     await db.set_session(user_id, session=None)
     await db.set_api_id(user_id, api_id=None)
     await db.set_api_hash(user_id, api_hash=None)
     
-    await message.reply("**Logout Complete** ♦\n(You are now disconnected)")
+    await query.message.reply("**Logout Complete** ♦\n(You are now disconnected)")
+    await query.answer()
 
 from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
 
