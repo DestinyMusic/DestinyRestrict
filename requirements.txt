@@ -7,3 +7,4 @@ dnspython
 uvloop
 telegraph
 python-dotenv
+speedtest-cli
