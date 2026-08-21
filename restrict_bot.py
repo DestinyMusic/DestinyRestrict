@@ -403,7 +403,7 @@ async def global_command_reactor(client: Client, message: Message):
         logger.debug(f"Reaction failed for msg {message.id}: {e}")
 
 BOT_START_TIME = time.time()
-
+WATCHER_LAST_RUN = {} # Tracks strict delays between live watcher messages
 ACTIVE_PROCESSES = defaultdict(dict)  
 CANCEL_FLAGS = {} 
 
@@ -3420,7 +3420,20 @@ async def process_watcher_message(client, message):
         dest_thread = watcher.get("dest_thread")
 
         if delay > 0:
-            await asyncio.sleep(delay)
+            watcher_key = f"{owner_id}_{chat_id}_{dest_id}"
+            now = time.time()
+            
+            # If it's the first message in a while, just wait the standard delay
+            if WATCHER_LAST_RUN.get(watcher_key, 0) < now:
+                WATCHER_LAST_RUN[watcher_key] = now + delay
+                await asyncio.sleep(delay)
+            else:
+                # Burst detected! Get in line and calculate exactly how long to wait
+                wait_time = WATCHER_LAST_RUN[watcher_key] - now + delay
+                WATCHER_LAST_RUN[watcher_key] += delay
+                
+                # NO CAP: The bot will dutifully queue every single file infinitely!
+                await asyncio.sleep(wait_time)
             
         processed_successfully = False
 
