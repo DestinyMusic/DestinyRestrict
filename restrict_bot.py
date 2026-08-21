@@ -3544,7 +3544,10 @@ async def user_watcher_handler(client, message):
 # ==============================================================================
 # --- DASHBOARD UPDATER ---
 # ==============================================================================
+import datetime
+
 WATCHER_RENDER_CACHE = {}
+WATCHER_LAST_EDIT = {}
 
 async def watcher_dashboard_updater():
     while True:
@@ -3556,12 +3559,21 @@ async def watcher_dashboard_updater():
                 wid = str(w["_id"])
                 current_stats = w.get("stats", {})
                 
-                # Compare to memory cache, only edit message if numbers actually changed
+                now = time.time()
+                last_edit = WATCHER_LAST_EDIT.get(wid, 0)
+                
+                # Compare to memory cache
                 cached = WATCHER_RENDER_CACHE.get(wid)
-                if cached == current_stats:
+                stats_changed = (cached != current_stats)
+                
+                # Only edit message if stats changed, OR force a heartbeat edit every 3 minutes
+                if not stats_changed and (now - last_edit) < 180:
                     continue 
 
                 WATCHER_RENDER_CACHE[wid] = dict(current_stats)
+                WATCHER_LAST_EDIT[wid] = now
+                
+                time_str = datetime.datetime.now().strftime("%I:%M:%S %p")
 
                 text = (
                     f"👀 **Live Watcher Dashboard**\n\n"
@@ -3574,7 +3586,8 @@ async def watcher_dashboard_updater():
                     f"├ ✅ **Success:** `{current_stats.get('success', 0)}`\n"
                     f"├ ⏭ **Skipped:** `{current_stats.get('skipped', 0)}`\n"
                     f"└ ❌ **Failed:** `{current_stats.get('failed', 0)}`\n\n"
-                    f"*(Updates dynamically every 30s)*"
+                    f"*(📡 Listening for new messages...)*\n"
+                    f"⏱ **Last Synced:** `{time_str}`"
                 )
                 try:
                     await app.edit_message_text(
@@ -3584,10 +3597,9 @@ async def watcher_dashboard_updater():
                     )
                 except Exception as e:
                     if "MESSAGE_NOT_MODIFIED" in str(e): pass 
-                    # If message was manually deleted by user, we just ignore it
         except Exception as e:
             logger.error(f"Dashboard updater error: {e}")
-            
+
 # ==============================================================================
 # --- MAIN ENTRY POINT ---
 # ==============================================================================
