@@ -34,6 +34,7 @@ import socket
 import logging                          
 from telegraph import Telegraph
 from bson.objectid import ObjectId      # <-- REQUIRED FOR UNIQUE ROUTING
+import speedtest                        # <-- REQUIRED FOR SPEEDTEST
 
 # --- MASTER LOGGING SETUP ---
 logging.basicConfig(
@@ -410,7 +411,7 @@ REACTIONS = [
 ALL_COMMANDS = [
     "start", "help", "login", "logout", "dl", "watch", "unwatch", 
     "watchers", "cancel", "broadcast", "botstats", "status", 
-    "log", "pixel", "sos", "mediainfo", "mi"
+    "log", "pixel", "sos", "mediainfo", "mi", "speedtest"
 ]
 
 @app.on_message(filters.command(ALL_COMMANDS), group=-1)
@@ -1166,6 +1167,60 @@ async def pixel_bypass_handler(client: Client, message: Message):
     )
     await message.reply(reply_text, disable_web_page_preview=True)
 
+# ==============================================================================
+# --- SPEEDTEST HANDLER ---
+# ==============================================================================
+
+@app.on_message(filters.command(["speedtest"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
+async def speedtest_handler(client: Client, message: Message):
+    status_msg = await message.reply("<i>Initiating Speedtest...</i>", parse_mode=enums.ParseMode.HTML)
+    
+    def run_speedtest_sync():
+        try:
+            st = speedtest.Speedtest()
+            st.get_best_server()
+            st.download()
+            st.upload()
+            st.results.share() # Generates the image link
+            return st.results.dict(), None
+        except Exception as e:
+            return None, str(e)
+
+    try:
+        # Run blocking speedtest in a separate thread to avoid freezing bot
+        result, error = await asyncio.to_thread(run_speedtest_sync)
+        
+        if error or not result:
+            await status_msg.edit_text(f"<b>ERROR:</b> <i>Can't connect to Server.</i>\n<code>{error}</code>", parse_mode=enums.ParseMode.HTML)
+            return
+
+        # --- THE FIX: Convert directly to Mbps to match the generated image exactly! ---
+        dl_mbps = result['download'] / 1_000_000
+        ul_mbps = result['upload'] / 1_000_000
+        ping_ms = result['ping']
+        
+        string_speed = (
+            f"➲ <b><i>SPEEDTEST INFO</i></b>\n"
+            f"┠ <b>Download:</b> <code>{dl_mbps:.2f} Mbps</code>\n"
+            f"┠ <b>Upload:</b> <code>{ul_mbps:.2f} Mbps</code>\n"
+            f"┠ <b>Ping:</b> <code>{ping_ms} ms</code>\n"
+            f"┖ <b>Data Sent/Recv:</b> <code>{_pretty_bytes(result['bytes_sent'])} / {_pretty_bytes(result['bytes_received'])}</code>\n\n"
+            f"➲ <b><i>SPEEDTEST SERVER</i></b>\n"
+            f"┠ <b>Name:</b> <code>{result['server']['name']}</code>\n"
+            f"┠ <b>Location:</b> <code>{result['server']['country']}, {result['server']['cc']}</code>\n"
+            f"┖ <b>Sponsor:</b> <code>{result['server']['sponsor']}</code>"
+        )
+
+        if result.get("share"):
+            await message.reply_photo(photo=result["share"], caption=string_speed, parse_mode=enums.ParseMode.HTML)
+            await status_msg.delete()
+        else:
+            await status_msg.edit_text(string_speed, parse_mode=enums.ParseMode.HTML)
+
+    except Exception as e:
+        logger.error(f"Speedtest error: {e}")
+        await status_msg.edit_text(f"❌ An error occurred: {e}")
+        
 @app.on_message(filters.command(["status"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def status_style_handler(client, message):
     uptime_seconds = int(time.time() - BOT_START_TIME)
@@ -3921,7 +3976,8 @@ async def main():
             BotCommand("log", "📄 Fetch backend bot logs"),
             BotCommand("pixel", "✨ Bypass Pixeldrain links"),
             BotCommand("sos", "⚙️ Deep System Statistics"),
-            BotCommand("mediainfo", "🔍 Technical File MetaData")
+            BotCommand("mediainfo", "🔍 Technical File MetaData"),
+            BotCommand("speedtest", "🚀 Test Server Speed")
         ]
 
         await app.set_bot_commands(public_commands, scope=BotCommandScopeDefault())
