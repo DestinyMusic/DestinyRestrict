@@ -480,9 +480,9 @@ async def check_dest_access(client_to_use, dest_chat_id):
 async def wait_for_access(client_to_use, dest_chat_id, user_id, error_str, task_uuid=None):
     warning_msg = (
         f"🛑 **CRITICAL: User Session Disconnected!**\n\n"
-        f"Task fully paused because your **User Session** ALSO lost access to the destination (`{dest_chat_id}`).\n"
+        f"Task fully paused because your **User Session** ALSO lost Admin rights or was removed from the destination (`{dest_chat_id}`).\n"
         f"**Error:** `{error_str}`\n\n"
-        f"🔄 **Action Required:** Please ensure your account has access and Admin rights. The task will resume automatically."
+        f"🔄 **Action Required:** Please ensure your account has access and Admin rights in the destination. The task will resume automatically."
     )
     notify = None
     try: notify = await app.send_message(user_id, warning_msg)
@@ -526,9 +526,9 @@ async def safe_send(client_to_use, user_id, dest_chat_id, task_uuid, is_bot, cor
                 if is_bot:
                     warning_key = f"{user_id}_{dest_chat_id}"
                     if warning_key not in BOT_WARNING_SENT:
-                        msg = (f"⚠️ **Bot Removed from Destination!**\n\n"
-                               f"I lost access to `{dest_chat_id}`. I am smoothly falling back to your **User Session** to continue forwarding!\n\n"
-                               f"🔄 **Note:** I will keep trying the Bot in the background. If you add me back as Admin, I will instantly switch back to Bot routing.")
+                        msg = (f"⚠️ **Bot Removed or Demoted!**\n\n"
+                               f"I lost Admin rights or was removed from `{dest_chat_id}`. I am smoothly falling back to your **User Session** to continue forwarding!\n\n"
+                               f"🔄 **Note:** I will keep testing the Bot in the background. If you promote me back to Admin, I will instantly switch back to high-speed Bot routing.")
                         try: await app.send_message(user_id, msg)
                         except: pass
                         BOT_WARNING_SENT.add(warning_key)
