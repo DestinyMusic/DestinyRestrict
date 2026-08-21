@@ -288,12 +288,20 @@ class Database:
         is_restricted=False,
         source_title=None,
         dest_title=None,
-        allowed_types=None
+        allowed_types=None,
+        dashboard_chat=None,
+        dashboard_msg=None
     ):
         if allowed_types is None:
             allowed_types = ["Video", "Document"]
 
-        watcher = {
+        query = {
+            "user_id": int(user_id),
+            "source_id": int(source_id),
+            "source_thread": int(source_thread) if source_thread is not None else None
+        }
+        
+        update_data = {
             "user_id": int(user_id),
             "source_id": int(source_id),
             "dest_id": int(dest_id),
@@ -304,16 +312,20 @@ class Database:
             "source_title": source_title,
             "dest_title": dest_title,
             "allowed_types": allowed_types,
+            "dashboard_chat": dashboard_chat,
+            "dashboard_msg": dashboard_msg,
             "created_at": datetime.datetime.now()
         }
 
-        query = {
-            "user_id": int(user_id),
-            "source_id": int(source_id),
-            "source_thread": int(source_thread) if source_thread is not None else None
-        }
-
-        await self.db.watchers.update_one(query, {"$set": watcher}, upsert=True)
+        # $setOnInsert ensures stats are created only on the first run and not reset on updates
+        await self.db.watchers.update_one(
+            query, 
+            {
+                "$set": update_data,
+                "$setOnInsert": {"stats": {"detected": 0, "success": 0, "skipped": 0, "failed": 0}}
+            }, 
+            upsert=True
+        )
 
     async def get_user_watchers(self, user_id):
         return self.db.watchers.find({"user_id": int(user_id)})
@@ -1367,6 +1379,22 @@ async def confirm_logout_cb(client, query):
 
 from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
 
+@app.on_callback_query(filters.regex("^cancel_login$"))
+async def cancel_login_cb(client, query):
+    user_id = query.from_user.id
+    
+    # Attempt to kill the Pyromod .ask() listener instantly
+    try:
+        if hasattr(client, "cancel_listener"):
+            client.cancel_listener(user_id)
+        elif hasattr(client, "listen") and hasattr(client.listen, "cancel"):
+            client.listen.cancel(user_id)
+    except Exception:
+        pass
+        
+    await query.message.edit("<b>❌ Login Process Cancelled!</b>\n\n*(If the bot still seems stuck waiting for input, simply send /cancel to clear it)*")
+    await query.answer("Cancelled", show_alert=False)
+    
 @app.on_message(filters.private & ~filters.forwarded & filters.command(["login"]))
 async def login_handler(bot: Client, message: Message):
     if not await db.is_user_exist(message.from_user.id):
@@ -1379,8 +1407,8 @@ async def login_handler(bot: Client, message: Message):
         
     user_id = int(message.from_user.id)
     
-    # 🎛 CREATE THE PHYSICAL CANCEL BUTTON
-    cancel_kb = ReplyKeyboardMarkup([["❌ Cancel"]], resize_keyboard=True, one_time_keyboard=True)
+    # 🎛 CREATE THE INLINE CANCEL BUTTON
+    cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_login")]])
 
     if API_ID != 0 and API_HASH:
         await message.reply("**🔑 Specific API ID and HASH found in variables. Using them automatically...**")
@@ -1388,24 +1416,30 @@ async def login_handler(bot: Client, message: Message):
         api_hash = API_HASH
     else:
         api_id_msg = await bot.ask(user_id, "<b>Send Your API ID.</b>", filters=filters.text, reply_markup=cancel_kb)
-        if api_id_msg.text in ['/cancel', '❌ Cancel'] or api_id_msg.text.startswith('/'):
-            return await api_id_msg.reply('<b>Process cancelled!</b>', reply_markup=ReplyKeyboardRemove())
+        if not api_id_msg or not api_id_msg.text: return
+        
+        if api_id_msg.text.startswith('/'):
+            return await api_id_msg.reply('<b>Process cancelled!</b>')
+            
         try:
             api_id = int(api_id_msg.text)
             if api_id < 1000000 or api_id > 99999999:
-                 await api_id_msg.reply("**❌ Invalid API ID**\n\nPlease start again with /login.", quote=True, reply_markup=ReplyKeyboardRemove())
+                 await api_id_msg.reply("**❌ Invalid API ID**\n\nPlease start again with /login.", quote=True)
                  return
         except ValueError:
-            await api_id_msg.reply("**API ID must be an integer, start your process again by /login**", quote=True, reply_markup=ReplyKeyboardRemove())
+            await api_id_msg.reply("**API ID must be an integer, start your process again by /login**", quote=True)
             return
         
         api_hash_msg = await bot.ask(user_id, "**Now Send Me Your API HASH**", filters=filters.text, reply_markup=cancel_kb)
-        if api_hash_msg.text in ['/cancel', '❌ Cancel'] or api_hash_msg.text.startswith('/'):
-            return await api_hash_msg.reply('<b>Process cancelled!</b>', reply_markup=ReplyKeyboardRemove())
+        if not api_hash_msg or not api_hash_msg.text: return
+        
+        if api_hash_msg.text.startswith('/'):
+            return await api_hash_msg.reply('<b>Process cancelled!</b>')
+            
         api_hash = api_hash_msg.text.strip()
 
         if not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
-             await api_hash_msg.reply("**❌ Invalid API HASH (Must be 32 Hex Characters)**\n\nPlease start again with /login.", quote=True, reply_markup=ReplyKeyboardRemove())
+             await api_hash_msg.reply("**❌ Invalid API HASH (Must be 32 Hex Characters)**\n\nPlease start again with /login.", quote=True)
              return
 
     login_text = (
@@ -1416,55 +1450,65 @@ async def login_handler(bot: Client, message: Message):
     )
 
     phone_number_msg = await bot.ask(chat_id=user_id, text=login_text, filters=filters.text, reply_markup=cancel_kb)
+    if not phone_number_msg or not phone_number_msg.text: return
     
-    # 🔥 COMMAND ESCAPE: Catches /sos, /cancel, or the physical button
-    if phone_number_msg.text in ['/cancel', '❌ Cancel'] or phone_number_msg.text.startswith('/'):
-        return await phone_number_msg.reply('<b>Process cancelled!</b>', reply_markup=ReplyKeyboardRemove())
+    # 🔥 COMMAND ESCAPE: Catches /sos, /cancel
+    if phone_number_msg.text.startswith('/'):
+        return await phone_number_msg.reply('<b>Process cancelled!</b>')
         
     phone_number = phone_number_msg.text.strip()
     if not re.fullmatch(r"\+\d{8,15}", phone_number):
-         await phone_number_msg.reply('❌ **Invalid phone number format.** Use international format (e.g., +1234567890).', reply_markup=ReplyKeyboardRemove())
+         await phone_number_msg.reply('❌ **Invalid phone number format.** Use international format (e.g., +1234567890).')
          return
     
     client_auth = Client(":memory:", api_id=api_id, api_hash=api_hash)
     await client_auth.connect()
     
-    # Remove keyboard while waiting for Telegram to send the text message
-    await phone_number_msg.reply("Sending OTP...", reply_markup=ReplyKeyboardRemove())
+    await phone_number_msg.reply("Sending OTP...")
     
     try:
         code = await client_auth.send_code(phone_number)
         phone_code_msg = await bot.ask(user_id, "Please check for an OTP in your official Telegram account. If you got it, send OTP here after reading the below format. \n\nIf OTP is `12345`, **please send it as** `1 2 3 4 5`.", filters=filters.text, timeout=600, reply_markup=cancel_kb)
     except PhoneNumberInvalid:
-        await phone_number_msg.reply('`PHONE_NUMBER` **is invalid.**', reply_markup=ReplyKeyboardRemove())
+        await phone_number_msg.reply('`PHONE_NUMBER` **is invalid.**')
         await client_auth.disconnect()
         return
         
-    if phone_code_msg.text in ['/cancel', '❌ Cancel'] or phone_code_msg.text.startswith('/'):
+    if not phone_code_msg or not phone_code_msg.text:
         await client_auth.disconnect()
-        return await phone_code_msg.reply('<b>Process cancelled!</b>', reply_markup=ReplyKeyboardRemove())
+        return
+        
+    if phone_code_msg.text.startswith('/'):
+        await client_auth.disconnect()
+        return await phone_code_msg.reply('<b>Process cancelled!</b>')
         
     try:
         phone_code = phone_code_msg.text.replace(" ", "")
         await client_auth.sign_in(phone_number, code.phone_code_hash, phone_code)
     except PhoneCodeInvalid:
-        await phone_code_msg.reply('**OTP is invalid.**', reply_markup=ReplyKeyboardRemove())
+        await phone_code_msg.reply('**OTP is invalid.**')
         await client_auth.disconnect()
         return
     except PhoneCodeExpired:
-        await phone_code_msg.reply('**OTP is expired.**', reply_markup=ReplyKeyboardRemove())
+        await phone_code_msg.reply('**OTP is expired.**')
         await client_auth.disconnect()
         return
     except SessionPasswordNeeded:
         two_step_msg = await bot.ask(user_id, '**Your account has enabled two-step verification. Please provide the password.**', filters=filters.text, timeout=300, reply_markup=cancel_kb)
-        if two_step_msg.text in ['/cancel', '❌ Cancel'] or two_step_msg.text.startswith('/'):
+        
+        if not two_step_msg or not two_step_msg.text:
             await client_auth.disconnect()
-            return await two_step_msg.reply('<b>Process cancelled!</b>', reply_markup=ReplyKeyboardRemove())
+            return
+            
+        if two_step_msg.text.startswith('/'):
+            await client_auth.disconnect()
+            return await two_step_msg.reply('<b>Process cancelled!</b>')
+            
         try:
             password = two_step_msg.text
             await client_auth.check_password(password=password)
         except PasswordHashInvalid:
-            await two_step_msg.reply('**Invalid Password Provided**', reply_markup=ReplyKeyboardRemove())
+            await two_step_msg.reply('**Invalid Password Provided**')
             await client_auth.disconnect()
             return
             
@@ -1472,7 +1516,7 @@ async def login_handler(bot: Client, message: Message):
     await client_auth.disconnect()
     
     if len(string_session) < SESSION_STRING_SIZE:
-        return await message.reply('<b>Invalid session string</b>', reply_markup=ReplyKeyboardRemove())
+        return await message.reply('<b>Invalid session string</b>')
         
     is_prem = False
     first_name = ""
@@ -1492,7 +1536,7 @@ async def login_handler(bot: Client, message: Message):
         except Exception:
             pass
     except Exception as e:
-        return await message.reply_text(f"<b>ERROR IN LOGIN:</b> `{e}`", reply_markup=ReplyKeyboardRemove())
+        return await message.reply_text(f"<b>ERROR IN LOGIN:</b> `{e}`")
         
     prem_text = "⭐ <b>Telegram Premium:</b> <code>Active (4GB Uploads Enabled)</code>" if is_prem else "🔹 <b>Account Type:</b> <code>Standard (2GB Upload Limit)</code>"
 
@@ -1502,7 +1546,7 @@ async def login_handler(bot: Client, message: Message):
         f"{prem_text}\n\n"
         f"<i>If you encounter any AUTH KEY errors later, run /logout and /login again.</i>"
     )
-    await bot.send_message(message.from_user.id, success_msg, reply_markup=ReplyKeyboardRemove())
+    await bot.send_message(message.from_user.id, success_msg)
 
 # ==============================================================================
 # --- BROADCAST ---
@@ -1625,9 +1669,23 @@ async def unwatch_handler(client, message):
     try:
         source_id = int(message.command[1])
         source_thread = int(message.command[2]) if len(message.command) == 3 else None
+        user_id = message.from_user.id
 
-        if await db.remove_watcher(message.from_user.id, source_id, source_thread):
-            await message.reply("✅ **Watcher Removed.**")
+        if await db.remove_watcher(user_id, source_id, source_thread):
+            
+            # Intercept and Cancel Active Downloads
+            cancelled_tasks = 0
+            if user_id in ACTIVE_PROCESSES:
+                for tid, info in list(ACTIVE_PROCESSES[user_id].items()):
+                    if info.get("is_watcher") and info.get("source_id") == source_id:
+                        CANCEL_FLAGS[tid] = True
+                        cancelled_tasks += 1
+
+            msg = "✅ **Watcher Removed.**"
+            if cancelled_tasks > 0:
+                msg += f"\n🛑 Also cancelled `{cancelled_tasks}` ongoing downloads from this watcher."
+            await message.reply(msg)
+            
         else:
             await message.reply("⚠️ Watcher not found.")
     except Exception as e:
@@ -1674,7 +1732,19 @@ async def unwatch_callback(client, query):
     if query.data == "unwatch_all":
         user_id = query.from_user.id
         result = await db.db.watchers.delete_many({'user_id': int(user_id)})
-        await query.message.edit(f"✅ **Success!**\n\n🗑 Removed `{result.deleted_count}` active watchers.")
+        
+        # Intercept and Cancel ALL Active Watcher Downloads
+        cancelled_tasks = 0
+        if user_id in ACTIVE_PROCESSES:
+            for tid, info in list(ACTIVE_PROCESSES[user_id].items()):
+                if info.get("is_watcher"):
+                    CANCEL_FLAGS[tid] = True
+                    cancelled_tasks += 1
+                    
+        msg = f"✅ **Success!**\n\n🗑 Removed `{result.deleted_count}` active watchers."
+        if cancelled_tasks > 0:
+            msg += f"\n🛑 Intercepted and Cancelled `{cancelled_tasks}` active watcher downloads."
+        await query.message.edit(msg)
         return
 
     data = query.data.split("_")
@@ -1715,13 +1785,25 @@ async def unwatch_callback(client, query):
             "source_id": source_id,
             "source_thread": topic_id
         })
-        
-    await query.message.edit(
+
+    # Intercept and Cancel SPECIFIC Watcher Downloads
+    cancelled_tasks = 0
+    if owner_id in ACTIVE_PROCESSES:
+        for tid, info in list(ACTIVE_PROCESSES[owner_id].items()):
+            if info.get("is_watcher") and info.get("source_id") == source_id:
+                CANCEL_FLAGS[tid] = True
+                cancelled_tasks += 1
+
+    msg = (
         f"🗑 **Active Watcher Task Removed**\n\n"
         f"From: **{src_name}**\n"
         f"To: **{dest_name}**"
     )
-    
+    if cancelled_tasks > 0:
+        msg += f"\n\n🛑 **Cancelled `{cancelled_tasks}` active ongoing downloads** originating from this watcher."
+        
+    await query.message.edit(msg)
+
 # ==============================================================================
 # --- CORE: receive links / start tasks / processing / cancel checks ---
 # ==============================================================================
@@ -1982,11 +2064,20 @@ async def process_custom_destination(client: Client, message: Message):
         await message.reply("❌ Invalid ID format. Send `-100...`, `-100.../5`, `@username`, or a `t.me` link.")
 
 async def ask_for_speed(message_or_query):
-    buttons = [
-        [InlineKeyboardButton("⚡ Default (3s)", callback_data="speed_default")],
-        [InlineKeyboardButton("⚙️ Manual Speed", callback_data="speed_manual")],
-        [InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]
-    ]
+    user_id = message_or_query.from_user.id
+    task_data = PENDING_TASKS.get(user_id, {})
+    mode = task_data.get("mode")
+
+    buttons = []
+    if mode == "WATCHER":
+        buttons.append([InlineKeyboardButton("⚡ Instant (0s)", callback_data="speed_0")])
+        buttons.append([InlineKeyboardButton("⏳ Default (3s)", callback_data="speed_3")])
+    else:
+        buttons.append([InlineKeyboardButton("⚡ Default (3s)", callback_data="speed_3")])
+        
+    buttons.append([InlineKeyboardButton("⚙️ Manual Speed", callback_data="speed_manual")])
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")])
+    
     text = "**🚀 Select Forwarding Speed**\n\nHow fast should I process messages?"
 
     if hasattr(message_or_query, "message") and hasattr(message_or_query, "data"):
@@ -2005,7 +2096,7 @@ async def speed_callback(client: Client, query):
     task_data = PENDING_TASKS[user_id]
     
     if choice == "speed_manual":
-        PENDING_TASKS[user_id]["status"] = "waiting_speed_input" # <<< FIX
+        PENDING_TASKS[user_id]["status"] = "waiting_speed_input"
         await query.message.edit(
             "⏱ **Enter Delay (Seconds)**\n\n"
             "Every time a new message arrives, I will wait this long before forwarding it.",
@@ -2013,9 +2104,15 @@ async def speed_callback(client: Client, query):
         )
         return
 
-    if choice == "speed_default":
-        PENDING_TASKS[user_id]["delay"] = 0 if task_data.get("mode") == "WATCHER" else 3
+    if choice == "speed_0":
+        PENDING_TASKS[user_id]["delay"] = 0
         await show_filter_menu(query, user_id)
+        return
+        
+    if choice in ["speed_3", "speed_default"]:
+        PENDING_TASKS[user_id]["delay"] = 3
+        await show_filter_menu(query, user_id)
+        return
 
 async def process_speed_input(client: Client, message: Message):
     user_id = message.from_user.id
@@ -2114,19 +2211,37 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
         is_restricted=data["is_restricted"],
         source_title=source_title,
         dest_title=data.get("dest_title", str(data.get("dest_chat_id"))),
-        allowed_types=data.get("allowed_types")
+        allowed_types=data.get("allowed_types"),
+        dashboard_chat=message.chat.id,
+        dashboard_msg=message.id
     )
 
-    await message.reply(
-        f"✅ **Watcher Active!**\n\n"
-        f"👀 Source: `{source_title}`\n"
-        f"📂 Source Topic: `{data.get('source_thread_id', 'All')}`\n"
-        f"🎯 Destination: `{data.get('dest_title')}`\n"
-        f"📂 Dest Topic: `{data.get('dest_thread_id', 'None')}`\n"
-        f"⏱ Delay: `{delay}s`\n"
-        f"🔒 Restricted Mode: `{'Yes' if data['is_restricted'] else 'No'}`\n"
-        f"🎛 Filter: `{', '.join(data.get('allowed_types', []))}`"
+    initial_text = (
+        f"👀 **Live Watcher Dashboard**\n\n"
+        f"**Source:** `{source_title}`\n"
+        f"**Destination:** `{data.get('dest_title', str(data.get('dest_chat_id')))}`\n"
+        f"**Delay:** `{delay}s` | **Restricted:** `{'Yes' if data['is_restricted'] else 'No'}`\n"
+        f"**Filters:** `{', '.join(data.get('allowed_types', []))}`\n\n"
+        f"📊 **Session Statistics:**\n"
+        f"├ 📡 **Detected:** `0`\n"
+        f"├ ✅ **Success:** `0`\n"
+        f"├ ⏭ **Skipped:** `0`\n"
+        f"└ ❌ **Failed:** `0`\n\n"
+        f"*(Updates dynamically every 30s)*"
     )
+    
+    try:
+        if hasattr(message, "edit_text"):
+            await message.edit_text(initial_text)
+        else:
+            new_msg = await message.reply(initial_text)
+            # Failsafe if it couldn't edit
+            await db.db.watchers.update_one(
+                {"user_id": user_id, "source_id": source_id, "source_thread": data.get("source_thread_id")},
+                {"$set": {"dashboard_chat": new_msg.chat.id, "dashboard_msg": new_msg.id}}
+            )
+    except Exception:
+        pass
     
 # ==============================================================================
 # --- NEW ROBUSTNESS HELPERS ---
@@ -3287,59 +3402,66 @@ async def process_watcher_message(client, message):
     is_content_protected = getattr(message, "has_protected_content", False) or getattr(message.chat, "has_protected_content", False)
 
     for watcher in watchers:
-        dest_id = watcher["dest_id"]
-        dest_thread = watcher.get("dest_thread")
-        allowed_types = watcher.get("allowed_types", ["Video", "Document"])
+        owner_id = watcher["user_id"]
+        w_topic = watcher.get("source_thread")
+        
+        # 1. Increment Detected
+        await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.detected": 1}})
 
+        allowed_types = watcher.get("allowed_types", ["Video", "Document"])
         if msg_type not in allowed_types:
+            # 2. Increment Skipped (Filtered out)
+            await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.skipped": 1}})
             continue
 
         delay = watcher.get("delay", 0)
-        owner_id = watcher["user_id"]
         is_restricted = watcher.get("is_restricted", False)
+        dest_id = watcher["dest_id"]
+        dest_thread = watcher.get("dest_thread")
 
         if delay > 0:
             await asyncio.sleep(delay)
+            
+        processed_successfully = False
 
         if not is_restricted and not is_content_protected:
             try:
                 await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
                 try:
-                    copy_res = await app.copy_message(
-                        chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread
-                    )
-                    if not copy_res: raise ValueError("Bot copy returned None")
-                    continue
+                    copy_res = await app.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                    if copy_res: processed_successfully = True
                 except FloodWait as e:
-                    raise e # Pass up to outer block
+                    raise e 
                 except Exception:
                     owner_client = USER_CLIENTS.get(owner_id)
                     if owner_client:
                         try:
-                            await owner_client.copy_message(
-                                chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread
-                            )
-                            continue
+                            owner_copy = await owner_client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                            if owner_copy: processed_successfully = True
                         except FloodWait as e:
-                            raise e # Pass up to outer block
+                            raise e
             except FloodWait as e:
                 USER_FLOOD_LOCKS[owner_id].set_lock(e.value + 5)
                 await asyncio.sleep(e.value + 5)
-                # RETRY after sleeping! Don't skip the message!
                 owner_client = USER_CLIENTS.get(owner_id)
                 if owner_client:
                     try:
-                        await owner_client.copy_message(
-                            chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread
-                        )
-                        continue
+                        owner_copy = await owner_client.copy_message(chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        if owner_copy: processed_successfully = True
                     except Exception as err:
-                        logger.warning(f"Watcher fast copy retry failed for {message.id}: {err}")
+                        logger.warning(f"Watcher fast copy retry failed: {err}")
             except Exception as e:
-                logger.warning(f"Watcher fast copy failed for {message.id}: {e}. Falling back to download mode.")
+                logger.warning(f"Watcher fast copy failed: {e}. Falling back to download.")
 
+        if processed_successfully:
+            # 3. Increment Success (Fast Forward)
+            await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.success": 1}})
+            continue
+            
+        # Fallback to Download Mode
         owner_client = USER_CLIENTS.get(owner_id)
         if not owner_client:
+            await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.failed": 1}})
             continue
 
         try:
@@ -3350,7 +3472,23 @@ async def process_watcher_message(client, message):
                 message_thread_id=log_topic_id
             )
 
-            await handle_private(
+            # --- REGISTRATION START ---
+            task_uuid = uuid.uuid4().hex
+            if owner_id not in ACTIVE_PROCESSES: 
+                ACTIVE_PROCESSES[owner_id] = {}
+                
+            ACTIVE_PROCESSES[owner_id][task_uuid] = {
+                "user": "Watcher", 
+                "dest_title_name": watcher.get("dest_title", "Destination"),
+                "source_title": watcher.get("source_title", "Source"),
+                "item": f"Live Watcher ID: {message.id}", 
+                "started": time.time(),
+                "is_watcher": True,
+                "source_id": chat_id
+            }
+            # --- REGISTRATION END ---
+
+            result = await handle_private(
                 client=app,
                 acc=owner_client,
                 message=message,
@@ -3363,10 +3501,20 @@ async def process_watcher_message(client, message):
                 dest_thread_id=dest_thread,
                 delay=0,
                 user_id=owner_id,
-                task_uuid=uuid.uuid4().hex,
+                task_uuid=task_uuid, # <-- NOW USES REGISTERED UUID
                 is_restricted=True,
                 allowed_types=allowed_types
             )
+            
+            # Map handle_private results directly to DB Stats
+            if result == "SUCCESS" or result is True:
+                await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.success": 1}})
+            elif result == "SKIPPED":
+                await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.skipped": 1}})
+            else:
+                await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.failed": 1}})
+
+            cleanup_task_memory(owner_id, task_uuid) # Clean up so RAM stays clean!
 
             try:
                 await dummy_status.delete()
@@ -3374,11 +3522,59 @@ async def process_watcher_message(client, message):
                 pass
 
         except Exception as e:
-            logger.error(f"Watcher Fail for {owner_id}: {e}", exc_info=True)
+            logger.error(f"Watcher Fail for {owner_id}: {e}")
+            await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.failed": 1}})
         
 async def user_watcher_handler(client, message):
     await process_watcher_message(client, message)
 
+# ==============================================================================
+# --- DASHBOARD UPDATER ---
+# ==============================================================================
+WATCHER_RENDER_CACHE = {}
+
+async def watcher_dashboard_updater():
+    while True:
+        await asyncio.sleep(30)
+        try:
+            # Find all watchers that have a linked dashboard message
+            cursor = db.db.watchers.find({"dashboard_chat": {"$ne": None}, "dashboard_msg": {"$ne": None}})
+            async for w in cursor:
+                wid = str(w["_id"])
+                current_stats = w.get("stats", {})
+                
+                # Compare to memory cache, only edit message if numbers actually changed
+                cached = WATCHER_RENDER_CACHE.get(wid)
+                if cached == current_stats:
+                    continue 
+
+                WATCHER_RENDER_CACHE[wid] = dict(current_stats)
+
+                text = (
+                    f"👀 **Live Watcher Dashboard**\n\n"
+                    f"**Source:** `{w.get('source_title')}`\n"
+                    f"**Destination:** `{w.get('dest_title')}`\n"
+                    f"**Delay:** `{w.get('delay')}s` | **Restricted:** `{'Yes' if w.get('is_restricted') else 'No'}`\n"
+                    f"**Filters:** `{', '.join(w.get('allowed_types', []))}`\n\n"
+                    f"📊 **Session Statistics:**\n"
+                    f"├ 📡 **Detected:** `{current_stats.get('detected', 0)}`\n"
+                    f"├ ✅ **Success:** `{current_stats.get('success', 0)}`\n"
+                    f"├ ⏭ **Skipped:** `{current_stats.get('skipped', 0)}`\n"
+                    f"└ ❌ **Failed:** `{current_stats.get('failed', 0)}`\n\n"
+                    f"*(Updates dynamically every 30s)*"
+                )
+                try:
+                    await app.edit_message_text(
+                        chat_id=w["dashboard_chat"],
+                        message_id=w["dashboard_msg"],
+                        text=text
+                    )
+                except Exception as e:
+                    if "MESSAGE_NOT_MODIFIED" in str(e): pass 
+                    # If message was manually deleted by user, we just ignore it
+        except Exception as e:
+            logger.error(f"Dashboard updater error: {e}")
+            
 # ==============================================================================
 # --- MAIN ENTRY POINT ---
 # ==============================================================================
