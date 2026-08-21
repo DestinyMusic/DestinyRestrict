@@ -2351,42 +2351,14 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
             source_title = chat.title or str(source_id)
 
     except Exception as e:
+        is_pub = parsed.get("kind") == "public" if 'parsed' in locals() else False
+        reason = "The public username might be incorrect/banned." if is_pub else "I am not inside this private chat."
         return await message.reply(
-            "❌ **Could not access Source.**\n\n"
-            "You are not logged in, and the Bot is not an Admin in the source channel.\n"
-            "💡 **Fix:** Please add the bot as an Admin in BOTH the Source and Destination, OR use `/login` to use your own account to read it.\n\n"
+            f"❌ **Could not access Source.**\n\n"
+            f"You are not logged in, and I cannot read this chat directly.\n"
+            f"💡 **Reason:** {reason}\n"
+            f"**Fix:** Please use `/login` to route through your own account, OR add me to the source chat (**as an Admin for Channels, or a normal Member for Groups**).\n\n"
             f"**Error:** `{e}`"
-        )
-        source_id = parsed["chat_id"]
-        source_title = "Unknown Source"
-
-        if parsed["kind"] == "invite":
-            try:
-                await user_client.join_chat(parsed["join_target"])
-            except Exception:
-                pass
-            chat = await user_client.get_chat(parsed["join_target"])
-            source_id = chat.id
-            source_title = chat.title or str(source_id)
-
-        elif parsed["kind"] == "public":
-            chat = await user_client.get_chat(parsed["join_target"])
-            source_id = chat.id
-            source_title = chat.title or str(source_id)
-            try:
-                await user_client.join_chat(parsed["join_target"])
-            except Exception:
-                pass
-
-        else:
-            chat = await user_client.get_chat(source_id)
-            source_title = chat.title or str(source_id)
-
-    except Exception as e:
-        return await message.reply(
-            "❌ **Could not access Source.**\n"
-            "Make sure your User Account is a member of that channel/group.\n"
-            f"Error: `{e}`"
         )
 
     await db.add_watcher(
@@ -2715,12 +2687,12 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             except Exception as e: 
                 if not acc:
                     is_pub = isinstance(source_ref, str) and not str(source_ref).lstrip('-').isdigit()
-                    reason = "The public channel username might be incorrect/banned." if is_pub else "I am not an Admin in this private channel."
+                    reason = "The public username might be incorrect/banned." if is_pub else "I am not inside this private chat."
                     return await message.reply(
                         f"❌ **Could not access Source.**\n\n"
                         f"You are not logged in, and I cannot read this chat directly.\n"
                         f"💡 **Reason:** {reason}\n"
-                        f"**Fix:** Please use `/login` to route through your own account, or add me as an Admin to the private chat.\n\n"
+                        f"**Fix:** Please use `/login` to route through your own account, OR add me to the source chat (**as an Admin for Channels, or a normal Member for Groups**).\n\n"
                         f"**Error:** `{e}`"
                     )
                 logger.warning(f"Could not fetch chat title for {source_ref}: {e}")
@@ -3733,15 +3705,18 @@ async def process_watcher_message(client, message):
                 
                 # If it's an album
                 if getattr(message, "media_group_id", None):
+                    fetcher = owner_client if owner_client else app
                     try:
-                        m_group = await owner_client.get_media_group(chat_id, message.id) if owner_client else [message]
+                        m_group = await fetcher.get_media_group(chat_id, message.id)
                         group_size = len(m_group)
                     except: group_size = 1
 
                     try:
                         copy_res = await safe_send(app, owner_id, dest_id, None, True, app.copy_media_group, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
                     except Exception:
-                        copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        if owner_client:
+                            copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        else: copy_res = False
                     
                     if copy_res:
                         processed_successfully = True
@@ -3755,7 +3730,9 @@ async def process_watcher_message(client, message):
                     try:
                         copy_res = await safe_send(app, owner_id, dest_id, None, True, app.copy_message, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
                     except Exception:
-                        copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_message, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        if owner_client:
+                            copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_message, chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread)
+                        else: copy_res = False
                     if copy_res: processed_successfully = True
 
             except FloodWait as e:
@@ -3771,9 +3748,6 @@ async def process_watcher_message(client, message):
             
         # Fallback to Download Mode
         owner_client = USER_CLIENTS.get(owner_id)
-        if not owner_client:
-            await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.failed": 1}})
-            continue
 
         try:
             log_chat_id, log_topic_id = parse_chat_topic(LOG_CHANNEL) if LOG_CHANNEL else (owner_id, None)
@@ -3919,6 +3893,9 @@ async def main():
     await cleanup_startup()
     asyncio.create_task(cleanup_watchdog())
     logger.info("🛡️ Auto-Cleanup Watchdog Started") 
+
+    # Attach the listener to the main bot so it functions without a User Session!
+    app.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
 
     await app.start()
     logger.info("🤖 Bot Started") 
