@@ -3448,15 +3448,15 @@ async def process_watcher_message(client, message):
 
     for watcher in watchers:
         owner_id = watcher["user_id"]
-        w_topic = watcher.get("source_thread")
+        watcher_db_id = watcher["_id"]
         
         # 1. Increment Detected
-        await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.detected": 1}})
+        await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.detected": 1}})
 
         allowed_types = watcher.get("allowed_types", ["Video", "Document"])
         if msg_type not in allowed_types:
             # 2. Increment Skipped (Filtered out)
-            await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.skipped": 1}})
+            await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
             continue
 
         delay = watcher.get("delay", 0)
@@ -3513,13 +3513,13 @@ async def process_watcher_message(client, message):
 
         if processed_successfully:
             # 3. Increment Success (Fast Forward)
-            await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.success": 1}})
+            await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.success": 1}})
             continue
             
         # Fallback to Download Mode
         owner_client = USER_CLIENTS.get(owner_id)
         if not owner_client:
-            await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.failed": 1}})
+            await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.failed": 1}})
             continue
 
         try:
@@ -3566,13 +3566,13 @@ async def process_watcher_message(client, message):
             
             # Map handle_private results directly to DB Stats
             if result == "SUCCESS" or result is True:
-                await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.success": 1}})
+                await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.success": 1}})
             elif result == "SKIPPED":
-                await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.skipped": 1}})
+                await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
             else:
-                await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.failed": 1}})
+                await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.failed": 1}})
 
-            cleanup_task_memory(owner_id, task_uuid) # Clean up so RAM stays clean!
+            cleanup_task_memory(owner_id, task_uuid)
 
             try:
                 await dummy_status.delete()
@@ -3581,8 +3581,8 @@ async def process_watcher_message(client, message):
 
         except Exception as e:
             logger.error(f"Watcher Fail for {owner_id}: {e}")
-            await db.db.watchers.update_one({"user_id": owner_id, "source_id": chat_id, "source_thread": w_topic}, {"$inc": {"stats.failed": 1}})
-        
+            await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.failed": 1}})
+
 async def user_watcher_handler(client, message):
     await process_watcher_message(client, message)
 
@@ -3753,7 +3753,11 @@ async def main():
 
     logger.info(f"🔥 Total Live Listeners: {len(USER_CLIENTS)}")
 
+    # Start both the Koyeb health check AND the Live Dashboard Updater
     asyncio.create_task(start_koyeb_health_check())
+    asyncio.create_task(watcher_dashboard_updater())
+    logger.info("📊 Live Watcher Dashboard Updater Started")
+    
     await idle()
     
     await app.stop()
