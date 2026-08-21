@@ -2032,11 +2032,13 @@ async def finalize_watcher_setup(client, message, data, delay):
     src_link = data["link"]
 
     user_session = await db.get_session(user_id)
-    api_id = await db.get_api_id(user_id)
-    api_hash = await db.get_api_hash(user_id)
+    
+    # --- FIXED: Intelligently fallback to your Render/Global variables! ---
+    api_id = await db.get_api_id(user_id) or API_ID
+    api_hash = await db.get_api_hash(user_id) or API_HASH
 
-    # --- NEW: Catch ALL missing credentials safely ---
-    if not user_session or not api_id or not api_hash:
+    # Now it ONLY rejects you if your actual login session is missing
+    if not user_session:
         error_msg = (
             "❌ **You are not logged in.**\n\n"
             "Watcher mode requires your account to 'listen' for new messages.\n"
