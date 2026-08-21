@@ -127,38 +127,53 @@ SUDOS = [int(x) for x in str(os.environ.get("SUDOS", "")).split(",") if x.strip(
 TASK_QUEUE = defaultdict(list) 
 io_executor = ThreadPoolExecutor(max_workers=min(16, (os.cpu_count() or 2) * 4))
 
-HELP_TXT = """<b>📚 BOT'S USAGE GUIDE</b>
+HELP_TXT = """<b>📚 ULTIMATE BOT USAGE GUIDE</b>
+
+Welcome! This bot helps you download restricted files and auto-forward messages. Here is everything you need to know:
 
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬
 <blockquote expandable>
-<b>🟢 1. SINGLE & BATCH DOWNLOADS</b>
-• Send a single link to process one post.
-• Send links in a "From - To" format to process multiple files at once.
-• Works for both Public and Private links.
-• <b>Examples:</b>
-  ├ <code>https://t.me/xxxx/1001</code>
-  └ <code>https://t.me/c/xxxx/101 - 120</code>
+<b>🟢 CORE COMMANDS</b>
+• <code>/start</code> - <b>Wake Up & Welcome:</b> Greets you and registers your account.
+• <code>/help</code> - <b>The Master Guide:</b> Opens this exact menu.
+• <code>/cancel</code> - <b>Stop Everything:</b> Cleanly cancels any active setup process or massive downloading task.
 
-<b>👀 2. LIVE WATCHERS (AUTO-FORWARDING)</b>
-• Automatically monitor a source and forward new messages to targets.
-• Supports routing to <b>Multiple Targets</b> simultaneously!
-• Features built-in <b>Content Filtering</b> (e.g., Only Videos & Docs).
-• <b>Setup:</b> Send <code>/watch https://t.me/channel/123</code>
-• <b>Manage:</b> Use <code>/watchers</code> to view and delete mappings.
+<b>📥 DOWNLOADING & FORWARDING</b>
+• <code>/dl</code> - <b>The Smart Downloader:</b> Manually downloads/copies media from a link. 
+  ├ Reply to any Telegram link with <code>/dl</code>
+  ├ Or type: <code>/dl https://t.me/channel/100</code>
+  └ <i>Batch DL:</i> <code>/dl https://t.me/channel/101 - 120</code>
 
-<b>🤖 3. BOT CHATS & RESTRICTED CONTENT</b>
-• Send the standard bot/user link and message ID.
-• <b>Formats:</b> 
-  ├ <code>https://t.me/botusername/4321</code>
-  └ <code>https://t.me/123456789/4321</code> (User/Bot ID)
-• Bypasses "Saving Restricted Content" limits automatically!
+<b>👀 LIVE AUTO-FORWARDER (WATCHERS)</b>
+• <code>/watch</code> - <b>Set It and Forget It:</b> Auto-monitor a source and forward NEW messages instantly to your chosen destination.
+  └ <i>Usage:</i> <code>/watch https://t.me/channel/123</code>
+• <code>/watchers</code> - <b>Your Active List:</b> Interactive menu showing all your live monitors.
+• <code>/unwatch</code> - <b>Turn Off a Watcher:</b> Instantly stops a specific monitor.
+  └ <i>Usage:</i> <code>/unwatch SOURCE_ID</code> (Use the ID it comes <i>from</i>).
 
-<b>🛠 4. USEFUL COMMANDS</b>
-• <code>/dl</code> - Reply to a link to process it.
-• <code>/watch</code> - Setup a new live auto-forwarder.
-• <code>/watchers</code> - View active watchers & filters.
-• <code>/unwatch</code> - Stop watching a source.
-• <code>/cancel</code> - Cancel ongoing tasks.
+<b>🔑 ACCOUNT & SESSION</b>
+• <code>/login</code> - <b>Link Your Account:</b> Securely connects your personal account so the bot can bypass "Saving Restricted" limits.
+• <code>/logout</code> - <b>Disconnect Safely:</b> Terminates your saved session and cleans up active watchers.
+</blockquote>
+▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬"""
+
+ADMIN_HELP_TXT = """<b>🛠️ ADMIN & SYSTEM COMMANDS</b>
+
+These commands are strictly reserved for Bot Admins and Sudo users.
+
+▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬
+<blockquote expandable>
+<b>🖥 SYSTEM HEALTH</b>
+• <code>/status</code> - <b>Health Check:</b> Quick dashboard of live RAM, CPU, free disk space, and active downloads.
+• <code>/sos</code> - <b>Deep Server Stats:</b> Detailed report of OS, uptime, storage breakdown, and monthly bandwidth.
+• <code>/botstats</code> - <b>User Tracker:</b> Displays total users, who is logged in, and live breakdown of their tasks.
+• <code>/log</code> - <b>Backend Logs:</b> Sends the live <code>bot.log</code> file to troubleshoot errors.
+
+<b>🧰 UTILITIES</b>
+• <code>/pixel</code> - <b>Pixeldrain Bypasser:</b> Converts Pixeldrain links into high-speed CDN direct-download links.
+  └ <i>Usage:</i> <code>/pixel https://pixeldrain.com/u/xxxx</code>
+• <code>/mediainfo</code> (or <code>/mi</code>) - <b>Technical Inspector:</b> Analyzes a media file (by link or reply) and publishes a Telegraph report of codecs, bitrates, etc.
+• <code>/broadcast</code> - <b>Mass Announcements:</b> Reply to a message with this to forward it to EVERY registered user.
 </blockquote>
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬"""
 
@@ -921,12 +936,27 @@ async def send_start(client: Client, message: Message):
 
 @app.on_message(filters.command(["help"]) & (filters.private | filters.group))
 async def send_help(client: Client, message: Message):
+    user_id = message.from_user.id
+    
+    # 1. The bot checks if the user is an Admin
+    is_admin = user_id in ADMINS or user_id in SUDOS
+
+    # 2. It sends the normal help guide to everyone
     await client.send_message(
         message.chat.id, 
         text=HELP_TXT,
         parse_mode=enums.ParseMode.HTML,
         disable_web_page_preview=True
     )
+    
+    # 3. IF the user is an admin, it sends this secret menu too!
+    if is_admin:
+        await client.send_message(
+            message.chat.id, 
+            text=ADMIN_HELP_TXT,  # <--- Here is where your text gets used!
+            parse_mode=enums.ParseMode.HTML,
+            disable_web_page_preview=True
+        )
 
 @app.on_message(filters.command(["cancel"]) & (filters.private | filters.group))
 async def send_cancel(client: Client, message: Message):
@@ -939,7 +969,11 @@ async def send_cancel(client: Client, message: Message):
 
     user_tasks = ACTIVE_PROCESSES.get(user_id, {})
     if not user_tasks:
-        await message.reply("✅ **No active tasks to cancel.**")
+        await message.reply(
+            "✅ **Nothing to cancel!**\n\n"
+            "You currently have no active downloads, setups, or background tasks running.\n\n"
+            "💡 **Tip:** If you want to start a new download, just send `/dl <link>`."
+        )
         return
 
     buttons = []
@@ -1011,9 +1045,11 @@ async def send_log_handler(client: Client, message: Message):
 async def pixel_bypass_handler(client: Client, message: Message):
     if len(message.command) < 2:
         return await message.reply(
-            "**Usage:**\n`/pixel https://pixeldrain.com/u/xxxx`\n\n"
-            "Or multiple comma-separated links:\n"
-            "`/pixel link1,link2,link3`"
+            "❌ **How to bypass Pixeldrain links:**\n\n"
+            "Send a valid Pixeldrain link to get a high-speed direct download link that bypasses limits.\n\n"
+            "**Examples:**\n"
+            "• Single Link: `/pixel https://pixeldrain.com/u/xxxx`\n"
+            "• Multiple Links: `/pixel link1, link2, link3`"
         )
 
     input_text = message.text.split(None, 1)[1]
@@ -1584,7 +1620,12 @@ async def broadcast(bot, message):
     users = await db.get_all_users()
     b_msg = message.reply_to_message
     if not b_msg:
-        return await message.reply_text("**Reply This Command To Your Broadcast Message**")
+        return await message.reply_text(
+            "❌ **How to Broadcast:**\n\n"
+            "1. Send the message you want to broadcast (text, photo, or video).\n"
+            "2. **Reply** to that specific message with `/broadcast`.\n\n"
+            "The bot will then copy that message and send it to every user in the database."
+        )
     sts = await message.reply_text(text='Broadcasting your messages...')
     start_time = time.time()
     total_users = await db.total_users_count()
@@ -1625,7 +1666,14 @@ async def broadcast(bot, message):
 async def watch_setup(client: Client, message: Message):
     user_id = message.from_user.id
     if len(message.command) < 2:
-        return await message.reply("**Usage:**\n`/watch https://t.me/channel/123`\n(Supports Topics too!)")
+        return await message.reply(
+            "❌ **How to set up a Watcher:**\n\n"
+            "This command tells the bot to monitor a channel/group and auto-forward new messages instantly.\n\n"
+            "**Examples:**\n"
+            "• Public Channel: `/watch https://t.me/channelname`\n"
+            "• Private Chat: `/watch https://t.me/c/1234567890/1`\n"
+            "• Specific Topic: `/watch https://t.me/channelname/5`"
+        )
     
     link_text = message.command[1]
     wait_msg = await message.reply("🔎 **Analyzing Source...**", quote=True)
@@ -1665,7 +1713,14 @@ async def watch_setup(client: Client, message: Message):
 @app.on_message(filters.command(["unwatch"]) & filters.private)
 async def unwatch_handler(client, message):
     if len(message.command) not in (2, 3):
-        return await message.reply("**Usage:** `/unwatch <SOURCE_ID>` or `/unwatch <SOURCE_ID> <TOPIC_ID>`\n\n⚠️ **Note:** Use the Source ID, not the Destination ID!")
+        return await message.reply(
+            "❌ **How to stop a Live Watcher:**\n\n"
+            "You need to provide the **Source ID** (the chat the bot is copying *from*).\n"
+            "*(You can easily find this ID by sending the `/watchers` command!)*\n\n"
+            "**Examples:**\n"
+            "• Stop a channel/group: `/unwatch -100123456789`\n"
+            "• Stop a specific topic: `/unwatch -100123456789 5`"
+        )
     try:
         source_id = int(message.command[1])
         source_thread = int(message.command[2]) if len(message.command) == 3 else None
@@ -1905,9 +1960,12 @@ async def dl_handler(client: Client, message: Message):
         
     if not link_text or "https://t.me/" not in link_text:
         await message.reply_text(
-            "**Usage:**\n"
-            "• Reply to a link with `/dl`\n"
-            "• Or send `/dl https://t.me/...`"
+            "❌ **How to use the Downloader:**\n\n"
+            "Use this command to download or forward files from any Telegram link.\n\n"
+            "**Examples:**\n"
+            "• Single File: `/dl https://t.me/channel/100`\n"
+            "• Batch Files: `/dl https://t.me/channel/101 - 120`\n"
+            "• Quick Reply: Just **reply** to any message containing a link with `/dl`"
         )
         return
 
@@ -3290,7 +3348,13 @@ async def mediainfo_handler(client: Client, message: Message):
             media_msg = replied
 
     if not url and not media_msg:
-        return await message.reply("❌ Usage: `/mediainfo <link>` or reply to a file/link.")
+        return await message.reply(
+            "❌ **How to use MediaInfo:**\n\n"
+            "This command analyzes a media file and gives you a technical breakdown (resolution, codec, bitrate, etc.) published to Telegraph.\n\n"
+            "**Examples:**\n"
+            "• Quick Reply: Reply to any video or document with `/mi`\n"
+            "• Direct Link: `/mi https://example.com/video.mp4`"
+        )
 
     status_msg = await message.reply(f"<i>Generating MediaInfo...</i>", parse_mode=enums.ParseMode.HTML)
     
