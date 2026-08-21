@@ -2032,7 +2032,7 @@ async def finalize_watcher_setup(client, message, data, delay):
                 workers=4,
                 ipv6=False
             )
-            new_client.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group))
+            new_client.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
             await new_client.start()
             USER_CLIENTS[user_id] = new_client
             await status_msg.delete()
@@ -2347,15 +2347,17 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 api_hash = await db.get_api_hash(user_id)
                 
                 acc = Client(
-                    f"TempUser_{user_id}_{task_uuid[:6]}", 
+                    f"User_{user_id}", 
                     session_string=user_data, 
                     api_hash=api_hash, 
                     api_id=api_id, 
-                    no_updates=True,
+                    no_updates=False, # Must be False for watchers
                     workers=4,
                     sleep_threshold=60,
                     ipv6=False
                 )
+                # Attach watcher handler to the temporary client too
+                acc.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
                 await acc.start()
                 USER_CLIENTS[user_id] = acc
                 is_temp_acc = True
@@ -2511,11 +2513,13 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 )
 
             if acc and is_temp_acc:
-                # ONLY stop the client if this is the very last active task for this user
                 if batch_temp.ACTIVE_TASKS.get(user_id, 0) <= 0:
-                    try: await acc.stop()
-                    except: pass
-                    USER_CLIENTS.pop(user_id, None)
+                    # ONLY stop if they also have ZERO active watchers in the database
+                    w_count = await db.db.watchers.count_documents({"user_id": user_id})
+                    if w_count == 0:
+                        try: await acc.stop()
+                        except: pass
+                        USER_CLIENTS.pop(user_id, None)
 
             duration = time.time() - start_time
             time_taken_str = get_readable_time(int(duration))
@@ -3272,27 +3276,35 @@ async def process_watcher_message(client, message):
                 await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
                 try:
                     copy_res = await app.copy_message(
-                        chat_id=dest_id,
-                        from_chat_id=chat_id,
-                        message_id=message.id,
-                        message_thread_id=dest_thread
+                        chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread
                     )
-                    if not copy_res: # FIX: Trigger user session fallback
-                        raise ValueError("Bot copy returned None")
+                    if not copy_res: raise ValueError("Bot copy returned None")
                     continue
+                except FloodWait as e:
+                    raise e # Pass up to outer block
                 except Exception:
                     owner_client = USER_CLIENTS.get(owner_id)
                     if owner_client:
-                        await owner_client.copy_message(
-                            chat_id=dest_id,
-                            from_chat_id=chat_id,
-                            message_id=message.id,
-                            message_thread_id=dest_thread
-                        )
-                        continue
+                        try:
+                            await owner_client.copy_message(
+                                chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread
+                            )
+                            continue
+                        except FloodWait as e:
+                            raise e # Pass up to outer block
             except FloodWait as e:
                 USER_FLOOD_LOCKS[owner_id].set_lock(e.value + 5)
                 await asyncio.sleep(e.value + 5)
+                # RETRY after sleeping! Don't skip the message!
+                owner_client = USER_CLIENTS.get(owner_id)
+                if owner_client:
+                    try:
+                        await owner_client.copy_message(
+                            chat_id=dest_id, from_chat_id=chat_id, message_id=message.id, message_thread_id=dest_thread
+                        )
+                        continue
+                    except Exception as err:
+                        logger.warning(f"Watcher fast copy retry failed for {message.id}: {err}")
             except Exception as e:
                 logger.warning(f"Watcher fast copy failed for {message.id}: {e}. Falling back to download mode.")
 
@@ -3434,7 +3446,7 @@ async def main():
                 no_updates=False 
             )
             
-            user_client.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group))
+            user_client.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
             
             await user_client.start()
             USER_CLIENTS[user_id] = user_client
