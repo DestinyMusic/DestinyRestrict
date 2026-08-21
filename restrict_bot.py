@@ -1925,7 +1925,7 @@ async def filter_start_cb(client, query):
         
     delay = task_data.get("delay", 3)
     if task_data.get("mode") == "WATCHER":
-        await finalize_watcher_setup(client, query.message, task_data, delay)
+        await finalize_watcher_setup(client, query.message, task_data, delay, user_id=user_id)
     else:
         await start_task_final(client, query.message, task_data, delay, user_id=user_id)
 
@@ -2027,17 +2027,16 @@ async def process_speed_input(client: Client, message: Message):
         PENDING_TASKS[user_id]["delay"] = delay
         await show_filter_menu(message, user_id)
 
-async def finalize_watcher_setup(client, message, data, delay):
-    user_id = message.from_user.id
+async def finalize_watcher_setup(client, message, data, delay, user_id=None):
+    if user_id is None:
+        user_id = message.from_user.id if message.from_user else message.chat.id
     src_link = data["link"]
 
     user_session = await db.get_session(user_id)
     
-    # --- FIXED: Intelligently fallback to your Render/Global variables! ---
     api_id = await db.get_api_id(user_id) or API_ID
     api_hash = await db.get_api_hash(user_id) or API_HASH
 
-    # Now it ONLY rejects you if your actual login session is missing
     if not user_session:
         error_msg = (
             "❌ **You are not logged in.**\n\n"
