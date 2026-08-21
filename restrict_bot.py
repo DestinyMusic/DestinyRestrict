@@ -1665,13 +1665,24 @@ async def watch_setup(client: Client, message: Message):
 @app.on_message(filters.command(["unwatch"]) & filters.private)
 async def unwatch_handler(client, message):
     if len(message.command) not in (2, 3):
-        return await message.reply("**Usage:** `/unwatch -100xxxx` or `/unwatch -100xxxx 5`")
+        return await message.reply("**Usage:** `/unwatch <SOURCE_ID>` or `/unwatch <SOURCE_ID> <TOPIC_ID>`\n\n⚠️ **Note:** Use the Source ID, not the Destination ID!")
     try:
         source_id = int(message.command[1])
         source_thread = int(message.command[2]) if len(message.command) == 3 else None
         user_id = message.from_user.id
 
-        if await db.remove_watcher(user_id, source_id, source_thread):
+        # Fetch the watcher BEFORE deleting it so we can grab the final stats
+        query = {"user_id": user_id, "source_id": source_id}
+        if source_thread is not None:
+            query["source_thread"] = source_thread
+        else:
+            query["$or"] = [{"source_thread": None}, {"source_thread": {"$exists": False}}]
+            
+        watcher = await db.db.watchers.find_one(query)
+
+        if watcher and await db.remove_watcher(user_id, source_id, source_thread):
+            
+            stats = watcher.get("stats", {})
             
             # Intercept and Cancel Active Downloads
             cancelled_tasks = 0
@@ -1681,13 +1692,20 @@ async def unwatch_handler(client, message):
                         CANCEL_FLAGS[tid] = True
                         cancelled_tasks += 1
 
-            msg = "✅ **Watcher Removed.**"
+            msg = (
+                f"🛑 **Watcher Stopped & Removed!**\n\n"
+                f"📊 **Final Session Statistics:**\n"
+                f"├ 📡 **Total Detected:** `{stats.get('detected', 0)}`\n"
+                f"├ ✅ **Successfully Processed:** `{stats.get('success', 0)}`\n"
+                f"├ ⏭ **Skipped (Filtered):** `{stats.get('skipped', 0)}`\n"
+                f"└ ❌ **Failed:** `{stats.get('failed', 0)}`"
+            )
             if cancelled_tasks > 0:
-                msg += f"\n🛑 Also cancelled `{cancelled_tasks}` ongoing downloads from this watcher."
+                msg += f"\n\n🛑 Also intercepted and cancelled `{cancelled_tasks}` ongoing downloads from this watcher."
             await message.reply(msg)
             
         else:
-            await message.reply("⚠️ Watcher not found.")
+            await message.reply("⚠️ **Watcher not found.**\nMake sure you are providing the **Source ID** (where messages come *from*), not the Destination ID!")
     except Exception as e:
         logger.error(f"Unwatch failed with input {message.command}: {e}", exc_info=True)
         await message.reply("❌ Invalid ID or Database Error.")
@@ -1731,6 +1749,17 @@ async def list_watchers(client, message):
 async def unwatch_callback(client, query):
     if query.data == "unwatch_all":
         user_id = query.from_user.id
+        
+        # Calculate combined stats before deleting
+        cursor = db.db.watchers.find({'user_id': int(user_id)})
+        t_det = t_suc = t_skip = t_fail = 0
+        async for w in cursor:
+            s = w.get("stats", {})
+            t_det += s.get("detected", 0)
+            t_suc += s.get("success", 0)
+            t_skip += s.get("skipped", 0)
+            t_fail += s.get("failed", 0)
+            
         result = await db.db.watchers.delete_many({'user_id': int(user_id)})
         
         # Intercept and Cancel ALL Active Watcher Downloads
@@ -1741,9 +1770,17 @@ async def unwatch_callback(client, query):
                     CANCEL_FLAGS[tid] = True
                     cancelled_tasks += 1
                     
-        msg = f"✅ **Success!**\n\n🗑 Removed `{result.deleted_count}` active watchers."
+        msg = (
+            f"🧨 **ALL Watchers Stopped & Removed!**\n"
+            f"🗑 Removed `{result.deleted_count}` active watchers.\n\n"
+            f"📊 **Combined Final Statistics:**\n"
+            f"├ 📡 **Total Detected:** `{t_det}`\n"
+            f"├ ✅ **Successfully Processed:** `{t_suc}`\n"
+            f"├ ⏭ **Skipped (Filtered):** `{t_skip}`\n"
+            f"└ ❌ **Failed:** `{t_fail}`"
+        )
         if cancelled_tasks > 0:
-            msg += f"\n🛑 Intercepted and Cancelled `{cancelled_tasks}` active watcher downloads."
+            msg += f"\n\n🛑 Intercepted and Cancelled `{cancelled_tasks}` active watcher downloads."
         await query.message.edit(msg)
         return
 
@@ -1755,20 +1792,23 @@ async def unwatch_callback(client, query):
     query_db = {"user_id": owner_id, "source_id": source_id}
     if topic_id == 0:
         query_db["$or"] = [
-            {"user_id": owner_id, "source_id": source_id, "source_thread": None},
-            {"user_id": owner_id, "source_id": source_id, "source_thread": {"$exists": False}},
+            {"source_thread": None},
+            {"source_thread": {"$exists": False}},
         ]
     else:
         query_db["source_thread"] = topic_id
 
+    # Fetch stats BEFORE deleting
     watcher = await db.db.watchers.find_one(query_db)
     
     src_name = str(source_id)
     dest_name = "Unknown"
+    stats = {}
     
     if watcher:
         src_name = watcher.get('source_title') or str(source_id)
         dest_name = watcher.get('dest_title') or str(watcher.get('dest_id'))
+        stats = watcher.get("stats", {})
 
     if topic_id == 0:
         await db.db.watchers.delete_many({
@@ -1795,9 +1835,14 @@ async def unwatch_callback(client, query):
                 cancelled_tasks += 1
 
     msg = (
-        f"🗑 **Active Watcher Task Removed**\n\n"
-        f"From: **{src_name}**\n"
-        f"To: **{dest_name}**"
+        f"🛑 **Watcher Stopped & Removed!**\n\n"
+        f"**From:** `{src_name}`\n"
+        f"**To:** `{dest_name}`\n\n"
+        f"📊 **Final Session Statistics:**\n"
+        f"├ 📡 **Total Detected:** `{stats.get('detected', 0)}`\n"
+        f"├ ✅ **Successfully Processed:** `{stats.get('success', 0)}`\n"
+        f"├ ⏭ **Skipped (Filtered):** `{stats.get('skipped', 0)}`\n"
+        f"└ ❌ **Failed:** `{stats.get('failed', 0)}`"
     )
     if cancelled_tasks > 0:
         msg += f"\n\n🛑 **Cancelled `{cancelled_tasks}` active ongoing downloads** originating from this watcher."
