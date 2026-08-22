@@ -728,9 +728,9 @@ async def check_link_restriction(user_id, link_text):
             if len(parts) > 1 and parts[-1].isdigit():
                 msg_id = int(parts[-1])
         else:
-            chat_id = parts[0]
-            if len(parts) > 1 and parts[-1].isdigit():
-                msg_id = int(parts[-1])
+            chat_id = parts[0].strip().replace("@", "")
+            if len(parts) > 1 and parts[-1].strip().isdigit():
+                msg_id = int(parts[-1].strip())
                 
             if str(chat_id).isdigit() or str(chat_id).lower().endswith("bot"):
                 is_private = True
@@ -768,6 +768,7 @@ async def check_link_restriction(user_id, link_text):
             
         # THE FIX: Dual-Fallback Resolver for Public Usernames!
         if isinstance(chat_id, str) and not chat_id.lstrip('-').isdigit():
+            chat_id = chat_id.strip().replace("@", "")
             try:
                 resolved_chat = await check_client.get_chat(chat_id)
                 chat_id = resolved_chat.id
@@ -785,9 +786,9 @@ async def check_link_restriction(user_id, link_text):
                             chat_id = resolved_chat.id
                             check_client = temp_fallback # Keep using User Session to fetch message
                             is_temp_client = True
-                        except Exception:
+                        except Exception as inner_e:
                             await temp_fallback.disconnect()
-                            raise e
+                            raise inner_e # Raise actual user session error
                     else:
                         raise e
                 # If User Session failed, try the Bot
@@ -796,8 +797,8 @@ async def check_link_restriction(user_id, link_text):
                         resolved_chat = await app.get_chat(chat_id)
                         chat_id = resolved_chat.id
                         check_client = app
-                    except Exception:
-                        raise e
+                    except Exception as inner_e:
+                        raise inner_e
             
         if msg_id:
             msg = await check_client.get_messages(chat_id, msg_id)
@@ -817,10 +818,13 @@ async def check_link_restriction(user_id, link_text):
                 status_msg = "🔓 **Channel is PUBLIC/UNRESTRICTED**"
             
     except Exception as e:
-        if "CHANNEL_PRIVATE" in str(e) or "USER_NOT_PARTICIPANT" in str(e):
+        err_str = str(e)
+        if "CHANNEL_PRIVATE" in err_str or "USER_NOT_PARTICIPANT" in err_str:
             status_msg = "⚠️ **Private Chat:** I can't check yet (You need to join first)."
+        elif "USERNAME_NOT_OCCUPIED" in err_str or "USERNAME_INVALID" in err_str:
+            return None, f"❌ **Could Not Resolve Link:** The bot is blocked from seeing this public channel (Telegram restrictions). \n\n💡 **FIX:** Please use `/login` to link your account, and I will resolve it using your session!"
         else:
-            status_msg = f"⚠️ **Check Failed:** `{str(e)[:30]}...`"
+            return None, f"❌ **Check Failed:** `{err_str[:50]}...`\nPlease ensure the link is active and valid."
     finally:
         if is_temp_client:
             try: await check_client.disconnect()
@@ -1853,14 +1857,16 @@ async def watch_setup(client: Client, message: Message):
     link_text = message.command[1]
     wait_msg = await message.reply("🔎 **Analyzing Source...**", quote=True)
     is_restricted, status_text = await check_link_restriction(user_id, link_text)
+    await wait_msg.delete()
+
+    if is_restricted is None:
+        return await message.reply(status_text, quote=True)
     
     source_thread_id = None
     clean_text = link_text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "").split("?")[0]
     parts = clean_text.strip("/").split("/")
     if len(parts) >= 3 and parts[1].isdigit():
          source_thread_id = int(parts[1])
-    
-    await wait_msg.delete()
     
     PENDING_TASKS[user_id] = {
         "mode": "WATCHER", 
@@ -2081,6 +2087,9 @@ async def save(client: Client, message: Message):
     is_restricted, status_text = await check_link_restriction(user_id, link_text)
     await wait_msg.delete()
 
+    if is_restricted is None:
+        return await message.reply(status_text, quote=True)
+
     PENDING_TASKS[user_id] = {
         "link": link_text, 
         "status": "waiting_choice",
@@ -2126,6 +2135,9 @@ async def dl_handler(client: Client, message: Message):
     wait_msg = await message.reply("🔎 **Analyzing Link...**", quote=True)
     is_restricted, status_text = await check_link_restriction(user_id, link_text)
     await wait_msg.delete()
+
+    if is_restricted is None:
+        return await message.reply(status_text, quote=True)
 
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
         PENDING_TASKS[user_id] = {
@@ -2626,7 +2638,8 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
     actual_chat_id = await resolve_to_id(client, acc, chatid)
 
     try:
-        msg = await acc.get_messages(actual_chat_id, msgid)
+        fetcher = acc if acc else client
+        msg = await fetcher.get_messages(actual_chat_id, msgid)
     except Exception as e:
         logger.error(f"Failed to fetch msg {msgid}: {e}")
         return "FAILED"
@@ -2982,17 +2995,20 @@ async def resolve_to_id(client, acc, chat_ref):
     """
     if not isinstance(chat_ref, str) or chat_ref.lstrip('-').isdigit():
         return int(chat_ref)
-        
+
+    chat_ref = chat_ref.strip().replace("@", "")
+
     try:
         chat = await client.get_chat(chat_ref)
         return chat.id
-    except Exception:
+    except Exception as e1:
         if acc:
             try:
                 chat = await acc.get_chat(chat_ref)
                 return chat.id
             except Exception as e2:
                 logger.error(f"Failed to resolve {chat_ref} via User Session: {e2}")
+                return chat_ref
         return chat_ref
 
 # ==============================================================================
