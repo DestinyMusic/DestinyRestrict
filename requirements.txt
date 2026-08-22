@@ -9,3 +9,4 @@ telegraph
 python-dotenv
 speedtest-cli
 pyromod
+uvloop
