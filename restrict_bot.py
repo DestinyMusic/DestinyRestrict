@@ -393,7 +393,8 @@ app = Client(
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=min(16, (os.cpu_count() or 2) * 4),                 
+    workers=min(32, (os.cpu_count() or 2) * 8), # Increased workers
+    max_concurrent_transmissions=10,            # <--- NATIVE PARALLEL CHUNKING
     sleep_threshold=20,
     ipv6=False                    
 )
@@ -2773,8 +2774,8 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                     api_hash=api_hash, 
                     api_id=api_id, 
                     no_updates=True,
-                    workers=min(32, (os.cpu_count() or 2) * 8),
-                    max_concurrent_transmissions=10,
+                    workers=8,                              # <--- Give it more async threads
+                    max_concurrent_transmissions=10,        # <--- NATIVE PARALLEL CHUNKING
                     sleep_threshold=60,
                     ipv6=False
                 )
