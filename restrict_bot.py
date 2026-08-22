@@ -724,10 +724,11 @@ async def check_link_restriction(user_id, link_text):
             
         elif "t.me/c/" in link_text:
             is_private = True
-            chat_id = int("-100" + parts[0])
-            if len(parts) > 1 and parts[-1].isdigit():
-                msg_id = int(parts[-1])
+            chat_id = int("-100" + parts[0].strip())
+            if len(parts) > 1 and parts[-1].strip().isdigit():
+                msg_id = int(parts[-1].strip())
         else:
+            # STRIP SPACES COMPLETELY SO TELEGRAM DOESN'T FREAK OUT
             chat_id = parts[0].strip().replace("@", "")
             if len(parts) > 1 and parts[-1].strip().isdigit():
                 msg_id = int(parts[-1].strip())
@@ -740,29 +741,24 @@ async def check_link_restriction(user_id, link_text):
     except Exception as e:
         return None, f"⚠️ **Could not analyze link.** Error: {e}"
 
-    # --- COMPLETELY OVERHAULED CLIENT SELECTION ---
     is_temp_client = False
     check_client = app 
     
-    # ALWAYS prioritize the User Session if they are logged in, even for public links!
-    existing_client = USER_CLIENTS.get(user_id)
-    user_session = await db.get_session(user_id)
-    
-    if existing_client and existing_client.is_connected:
-        check_client = existing_client
-        is_temp_client = False
-    elif user_session:
-        api_id = await db.get_api_id(user_id)
-        api_hash = await db.get_api_hash(user_id)
-        # Fallback to env API keys if DB is missing them
-        use_api_id = int(api_id) if api_id else API_ID
-        use_api_hash = api_hash if api_hash else API_HASH
-        
-        check_client = Client(":memory:", session_string=user_session, api_id=use_api_id, api_hash=use_api_hash, no_updates=True, ipv6=False)
-        is_temp_client = True
-    else:
-        check_client = app
-        is_temp_client = False
+    if is_private:
+        existing_client = USER_CLIENTS.get(user_id)
+        if existing_client and existing_client.is_connected:
+            check_client = existing_client
+            is_temp_client = False
+        else:
+            user_session = await db.get_session(user_id)
+            if user_session:
+                api_id = await db.get_api_id(user_id) or API_ID
+                api_hash = await db.get_api_hash(user_id) or API_HASH
+                check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+                is_temp_client = True
+            else:
+                check_client = app
+                is_temp_client = False
 
     is_restricted = False
     status_msg = ""
@@ -771,11 +767,36 @@ async def check_link_restriction(user_id, link_text):
         if is_temp_client:
             await check_client.connect()
             
-        # Clean the username and resolve to strict Integer ID
+        # THE DUAL-FALLBACK FIX: Bot tries first, User Session catches the failure
         if isinstance(chat_id, str) and not chat_id.lstrip('-').isdigit():
-            chat_id = chat_id.strip().replace("@", "")
-            resolved_chat = await check_client.get_chat(chat_id)
-            chat_id = resolved_chat.id
+            try:
+                # 1. ALWAYS TRY BOT FIRST
+                resolved_chat = await app.get_chat(chat_id)
+                chat_id = resolved_chat.id
+                
+                if is_temp_client:
+                    await check_client.disconnect()
+                    is_temp_client = False
+                check_client = app 
+                
+            except Exception as bot_err:
+                # 2. BOT FAILED. TRY USER SESSION FALLBACK
+                user_session = await db.get_session(user_id)
+                if user_session:
+                    if check_client == app:
+                        api_id = await db.get_api_id(user_id) or API_ID
+                        api_hash = await db.get_api_hash(user_id) or API_HASH
+                        check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+                        await check_client.connect()
+                        is_temp_client = True
+                    
+                    try:
+                        resolved_chat = await check_client.get_chat(chat_id)
+                        chat_id = resolved_chat.id
+                    except Exception as user_err:
+                        raise user_err # Raise the USER error, not the bot error!
+                else:
+                    raise bot_err # Not logged in, raise original Bot error.
             
         if msg_id:
             msg = await check_client.get_messages(chat_id, msg_id)
@@ -798,22 +819,20 @@ async def check_link_restriction(user_id, link_text):
         err_str = str(e)
         if "CHANNEL_PRIVATE" in err_str or "USER_NOT_PARTICIPANT" in err_str:
             status_msg = "⚠️ **Private Chat:** I can't check yet (You need to join first)."
-        elif "USERNAME_NOT_OCCUPIED" in err_str or "USERNAME_INVALID" in err_str:
+        elif "USERNAME_NOT_OCCUPIED" in err_str or "USERNAME_INVALID" in err_str or "PEER_ID_INVALID" in err_str:
             if check_client != app:
-                # If the USER SESSION throws this, the account itself is blocked.
-                return None, f"❌ **Telegram Blocked Access:** Even your logged-in account cannot see this channel! It may be banned for your region (copyright geo-block), or deleted."
+                return None, f"❌ **Telegram Blocked Access:** Even your logged-in account cannot see this channel! It may be banned for your region (Geo-blocked) or deleted."
             else:
-                # If the BOT throws this, prompt for login.
                 return None, f"❌ **Bot Blocked:** The bot cannot see this public channel due to Telegram restrictions. \n\n💡 **FIX:** Please use `/login` to link your account, and I will resolve it using your session!"
         elif "AuthKeyUnregistered" in err_str or "SessionRevoked" in err_str:
-            return None, f"❌ **Session Expired:** Your login session is invalid or was terminated. Please run `/logout` and then `/login` again."
+            return None, f"❌ **Session Expired:** Your login session is invalid. Please run `/logout` and then `/login` again."
         else:
             return None, f"❌ **Check Failed:** `{err_str[:50]}...`\nPlease ensure the link is active and valid."
     finally:
         if is_temp_client:
             try: await check_client.disconnect()
             except: pass
-            
+        
     return is_restricted, status_msg
 
 async def split_file_python(file_path, chunk_size=2000*1024*1024):
@@ -2622,6 +2641,7 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
     actual_chat_id = await resolve_to_id(client, acc, chatid)
 
     try:
+        # Prevent crash: Use user session if available, otherwise Bot
         fetcher = acc if acc else client
         msg = await fetcher.get_messages(actual_chat_id, msgid)
     except Exception as e:
@@ -2667,7 +2687,7 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
         try:
             # Bot copies using resolved Integer ID
             copy_res = await client.copy_message(chat_id=dest_chat_id, from_chat_id=actual_chat_id, message_id=msgid, message_thread_id=dest_thread_id)
-            if not copy_res: # FIX: Force Exception if Pyrogram returns None
+            if not copy_res: 
                 raise ValueError("Bot copy returned None (Bot lacks direct access)")
             return "SUCCESS"
         except Exception as e1:
@@ -2972,6 +2992,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
 # ==============================================================================
 # --- 1. UTILITY: ID RESOLVER ---
 # ==============================================================================
+
 async def resolve_to_id(client, acc, chat_ref):
     """
     Resolves public string usernames to strict integer IDs.
@@ -2983,15 +3004,17 @@ async def resolve_to_id(client, acc, chat_ref):
     chat_ref = chat_ref.strip().replace("@", "")
 
     try:
+        # 1. Try Bot first
         chat = await client.get_chat(chat_ref)
         return chat.id
-    except Exception as e1:
+    except Exception as bot_err:
+        # 2. Fallback to User Session
         if acc:
             try:
                 chat = await acc.get_chat(chat_ref)
                 return chat.id
-            except Exception as e2:
-                logger.error(f"Failed to resolve {chat_ref} via User Session: {e2}")
+            except Exception as user_err:
+                logger.error(f"Failed to resolve {chat_ref} via User Session: {user_err}")
                 return chat_ref
         return chat_ref
 
