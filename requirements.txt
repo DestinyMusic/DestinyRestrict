@@ -8,3 +8,4 @@ uvloop
 telegraph
 python-dotenv
 speedtest-cli
+pyromod
