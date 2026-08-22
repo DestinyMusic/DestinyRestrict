@@ -2762,25 +2762,21 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             is_temp_acc = False
             
             if user_data:
-                acc = USER_CLIENTS.get(user_id)
-                if not acc or not acc.is_connected:
-                    api_id = await db.get_api_id(user_id)
-                    api_hash = await db.get_api_hash(user_id)
-                    
-                    acc = Client(
-                        f"User_{user_id}", 
-                        session_string=user_data, 
-                        api_hash=api_hash, 
-                        api_id=api_id, 
-                        no_updates=False,
-                        workers=4,
-                        sleep_threshold=60,
-                        ipv6=False
-                    )
-                    acc.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
-                    await acc.start()
-                    USER_CLIENTS[user_id] = acc
-                    is_temp_acc = True
+                api_id = await db.get_api_id(user_id) or API_ID
+                api_hash = await db.get_api_hash(user_id) or API_HASH
+                
+                acc = Client(
+                    ":memory:", 
+                    session_string=user_data, 
+                    api_hash=api_hash, 
+                    api_id=api_id, 
+                    no_updates=True,
+                    workers=4,
+                    sleep_threshold=60,
+                    ipv6=False
+                )
+                await acc.start()
+                is_temp_acc = True
             
             try:
                 source_ref = parsed_source.get("chat_id")
@@ -2958,13 +2954,8 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 )
 
             if acc and is_temp_acc:
-                if batch_temp.ACTIVE_TASKS.get(user_id, 0) <= 0:
-                    # ONLY stop if they also have ZERO active watchers in the database
-                    w_count = await db.db.watchers.count_documents({"user_id": user_id})
-                    if w_count == 0:
-                        try: await acc.stop()
-                        except: pass
-                        USER_CLIENTS.pop(user_id, None)
+                try: await acc.stop()
+                except: pass
 
             duration = time.time() - start_time
             time_taken_str = get_readable_time(int(duration))
