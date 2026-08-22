@@ -766,6 +766,39 @@ async def check_link_restriction(user_id, link_text):
         if is_temp_client:
             await check_client.connect()
             
+        # THE FIX: Dual-Fallback Resolver for Public Usernames!
+        if isinstance(chat_id, str) and not chat_id.lstrip('-').isdigit():
+            try:
+                resolved_chat = await check_client.get_chat(chat_id)
+                chat_id = resolved_chat.id
+            except Exception as e:
+                # If the Bot failed, try the User Session
+                if check_client == app:
+                    user_session = await db.get_session(user_id)
+                    if user_session:
+                        api_id = await db.get_api_id(user_id)
+                        api_hash = await db.get_api_hash(user_id)
+                        temp_fallback = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+                        await temp_fallback.connect()
+                        try:
+                            resolved_chat = await temp_fallback.get_chat(chat_id)
+                            chat_id = resolved_chat.id
+                            check_client = temp_fallback # Keep using User Session to fetch message
+                            is_temp_client = True
+                        except Exception:
+                            await temp_fallback.disconnect()
+                            raise e
+                    else:
+                        raise e
+                # If User Session failed, try the Bot
+                else:
+                    try:
+                        resolved_chat = await app.get_chat(chat_id)
+                        chat_id = resolved_chat.id
+                        check_client = app
+                    except Exception:
+                        raise e
+            
         if msg_id:
             msg = await check_client.get_messages(chat_id, msg_id)
             if getattr(msg.chat, "has_protected_content", False) or getattr(msg, "has_protected_content", False):
@@ -2395,7 +2428,13 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
             source_title = chat.title or str(source_id)
 
         elif parsed["kind"] == "public":
-            chat = await user_client.get_chat(parsed["join_target"])
+            try:
+                # Try Bot first
+                chat = await app.get_chat(parsed["join_target"])
+            except Exception:
+                # Fallback to User Session
+                chat = await user_client.get_chat(parsed["join_target"])
+                
             source_id = chat.id
             source_title = chat.title or str(source_id)
             try: await user_client.join_chat(parsed["join_target"])
@@ -2584,7 +2623,7 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
     """Isolated function ONLY for Public Unrestricted links. Returns SUCCESS, SKIPPED, or FAILED."""
     
     # 1. Force resolve the string username to a strict Integer ID first!
-    actual_chat_id = await resolve_to_id(acc, chatid)
+    actual_chat_id = await resolve_to_id(client, acc, chatid)
 
     try:
         msg = await acc.get_messages(actual_chat_id, msgid)
@@ -2725,13 +2764,20 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                     USER_CLIENTS[user_id] = acc
                     is_temp_acc = True
             
-            fetcher_client = acc if acc else client
             try:
                 source_ref = parsed_source.get("chat_id")
                 if source_ref is None:
                     return await message.reply("❌ Could not resolve source chat.")
 
-                source_chat = await fetcher_client.get_chat(source_ref)
+                # Dual-Fallback Resolver for the Main Task
+                try:
+                    source_chat = await client.get_chat(source_ref)
+                except Exception:
+                    if acc:
+                        source_chat = await acc.get_chat(source_ref)
+                    else:
+                        raise
+                        
                 source_title = source_chat.title or source_chat.first_name or "Source Chat"
                 
                 # --- NEW CRITICAL FIX: CACHE INTEGER ID & TYPE ---
@@ -2929,18 +2975,24 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
 # ==============================================================================
 # --- 1. UTILITY: ID RESOLVER ---
 # ==============================================================================
-async def resolve_to_id(client, chat_ref):
+async def resolve_to_id(client, acc, chat_ref):
     """
-    Resolves public string usernames (e.g., 'MundoLossless') to strict integer 
-    IDs so Pyrogram can access them flawlessly like private channels.
+    Resolves public string usernames to strict integer IDs.
+    Tries Bot first, falls back to User Session.
     """
-    try:
-        if isinstance(chat_ref, str) and not chat_ref.lstrip('-').isdigit():
-            chat = await client.get_chat(chat_ref)
-            return chat.id
+    if not isinstance(chat_ref, str) or chat_ref.lstrip('-').isdigit():
         return int(chat_ref)
-    except Exception as e:
-        logger.error(f"Failed to resolve {chat_ref}: {e}")
+        
+    try:
+        chat = await client.get_chat(chat_ref)
+        return chat.id
+    except Exception:
+        if acc:
+            try:
+                chat = await acc.get_chat(chat_ref)
+                return chat.id
+            except Exception as e2:
+                logger.error(f"Failed to resolve {chat_ref} via User Session: {e2}")
         return chat_ref
 
 # ==============================================================================
@@ -2977,7 +3029,7 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
     fetcher = acc if acc else client
     
     # 1. Force resolve public links to internal IDs (Fixes the MundoLossless bug)
-    actual_chat_id = await resolve_to_id(fetcher, chatid)
+    actual_chat_id = await resolve_to_id(client, acc, chatid)
 
     # 2. Determine link type
     is_public = isinstance(chatid, str) and not chatid.lstrip('-').isdigit()
