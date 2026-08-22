@@ -2,6 +2,8 @@
 import os
 import psutil
 import time
+import uvloop
+uvloop.install()
 import asyncio
 import re
 import shutil
@@ -2771,7 +2773,8 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                     api_hash=api_hash, 
                     api_id=api_id, 
                     no_updates=True,
-                    workers=4,
+                    workers=min(32, (os.cpu_count() or 2) * 8),
+                    max_concurrent_transmissions=10,
                     sleep_threshold=60,
                     ipv6=False
                 )
