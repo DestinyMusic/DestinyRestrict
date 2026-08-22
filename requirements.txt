@@ -1,4 +1,4 @@
-wzgram
+kurigram==2.2.25
 tgcrypto
 motor
 aiohttp
