@@ -446,6 +446,7 @@ WATCHER_MEDIA_GROUPS = {}              # ALBUM WATCHER TRACKER
 SERVER_UPLOAD_LIMIT = asyncio.Semaphore(int(os.environ.get("SERVER_UPLOAD_LIMIT", 30))) 
 USER_SEMAPHORE_LIMIT = 3 
 USER_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(USER_SEMAPHORE_LIMIT))
+USER_DOWNLOAD_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(1))
 
 from collections import defaultdict
 
@@ -715,95 +716,81 @@ async def check_link_restriction(user_id, link_text):
     msg_id = None
 
     try:
-        if "t.me/b/" in link_text or re.search(r"t\.me/[a-zA-Z0-9_]+bot/", link_text, re.IGNORECASE):
+        # 1. Handle Bot DMs cleanly (Routes to User Session)
+        if "t.me/b/" in link_text or str(parts[0]).lower().endswith("bot"):
             is_private = True
             if "t.me/b/" in link_text:
                 chat_id = parts[1] if len(parts) > 1 else parts[0]
             else:
                 chat_id = parts[0]
             
-            if len(parts) > 1 and parts[-1].isdigit():
-                msg_id = int(parts[-1])
-            return False, "🤖 **Bot/User DM Link:** Will route through User Session."
-            
+            chat_id = chat_id.strip().replace("@", "")
+            if len(parts) > 1 and parts[-1].strip().isdigit():
+                msg_id = int(parts[-1].strip())
+
+        # 2. Handle Private Channels/Groups
         elif "t.me/c/" in link_text:
             is_private = True
             chat_id = int("-100" + parts[0].strip())
             if len(parts) > 1 and parts[-1].strip().isdigit():
                 msg_id = int(parts[-1].strip())
+                
+        # 3. Handle Public Channels/Groups
         else:
-            # STRIP SPACES COMPLETELY SO TELEGRAM DOESN'T FREAK OUT
             chat_id = parts[0].strip().replace("@", "")
             if len(parts) > 1 and parts[-1].strip().isdigit():
                 msg_id = int(parts[-1].strip())
-                
-            if str(chat_id).isdigit() or str(chat_id).lower().endswith("bot"):
+            
+            if str(chat_id).isdigit():
                 is_private = True
-                if str(chat_id).isdigit():
-                    chat_id = int(chat_id)
+                chat_id = int(chat_id)
             
     except Exception as e:
         return None, f"⚠️ **Could not analyze link.** Error: {e}"
 
     is_temp_client = False
     check_client = app 
+    user_session = await db.get_session(user_id)
     
     if is_private:
         existing_client = USER_CLIENTS.get(user_id)
         if existing_client and existing_client.is_connected:
             check_client = existing_client
-            is_temp_client = False
-        else:
-            user_session = await db.get_session(user_id)
-            if user_session:
-                api_id = await db.get_api_id(user_id) or API_ID
-                api_hash = await db.get_api_hash(user_id) or API_HASH
-                check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
-                is_temp_client = True
-            else:
-                check_client = app
-                is_temp_client = False
-
+        elif user_session:
+            api_id = await db.get_api_id(user_id) or API_ID
+            api_hash = await db.get_api_hash(user_id) or API_HASH
+            check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+            is_temp_client = True
+    
     is_restricted = False
     status_msg = ""
-    
+
     try:
         if is_temp_client:
             await check_client.connect()
-            
-        # THE DUAL-FALLBACK FIX: Bot tries first, User Session catches the failure
-        if isinstance(chat_id, str) and not chat_id.lstrip('-').isdigit():
-            try:
-                # 1. ALWAYS TRY BOT FIRST
-                resolved_chat = await app.get_chat(chat_id)
-                chat_id = resolved_chat.id
-                
-                if is_temp_client:
-                    await check_client.disconnect()
-                    is_temp_client = False
-                check_client = app 
-                
-            except Exception as bot_err:
-                # 2. BOT FAILED. TRY USER SESSION FALLBACK
-                user_session = await db.get_session(user_id)
-                if user_session:
-                    if check_client == app:
-                        api_id = await db.get_api_id(user_id) or API_ID
-                        api_hash = await db.get_api_hash(user_id) or API_HASH
-                        check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
-                        await check_client.connect()
-                        is_temp_client = True
-                    
-                    try:
-                        resolved_chat = await check_client.get_chat(chat_id)
-                        chat_id = resolved_chat.id
-                    except Exception as user_err:
-                        raise user_err # Raise the USER error, not the bot error!
-                else:
-                    raise bot_err # Not logged in, raise original Bot error.
-            
+
+        # PYROGRAM NATIVE MAGIC: Feed the string chat_id directly.
+        # It handles public usernames and bots without joining!
         if msg_id:
-            msg = await check_client.get_messages(chat_id, msg_id)
+            try:
+                msg = await check_client.get_messages(chat_id, msg_id)
+            except Exception as bot_err:
+                if check_client == app and user_session:
+                    api_id = await db.get_api_id(user_id) or API_ID
+                    api_hash = await db.get_api_hash(user_id) or API_HASH
+                    check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+                    await check_client.connect()
+                    is_temp_client = True
+                    try:
+                        msg = await check_client.get_messages(chat_id, msg_id)
+                    except Exception as user_err:
+                        raise user_err
+                else:
+                    raise bot_err
+
+            if not msg or msg.empty:
+                raise Exception("Message not found or inaccessible.")
+
             if getattr(msg.chat, "has_protected_content", False) or getattr(msg, "has_protected_content", False):
                 is_restricted = True
                 status_msg = "🔒 **Source is RESTRICTED** (Will use Download Mode)"
@@ -811,23 +798,38 @@ async def check_link_restriction(user_id, link_text):
                 is_restricted = False
                 status_msg = "🔓 **Source is PUBLIC/UNRESTRICTED** (Will use Fast Forward)"
         else:
-            chat = await check_client.get_chat(chat_id)
+            try:
+                chat = await check_client.get_chat(chat_id)
+            except Exception as bot_err:
+                if check_client == app and user_session:
+                    api_id = await db.get_api_id(user_id) or API_ID
+                    api_hash = await db.get_api_hash(user_id) or API_HASH
+                    check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+                    await check_client.connect()
+                    is_temp_client = True
+                    try:
+                        chat = await check_client.get_chat(chat_id)
+                    except Exception as user_err:
+                        raise user_err
+                else:
+                    raise bot_err
+
             if getattr(chat, "has_protected_content", False):
                 is_restricted = True
                 status_msg = "🔒 **Channel is RESTRICTED** (Will use Download Mode)"
             else:
                 is_restricted = False
                 status_msg = "🔓 **Channel is PUBLIC/UNRESTRICTED**"
-            
+
     except Exception as e:
         err_str = str(e)
         if "CHANNEL_PRIVATE" in err_str or "USER_NOT_PARTICIPANT" in err_str:
             status_msg = "⚠️ **Private Chat:** I can't check yet (You need to join first)."
         elif "USERNAME_NOT_OCCUPIED" in err_str or "USERNAME_INVALID" in err_str or "PEER_ID_INVALID" in err_str:
             if check_client != app:
-                return None, f"❌ **Telegram Blocked Access:** Even your logged-in account cannot see this channel! It may be banned for your region (Geo-blocked) or deleted."
+                return None, f"❌ **Telegram Blocked Access:** Even your logged account cannot see this! It may be geo-blocked or deleted."
             else:
-                return None, f"❌ **Bot Blocked:** The bot cannot see this public channel due to Telegram restrictions. \n\n💡 **FIX:** Please use `/login` to link your account, and I will resolve it using your session!"
+                return None, f"❌ **Bot Blocked:** The bot cannot see this public channel. \n\n💡 **FIX:** Please use `/login` to link your account, and I will resolve it using your session!"
         elif "AuthKeyUnregistered" in err_str or "SessionRevoked" in err_str:
             return None, f"❌ **Session Expired:** Your login session is invalid. Please run `/logout` and then `/login` again."
         else:
@@ -2640,14 +2642,11 @@ async def start_task_final(client: Client, message_context: Message, task_data: 
 
 async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: int, dest_chat_id, dest_thread_id, user_id, task_uuid, filter_thread_id, allowed_types):
     """Isolated function ONLY for Public Unrestricted links. Returns SUCCESS, SKIPPED, or FAILED."""
-    
-    # 1. Force resolve the string username to a strict Integer ID first!
-    actual_chat_id = await resolve_to_id(client, acc, chatid)
 
     try:
-        # Prevent crash: Use user session if available, otherwise Bot
+        # Uses native string resolution directly!
         fetcher = acc if acc else client
-        msg = await fetcher.get_messages(actual_chat_id, msgid)
+        msg = await fetcher.get_messages(chatid, msgid)
     except Exception as e:
         logger.error(f"Failed to fetch msg {msgid}: {e}")
         return "FAILED"
@@ -2689,8 +2688,8 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
     try:
         await USER_FLOOD_LOCKS[user_id].wait_if_locked()
         try:
-            # Bot copies using resolved Integer ID
-            copy_res = await client.copy_message(chat_id=dest_chat_id, from_chat_id=actual_chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            # Bot copies using raw chatid
+            copy_res = await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
             if not copy_res: 
                 raise ValueError("Bot copy returned None (Bot lacks direct access)")
             return "SUCCESS"
@@ -2698,7 +2697,7 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
             logger.warning(f"Bot copy failed for {msgid}: {e1}. Falling back to User Session...")
             # Fallback to User Session copying
             try:
-                owner_copy = await acc.copy_message(chat_id=dest_chat_id, from_chat_id=actual_chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+                owner_copy = await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
                 return "SUCCESS" if owner_copy else "FAILED"
             except Exception as e2:
                 logger.error(f"User Session copy also failed for {msgid}: {e2}")
@@ -2707,7 +2706,7 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
         USER_FLOOD_LOCKS[user_id].set_lock(e.value + 5)
         await asyncio.sleep(e.value + 5)
         try:
-            owner_copy = await acc.copy_message(chat_id=dest_chat_id, from_chat_id=actual_chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            owner_copy = await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
             return "SUCCESS" if owner_copy else "FAILED"
         except Exception as e3:
             logger.error(f"FloodWait recovery copy failed for {msgid}: {e3}")
@@ -2787,21 +2786,22 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 if source_ref is None:
                     return await message.reply("❌ Could not resolve source chat.")
 
-                # Dual-Fallback Resolver for the Main Task
-                try:
-                    source_chat = await client.get_chat(source_ref)
-                except Exception:
-                    if acc:
-                        source_chat = await acc.get_chat(source_ref)
-                    else:
-                        raise
-                        
-                source_title = source_chat.title or source_chat.first_name or "Source Chat"
-                
-                # --- NEW CRITICAL FIX: CACHE INTEGER ID & TYPE ---
-                ACTUAL_CHAT_ID = source_chat.id
-                IS_PUBLIC_LINK = isinstance(source_ref, str) and not str(source_ref).lstrip('-').isdigit()
-                # -------------------------------------------------
+                # Directly process public strings without forcing get_chat
+                if isinstance(source_ref, str) and not source_ref.lstrip('-').isdigit():
+                    ACTUAL_CHAT_ID = source_ref
+                    IS_PUBLIC_LINK = True
+                    source_title = source_ref
+                else:
+                    try:
+                        source_chat = await client.get_chat(source_ref)
+                    except Exception:
+                        if acc:
+                            source_chat = await acc.get_chat(source_ref)
+                        else:
+                            raise
+                    source_title = source_chat.title or source_chat.first_name or "Source Chat"
+                    ACTUAL_CHAT_ID = source_chat.id
+                    IS_PUBLIC_LINK = False
                 
             except Exception as e: 
                 if not acc:
@@ -2986,35 +2986,6 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             except: pass
 
 # ==============================================================================
-# --- 1. UTILITY: ID RESOLVER ---
-# ==============================================================================
-
-async def resolve_to_id(client, acc, chat_ref):
-    """
-    Resolves public string usernames to strict integer IDs.
-    Tries Bot first, falls back to User Session.
-    """
-    if not isinstance(chat_ref, str) or chat_ref.lstrip('-').isdigit():
-        return int(chat_ref)
-
-    chat_ref = chat_ref.strip().replace("@", "")
-
-    try:
-        # 1. Try Bot first
-        chat = await client.get_chat(chat_ref)
-        return chat.id
-    except Exception as bot_err:
-        # 2. Fallback to User Session
-        if acc:
-            try:
-                chat = await acc.get_chat(chat_ref)
-                return chat.id
-            except Exception as user_err:
-                logger.error(f"Failed to resolve {chat_ref} via User Session: {user_err}")
-                return chat_ref
-        return chat_ref
-
-# ==============================================================================
 # --- 2. MESSAGE FETCHER & VALIDATOR ---
 # ==============================================================================
 async def _fetch_and_validate_msg(client, acc, chatid, msgid, user_id, filter_thread_id, allowed_types, task_uuid):
@@ -3044,20 +3015,18 @@ async def _fetch_and_validate_msg(client, acc, chatid, msgid, user_id, filter_th
 # ==============================================================================
 # --- 3. THE ROUTER (Replaces handle_private) ---
 # ==============================================================================
+
 async def handle_private(client: Client, acc, message: Message, chatid, msgid: int, index: int, total_count: int, status_message: Message, dest_chat_id, dest_thread_id, delay, user_id, task_uuid=None, is_restricted=False, header_text="", filter_thread_id=None, allowed_types=None):
     fetcher = acc if acc else client
-    
-    # 1. Force resolve public links to internal IDs (Fixes the MundoLossless bug)
-    actual_chat_id = await resolve_to_id(client, acc, chatid)
 
-    # 2. Determine link type
+    # 1. Determine link type
     is_public = isinstance(chatid, str) and not chatid.lstrip('-').isdigit()
     is_live_watch = (delay == 0 and status_message and "Watcher" in getattr(status_message, "text", ""))
 
-    # 3. Pre-fetch and validate message
-    msg, msg_type = await _fetch_and_validate_msg(client, acc, actual_chat_id, msgid, user_id, filter_thread_id, allowed_types, task_uuid)
+    # 2. Pre-fetch and validate message natively
+    msg, msg_type = await _fetch_and_validate_msg(client, acc, chatid, msgid, user_id, filter_thread_id, allowed_types, task_uuid)
     if not msg:
-        return "SKIPPED" # <--- Tell the main loop to mark it as Skipped!
+        return "SKIPPED" 
 
     kwargs = {
         "msg": msg, "msg_type": msg_type, "index": index, "total_count": total_count, 
@@ -3065,23 +3034,23 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
         "delay": delay, "user_id": user_id, "task_uuid": task_uuid, "header_text": header_text
     }
 
-    # 4. Route the task
+    # 3. Route the task
     is_content_protected = is_restricted or getattr(msg, "has_protected_content", False) or getattr(msg.chat, "has_protected_content", False)
     
     if not is_content_protected:
         if is_live_watch:
-            return await handle_unrestricted_live(client, acc, actual_chat_id, msgid, **kwargs)
+            return await handle_unrestricted_live(client, acc, chatid, msgid, **kwargs)
         elif is_public:
-            return await handle_unrestricted_public(client, acc, actual_chat_id, msgid, **kwargs)
+            return await handle_unrestricted_public(client, acc, chatid, msgid, **kwargs)
         else:
-            return await handle_unrestricted_private(client, acc, actual_chat_id, msgid, **kwargs)
+            return await handle_unrestricted_private(client, acc, chatid, msgid, **kwargs)
     else:
         if is_live_watch:
-            return await handle_restricted_live(client, acc, actual_chat_id, msgid, **kwargs)
+            return await handle_restricted_live(client, acc, chatid, msgid, **kwargs)
         elif is_public:
-            return await handle_restricted_public(client, acc, actual_chat_id, msgid, **kwargs)
+            return await handle_restricted_public(client, acc, chatid, msgid, **kwargs)
         else:
-            return await handle_restricted_private(client, acc, actual_chat_id, msgid, **kwargs)
+            return await handle_restricted_private(client, acc, chatid, msgid, **kwargs)
 
 # ==============================================================================
 # --- 🟢 UNRESTRICTED ROUTES (WITH ALBUM SUPPORT) ---
@@ -3301,8 +3270,9 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
 
                 if file_size > split_limit:
                     if is_premium and LOG_CHANNEL and acc:
-                        if status_message: await status_message.edit_text(f"🚀 **Large File Detected ({_pretty_bytes(file_size)})**\nDownloading for Premium Bypass...")
-                        file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
+                        if status_message: await status_message.edit_text(f"🚀 **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
+                        async with USER_DOWNLOAD_SEMAPHORES[user_id]:
+                            file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
                         if down_task and not down_task.done(): down_task.cancel()
                         
                         if status_message: await status_message.edit_text(f"☁️ **Uploading to Log Server (Premium Bypass)...**")
@@ -3337,7 +3307,9 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                             except Exception: pass
                         return True
                     else:
-                        file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
+                        if status_message: await status_message.edit_text(f"✂️ **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
+                        async with USER_DOWNLOAD_SEMAPHORES[user_id]:
+                            file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
                         if down_task and not down_task.done(): down_task.cancel()
                         
                         if status_message: await status_message.edit_text(f"✂️ **Splitting large file ({_pretty_bytes(file_size)})...**")
@@ -3377,10 +3349,12 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                     return True 
                 else:
                     try:
-                        file_path = await asyncio.wait_for(
-                            fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid]),
-                            timeout=1200
-                        )
+                        if status_message: await status_message.edit_text(f"⏳ **Queued...**\nWaiting for active download to finish...")
+                        async with USER_DOWNLOAD_SEMAPHORES[user_id]:
+                            file_path = await asyncio.wait_for(
+                                fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid]),
+                                timeout=1200
+                            )
                     except asyncio.TimeoutError:
                         return False
                 
