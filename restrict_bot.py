@@ -149,15 +149,23 @@ Welcome! This bot helps you download restricted files and auto-forward messages.
   ├ Or type: <code>/dl https://t.me/channel/100</code>
   └ <i>Batch DL:</i> <code>/dl https://t.me/channel/101 - 120</code>
 
+<b>🤖 DOWNLOADING FROM BOTS OR USER PMs</b>
+To extract restricted files sent to you by other Bots or Users in Direct Messages:
+1. Open the PM in Plus Messenger (or similar app) to get the Message ID.
+2. Format the link using their username (without the @) and the message ID.
+  ├ <b>Bot Example:</b> <code>/dl https://t.me/SaveRestrictedBot/150</code>
+  └ <b>User Example:</b> <code>/dl https://t.me/JohnDoe/45</code>
+
 <b>👀 LIVE AUTO-FORWARDER (WATCHERS)</b>
 • <code>/watch</code> - <b>Set It and Forget It:</b> Auto-monitor a source and forward NEW messages instantly to your chosen destination.
-  └ <i>Usage:</i> <code>/watch https://t.me/channel/123</code>
+  ├ <i>Channel:</i> <code>/watch https://t.me/channel/123</code>
+  └ <i>Bot PM:</i> <code>/watch https://t.me/AnyBotUsername/123</code>
 • <code>/watchers</code> - <b>Your Active List:</b> Interactive menu showing all your live monitors.
 • <code>/unwatch</code> - <b>Turn Off a Watcher:</b> Instantly stops a specific monitor.
   └ <i>Usage:</i> <code>/unwatch SOURCE_ID</code> (Use the ID it comes <i>from</i>).
 
 <b>🔑 ACCOUNT & SESSION</b>
-• <code>/login</code> - <b>Link Your Account:</b> Securely connects your personal account so the bot can bypass "Saving Restricted" limits.
+• <code>/login</code> - <b>Link Your Account:</b> Securely connects your personal account session so the bot can bypass "Saving Restricted" limits and read your PMs.
 • <code>/logout</code> - <b>Disconnect Safely:</b> Terminates your saved session and cleans up active watchers.
 </blockquote>
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬"""
@@ -1856,10 +1864,11 @@ async def watch_setup(client: Client, message: Message):
     if len(message.command) < 2:
         return await message.reply(
             "❌ **How to set up a Watcher:**\n\n"
-            "This command tells the bot to monitor a channel/group and auto-forward new messages instantly.\n\n"
+            "This command tells the bot to monitor a channel, group, or PM and auto-forward new messages instantly.\n\n"
             "**Examples:**\n"
             "• Public Channel: `/watch https://t.me/channelname`\n"
             "• Private Chat: `/watch https://t.me/c/1234567890/1`\n"
+            "• Bot/User PM: `/watch https://t.me/username/123` *(No @ symbol!)*\n"
             "• Specific Topic: `/watch https://t.me/channelname/5`"
         )
     
@@ -2135,8 +2144,9 @@ async def dl_handler(client: Client, message: Message):
             "❌ **How to use the Downloader:**\n\n"
             "Use this command to download or forward files from any Telegram link.\n\n"
             "**Examples:**\n"
-            "• Single File: `/dl https://t.me/channel/100`\n"
+            "• Channel File: `/dl https://t.me/channel/100`\n"
             "• Batch Files: `/dl https://t.me/channel/101 - 120`\n"
+            "• Bot/User PM: `/dl https://t.me/username/123` *(No @ symbol!)*\n"
             "• Quick Reply: Just **reply** to any message containing a link with `/dl`"
         )
         return
