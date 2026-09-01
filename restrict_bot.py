@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-#test
 import os
 import psutil
 import time
@@ -1187,6 +1186,10 @@ async def cancel_callback(client: Client, query):
             CANCEL_FLAGS[tid] = True
         batch_temp.IS_BATCH[user_id] = True
         
+        # 🟢 [DB WIPE] Failsafe: instantly remove from auto-resume DB
+        try: await db.db.active_tasks.delete_many({"user_id": user_id})
+        except: pass
+        
         cancel_all_text = (
             "🛑 **Cancelling ALL Active Tasks...**\n\n"
             "**What is happening?**\n"
@@ -1208,6 +1211,10 @@ async def cancel_callback(client: Client, query):
             
         CANCEL_FLAGS[task_uuid] = True
         task_name = user_tasks[task_uuid].get('item','Unknown Task')
+        
+        # 🟢 [DB WIPE] Failsafe: instantly remove this specific task from DB
+        try: await db.remove_active_task(task_uuid)
+        except: pass
         
         cancel_single_text = (
             f"🛑 **Task Cancelled Successfully!**\n\n"
@@ -1664,12 +1671,24 @@ async def confirm_logout_cb(client, query):
             await runtime_client.stop()
         except Exception: pass
 
+    # 🟢 Cancel all active batch tasks in memory
+    user_tasks = list(ACTIVE_PROCESSES.get(user_id, {}).keys())
+    for tid in user_tasks:
+        CANCEL_FLAGS[tid] = True
+    batch_temp.IS_BATCH[user_id] = True
+
+    # 🟢 Wipe auto-resume tasks from the database so they don't resurrect
+    try:
+        await db.db.active_tasks.delete_many({"user_id": user_id})
+    except Exception:
+        pass
+
     # Clear the database
     await db.set_session(user_id, session=None)
     await db.set_api_id(user_id, api_id=None)
     await db.set_api_hash(user_id, api_hash=None)
     
-    await query.message.reply("**Logout Complete** ♦\n(You are now disconnected)")
+    await query.message.reply("**Logout Complete** ♦\n(You are now disconnected. All active batch tasks have been cleanly cancelled.)")
     await query.answer()
 
 from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
@@ -2822,7 +2841,7 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
         logger.error(f"Total copy failure for {msgid}: {e}")
         return "FAILED"
 
-async def process_links_logic(client: Client, message: Message, text: str, dest_chat_id=None, dest_thread_id=None, dest_title="Direct Message", delay=3, acc_user_id=None, task_uuid=None, is_restricted=False, allowed_types=None, resume_from_id=None):
+async def process_links_logic(client: Client, message: Message, text: str, dest_chat_id=None, dest_thread_id=None, dest_title="Direct Message", delay=3, acc_user_id=None, task_uuid=None, is_restricted=False, allowed_types=None, resume_from_id=None, saved_source_title=None):
     user_id = acc_user_id or (message.from_user.id if message and message.from_user else 0)
     user_mention = message.from_user.mention if message and message.from_user else f"User({user_id})"
     msg_chat_id = message.chat.id if message else user_id
@@ -2871,14 +2890,6 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 fromID = resume_from_id
 
             total_count = max(1, toID - fromID + 1)
-            
-            # 🟢 [DB SAVE] Register task for Auto-Resume
-            await db.add_active_task(
-                task_uuid=task_uuid, user_id=user_id, link=text, dest_chat_id=dest_chat_id,
-                dest_thread_id=dest_thread_id, dest_title=dest_title, delay=delay,
-                is_restricted=is_restricted, allowed_types=allowed_types,
-                source_title=source_title, current_msg_id=fromID, to_id=toID
-            )
 
             user_data = await db.get_session(user_id)
             acc = None
@@ -2939,7 +2950,19 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 ACTUAL_CHAT_ID = source_ref 
                 IS_PUBLIC_LINK = isinstance(source_ref, str) and not str(source_ref).lstrip('-').isdigit()
 
+            if saved_source_title and source_title == "Unknown Source":
+                source_title = saved_source_title
+
             ACTIVE_PROCESSES[user_id][task_uuid].update({"source_title": source_title, "total": total_count, "current": 0})
+            
+            # 🟢 [DB SAVE] Register task for Auto-Resume with the CORRECT fetched source title
+            await db.add_active_task(
+                task_uuid=task_uuid, user_id=user_id, link=text, dest_chat_id=dest_chat_id,
+                dest_thread_id=dest_thread_id, dest_title=dest_title, delay=delay,
+                is_restricted=is_restricted, allowed_types=allowed_types,
+                source_title=source_title, current_msg_id=fromID, to_id=toID
+            )
+            
             status_text_header = f"**Batch Task Started!** 🚀\n"
             if filter_thread_id:
                 status_text_header += f"**Filter:** `Topic {filter_thread_id} Only` 🎯\n"
@@ -4254,7 +4277,8 @@ async def main():
                 task_uuid=t_uuid,
                 is_restricted=task["is_restricted"],
                 allowed_types=task["allowed_types"],
-                resume_from_id=task["current_msg_id"]
+                resume_from_id=task["current_msg_id"],
+                saved_source_title=task.get("source_title")
             )
         )
         logger.info(f"▶️ Auto-Resumed task {t_uuid} for User {t_user_id}")
