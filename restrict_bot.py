@@ -390,6 +390,28 @@ class Database:
 
         return result.deleted_count > 0
 
+    # ==========================================
+    # --- BATCH TASKS (AUTO-RESUME) METHODS ---
+    # ==========================================
+    async def add_active_task(self, task_uuid, user_id, link, dest_chat_id, dest_thread_id, dest_title, delay, is_restricted, allowed_types, source_title, current_msg_id, to_id):
+        task_data = {
+            "task_uuid": task_uuid, "user_id": user_id, "link": link,
+            "dest_chat_id": dest_chat_id, "dest_thread_id": dest_thread_id,
+            "dest_title": dest_title, "delay": delay, "is_restricted": is_restricted,
+            "allowed_types": allowed_types, "source_title": source_title,
+            "current_msg_id": current_msg_id, "to_id": to_id
+        }
+        await self.db.active_tasks.update_one({"task_uuid": task_uuid}, {"$set": task_data}, upsert=True)
+
+    async def update_task_progress(self, task_uuid, current_msg_id):
+        await self.db.active_tasks.update_one({"task_uuid": task_uuid}, {"$set": {"current_msg_id": current_msg_id}})
+
+    async def remove_active_task(self, task_uuid):
+        await self.db.active_tasks.delete_one({"task_uuid": task_uuid})
+
+    async def get_all_active_tasks(self):
+        return self.db.active_tasks.find({})
+
 db = Database(DB_URI, DB_NAME)
 
 # ==============================================================================
@@ -1741,11 +1763,7 @@ async def login_handler(bot: Client, message: Message):
         while True:
             phone_code_msg = await bot.ask(
                 user_id, 
-                "**📩 Enter OTP:**\n\n"
-                "Please check for the login code in your official Telegram app.\n\n"
-                "⚠️ **CRITICAL SECURITY RULE:**\n"
-                "You MUST send the code with spaces! If the code is `12345`, send it as `1 2 3 4 5`.\n"
-                "*(If you send it normally, Telegram will instantly delete the code to prevent hacking)*", 
+                "Please check for an OTP in your official Telegram account. If you got it, send OTP here after reading the below format. \n\nIf OTP is `12345`, **please send it as** `1 2 3 4 5`.", 
                 filters=filters.text, 
                 timeout=300, 
                 reply_markup=cancel_kb
@@ -1757,9 +1775,9 @@ async def login_handler(bot: Client, message: Message):
                 
             raw_code = phone_code_msg.text.strip()
             
-            # Catch the Telegram Anti-Phishing Trap instantly
+            # Catch the Telegram expiration instantly without the hacking explanation
             if raw_code.isdigit() and len(raw_code) >= 4:
-                await phone_code_msg.reply("❌ **You sent the code without spaces!**\nTelegram's anti-phishing system has instantly expired your code. You must run `/login` again to get a new code, and remember to use spaces (e.g., `1 2 3 4 5`).")
+                await phone_code_msg.reply("❌ **You sent the code without spaces!**\nTelegram has expired your code. You must run `/login` again to get a new code, and remember to use spaces (e.g., `1 2 3 4 5`).")
                 await client_auth.disconnect()
                 return
                 
@@ -1826,7 +1844,7 @@ async def login_handler(bot: Client, message: Message):
             f"✅ <b>Account Login Successful!</b>\n\n"
             f"👤 <b>Logged in as:</b> <code>{first_name}</code>\n"
             f"{prem_text}\n\n"
-            f"<i>Your session is securely isolated in the database. You can now use the bot for private downloads!</i>"
+            f"<i>If you encounter any AUTH KEY errors later, run /logout and /login again.</i>"
         )
         await bot.send_message(user_id, success_msg, parse_mode=enums.ParseMode.HTML)
 
@@ -2803,9 +2821,11 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
         logger.error(f"Total copy failure for {msgid}: {e}")
         return "FAILED"
 
-async def process_links_logic(client: Client, message: Message, text: str, dest_chat_id=None, dest_thread_id=None, dest_title="Direct Message", delay=3, acc_user_id=None, task_uuid=None, is_restricted=False, allowed_types=None):
-    user_id = acc_user_id or (message.from_user.id if message.from_user else 0)
-    user_mention = message.from_user.mention if message.from_user else f"User({user_id})"
+async def process_links_logic(client: Client, message: Message, text: str, dest_chat_id=None, dest_thread_id=None, dest_title="Direct Message", delay=3, acc_user_id=None, task_uuid=None, is_restricted=False, allowed_types=None, resume_from_id=None):
+    user_id = acc_user_id or (message.from_user.id if message and message.from_user else 0)
+    user_mention = message.from_user.mention if message and message.from_user else f"User({user_id})"
+    msg_chat_id = message.chat.id if message else user_id
+    msg_id = message.id if message else None
     
     if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
     if not task_uuid: task_uuid = uuid.uuid4().hex
@@ -2817,8 +2837,8 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
         "started": time.time()
     }
 
-    if dest_chat_id is None: dest_chat_id = message.chat.id
-    if dest_thread_id is None: dest_thread_id = message.message_thread_id
+    if dest_chat_id is None: dest_chat_id = msg_chat_id
+    if dest_thread_id is None: dest_thread_id = message.message_thread_id if message else None
 
     if "t.me/" in text:
         acc = None
@@ -2843,9 +2863,21 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             elif msg_id_hint is not None:
                 fromID = toID = int(msg_id_hint)
             else:
-                return await message.reply("❌ Invalid link format. Send a valid Telegram post link with a message ID.")
+                if message: return await message.reply("❌ Invalid link format. Send a valid Telegram post link with a message ID.")
+                return
+
+            if resume_from_id:
+                fromID = resume_from_id
 
             total_count = max(1, toID - fromID + 1)
+            
+            # 🟢 [DB SAVE] Register task for Auto-Resume
+            await db.add_active_task(
+                task_uuid=task_uuid, user_id=user_id, link=text, dest_chat_id=dest_chat_id,
+                dest_thread_id=dest_thread_id, dest_title=dest_title, delay=delay,
+                is_restricted=is_restricted, allowed_types=allowed_types,
+                source_title=source_title, current_msg_id=fromID, to_id=toID
+            )
 
             user_data = await db.get_session(user_id)
             acc = None
@@ -2932,6 +2964,9 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
 
             for index, msgid in enumerate(range(fromID, toID+1), start=1):
                 loop_start_time = time.time()
+                
+                # 🟢 [DB UPDATE] Tick progress so if server crashes, it resumes here
+                await db.update_task_progress(task_uuid, msgid)
 
                 if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
                     ACTIVE_PROCESSES[user_id][task_uuid]["current"] = index
@@ -3028,6 +3063,9 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             await send_log(f"❌ **Task Crashed**\nUser: `{user_id}`\nError: `{e}`")
 
         finally:
+            # 🟢 [DB DELETE] Task completed successfully or was explicitly cancelled by user
+            await db.remove_active_task(task_uuid)
+            
             cleanup_task_memory(user_id, task_uuid)
             batch_temp.SKIP_IDS.pop(task_uuid, None) # Clear RAM
             
@@ -4177,6 +4215,49 @@ async def main():
     asyncio.create_task(watcher_dashboard_updater())
     logger.info("📊 Live Watcher Dashboard Updater Started")
     
+    # ==========================================
+    # --- 🟢 AUTO-RESUME ENGINE ACTIVATION ---
+    # ==========================================
+    logger.info("🔄 Checking database for interrupted batch tasks...")
+    pending_tasks = await db.get_all_active_tasks()
+    async for task in pending_tasks:
+        t_user_id = task["user_id"]
+        t_uuid = task["task_uuid"]
+        
+        log_msg = (
+            f"♻️ **AUTO-RESUME ACTIVATED!**\n"
+            f"🤖 **User ID:** `{t_user_id}`\n"
+            f"📁 **Source:** `{task.get('source_title', 'Unknown')}`\n"
+            f"🎯 **Destination:** `{task.get('dest_title', 'Unknown')}`\n"
+            f"▶️ **Resuming From ID:** `{task['current_msg_id']}`"
+        )
+        
+        # Send logs to Server and User!
+        await send_log(log_msg)
+        try:
+            await app.send_message(t_user_id, log_msg)
+        except Exception:
+            pass
+            
+        # Spawn the task directly in the background
+        asyncio.create_task(
+            process_links_logic(
+                client=app,
+                message=None, # Headless execution!
+                text=task["link"],
+                dest_chat_id=task["dest_chat_id"],
+                dest_thread_id=task["dest_thread_id"],
+                dest_title=task["dest_title"],
+                delay=task["delay"],
+                acc_user_id=t_user_id,
+                task_uuid=t_uuid,
+                is_restricted=task["is_restricted"],
+                allowed_types=task["allowed_types"],
+                resume_from_id=task["current_msg_id"]
+            )
+        )
+        logger.info(f"▶️ Auto-Resumed task {t_uuid} for User {t_user_id}")
+
     await idle()
     
     await app.stop()
