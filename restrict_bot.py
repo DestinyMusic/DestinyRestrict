@@ -1140,7 +1140,16 @@ async def cancel_callback(client: Client, query):
     if data == "cancel_setup":
         if user_id in PENDING_TASKS:
             del PENDING_TASKS[user_id]
-        await query.message.edit("❌ **Task Setup Cancelled.**")
+        cancel_text = (
+            "❌ **Task Setup Cancelled**\n\n"
+            "**What happened?**\n"
+            "The configuration for this link has been discarded and cleared from my memory. No files were downloaded.\n\n"
+            "💡 **Next Steps:**\n"
+            "• Reply to a new link with `/dl` to start a new download.\n"
+            "• Use `/watch` to set up an auto-forwarder.\n"
+            "• Type `/help` for the master guide."
+        )
+        await query.message.edit(cancel_text)
         return
 
     if data == "cancel_all":
@@ -1150,10 +1159,19 @@ async def cancel_callback(client: Client, query):
             try: await query.message.delete()
             except: pass
             return
+            
         for tid in user_tasks:
             CANCEL_FLAGS[tid] = True
         batch_temp.IS_BATCH[user_id] = True
-        await query.message.edit("**🛑 Cancelling ALL your tasks...**\n(This may take a moment to stop current downloads)")
+        
+        cancel_all_text = (
+            "🛑 **Cancelling ALL Active Tasks...**\n\n"
+            "**What is happening?**\n"
+            "I am intercepting all your active downloads and uploads. It may take a few seconds to safely sever the TCP connections to Telegram's servers.\n\n"
+            "🛡 **Why is this useful?**\n"
+            "Cancelling heavy, stuck, or accidental batches frees up the server's bandwidth and clears your queue so you can start fresh."
+        )
+        await query.message.edit(cancel_all_text)
         return
 
     if data.startswith("cancel_task:"):
@@ -1164,17 +1182,33 @@ async def cancel_callback(client: Client, query):
             try: await query.message.delete()
             except: pass
             return
+            
         CANCEL_FLAGS[task_uuid] = True
-        await query.message.edit(f"🛑 **Task cancelled:** `{user_tasks[task_uuid].get('item','Task')}`\nIt will stop shortly.")
+        task_name = user_tasks[task_uuid].get('item','Unknown Task')
+        
+        cancel_single_text = (
+            f"🛑 **Task Cancelled Successfully!**\n\n"
+            f"**Target:** `{task_name}`\n\n"
+            f"**What happens now?**\n"
+            f"The current file chunk will finish, and then the process will cleanly abort. Your other queued tasks (if any) will now speed up!"
+        )
+        await query.message.edit(cancel_single_text)
         return
         
 @app.on_callback_query(filters.regex("^close_menu"))
 async def close_menu(client, query):
     try:
         await query.message.delete()
-    except Exception as e:
-        logger.debug(f"Failed to delete close_menu message: {e}")
-        await query.answer("Menu closed.")
+    except Exception:
+        help_text = (
+            "❌ **Menu Closed.**\n\n"
+            "💡 **Quick Tips:**\n"
+            "• `/dl` - Download from a link\n"
+            "• `/watchers` - Manage live forwards\n"
+            "• `/help` - Open the master guide"
+        )
+        await query.message.edit(help_text)
+    await query.answer("Closed.", show_alert=False)
 
 @app.on_message(filters.command(["log"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def send_log_handler(client: Client, message: Message):
@@ -1544,8 +1578,14 @@ async def logout_cmd(client, message):
 
 @app.on_callback_query(filters.regex("^cancel_logout$"))
 async def cancel_logout_cb(client, query):
-    await query.message.edit("✅ **Logout cancelled.** Your session is still active and safe!")
-    await query.answer()
+    cancel_logout_text = (
+        "✅ **Logout Cancelled!**\n\n"
+        "**What does this mean?**\n"
+        "Your Telegram session remains securely linked to the bot's database. \n\n"
+        "🔒 **Security Note:** Because you did not log out, your active `/watch` monitors will continue running seamlessly in the background without interruption."
+    )
+    await query.message.edit(cancel_logout_text)
+    await query.answer("Session kept active.", show_alert=False)
 
 @app.on_callback_query(filters.regex("^confirm_logout$"))
 async def confirm_logout_cb(client, query):
@@ -1610,6 +1650,7 @@ async def confirm_logout_cb(client, query):
     await query.answer()
 
 from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
+from pyromod.exceptions import ListenerStopped
 
 @app.on_callback_query(filters.regex("^cancel_login$"))
 async def cancel_login_cb(client, query):
@@ -1624,8 +1665,15 @@ async def cancel_login_cb(client, query):
     except Exception:
         pass
         
-    await query.message.edit("<b>❌ Login Process Cancelled!</b>\n\n*(If the bot still seems stuck waiting for input, simply send /cancel to clear it)*")
-    await query.answer("Cancelled", show_alert=False)
+    cancel_login_text = (
+        "<b>❌ Login Process Aborted</b>\n\n"
+        "<i>What happened?</i>\n"
+        "You stopped the login setup. I have stopped waiting for your phone number or OTP. Your account remains completely safe, and no data was saved to the database.\n\n"
+        "<i>What next?</i>\n"
+        "You can continue using public bot features, or send <code>/login</code> whenever you are ready to try linking your account again."
+    )
+    await query.message.edit(cancel_login_text, parse_mode=enums.ParseMode.HTML)
+    await query.answer("Login Cancelled", show_alert=False)
     
 @app.on_message(filters.private & ~filters.forwarded & filters.command(["login"]))
 async def login_handler(bot: Client, message: Message):
@@ -1634,151 +1682,172 @@ async def login_handler(bot: Client, message: Message):
         
     user_data = await db.get_session(message.from_user.id)
     if user_data is not None:
-        await message.reply("**You Are Already Logged In. First /logout Your Old Session. Then Do Login.**")
+        await message.reply("⚠️ **You are already logged in!**\nPlease run `/logout` first if you want to switch accounts.")
         return  
         
     user_id = int(message.from_user.id)
-    
-    # 🎛 CREATE THE INLINE CANCEL BUTTON
     cancel_kb = InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_login")]])
+    client_auth = None
 
-    if API_ID != 0 and API_HASH:
-        await message.reply("**🔑 Specific API ID and HASH found in variables. Using them automatically...**")
-        api_id = API_ID
-        api_hash = API_HASH
-    else:
-        api_id_msg = await bot.ask(user_id, "<b>Send Your API ID.</b>", filters=filters.text, reply_markup=cancel_kb)
-        if not api_id_msg or not api_id_msg.text: return
-        
-        if api_id_msg.text.startswith('/'):
-            return await api_id_msg.reply('<b>Process cancelled!</b>')
+    try:
+        # --- API CREDENTIALS ---
+        if API_ID != 0 and API_HASH:
+            await message.reply("**🔑 Specific API ID and HASH found in variables. Using them automatically...**")
+            api_id, api_hash = API_ID, API_HASH
+        else:
+            api_id_msg = await bot.ask(user_id, "<b>Send Your API ID.</b>", filters=filters.text, timeout=300, reply_markup=cancel_kb)
+            if api_id_msg.text.startswith('/'): return await api_id_msg.reply('<b>Process cancelled!</b>')
+            try:
+                api_id = int(api_id_msg.text)
+                if api_id < 1000000 or api_id > 99999999:
+                    return await api_id_msg.reply("**❌ Invalid API ID**\n\nPlease start again with /login.", quote=True)
+            except ValueError:
+                return await api_id_msg.reply("**❌ API ID must be a number!** Start over with /login.", quote=True)
             
+            api_hash_msg = await bot.ask(user_id, "**Now Send Me Your API HASH**", filters=filters.text, timeout=300, reply_markup=cancel_kb)
+            if api_hash_msg.text.startswith('/'): return await api_hash_msg.reply('<b>Process cancelled!</b>')
+            api_hash = api_hash_msg.text.strip()
+            
+            if not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
+                return await api_hash_msg.reply("**❌ Invalid API HASH (Must be 32 Hex Characters)**\n\nPlease start again with /login.", quote=True)
+
+        # --- PHONE NUMBER ---
+        login_text = (
+            "🔐 **Login Process Initiated**\n\n"
+            "Please send your **Phone Number** in international format.\n"
+            "Example: `+1234567890`\n\n"
+            "🛡️ *Your session is stored securely locally.*"
+        )
+        phone_number_msg = await bot.ask(chat_id=user_id, text=login_text, filters=filters.text, timeout=300, reply_markup=cancel_kb)
+        if phone_number_msg.text.startswith('/'): return await phone_number_msg.reply('<b>Process cancelled!</b>')
+        
+        phone_number = phone_number_msg.text.strip()
+        if not re.fullmatch(r"\+\d{8,15}", phone_number):
+            return await phone_number_msg.reply('❌ **Invalid phone number format.** Use international format (e.g., +1234567890).')
+        
+        # --- CONNECT TO TELEGRAM ---
+        client_auth = Client(":memory:", api_id=api_id, api_hash=api_hash)
+        await client_auth.connect()
+        await phone_number_msg.reply("🔄 **Sending OTP request to Telegram...**")
+        
         try:
-            api_id = int(api_id_msg.text)
-            if api_id < 1000000 or api_id > 99999999:
-                 await api_id_msg.reply("**❌ Invalid API ID**\n\nPlease start again with /login.", quote=True)
-                 return
-        except ValueError:
-            await api_id_msg.reply("**API ID must be an integer, start your process again by /login**", quote=True)
-            return
-        
-        api_hash_msg = await bot.ask(user_id, "**Now Send Me Your API HASH**", filters=filters.text, reply_markup=cancel_kb)
-        if not api_hash_msg or not api_hash_msg.text: return
-        
-        if api_hash_msg.text.startswith('/'):
-            return await api_hash_msg.reply('<b>Process cancelled!</b>')
-            
-        api_hash = api_hash_msg.text.strip()
-
-        if not re.fullmatch(r"[a-fA-F0-9]{32}", api_hash):
-             await api_hash_msg.reply("**❌ Invalid API HASH (Must be 32 Hex Characters)**\n\nPlease start again with /login.", quote=True)
-             return
-
-    login_text = (
-        "🔐 **Login Process Initiated**\n\n"
-        "Please send your **Phone Number** in international format.\n"
-        "Example: `+1234567890`\n\n"
-        "🛡️ *Your session is stored securely locally.*"
-    )
-
-    phone_number_msg = await bot.ask(chat_id=user_id, text=login_text, filters=filters.text, reply_markup=cancel_kb)
-    if not phone_number_msg or not phone_number_msg.text: return
-    
-    # 🔥 COMMAND ESCAPE: Catches /sos, /cancel
-    if phone_number_msg.text.startswith('/'):
-        return await phone_number_msg.reply('<b>Process cancelled!</b>')
-        
-    phone_number = phone_number_msg.text.strip()
-    if not re.fullmatch(r"\+\d{8,15}", phone_number):
-         await phone_number_msg.reply('❌ **Invalid phone number format.** Use international format (e.g., +1234567890).')
-         return
-    
-    client_auth = Client(":memory:", api_id=api_id, api_hash=api_hash)
-    await client_auth.connect()
-    
-    await phone_number_msg.reply("Sending OTP...")
-    
-    try:
-        code = await client_auth.send_code(phone_number)
-        phone_code_msg = await bot.ask(user_id, "Please check for an OTP in your official Telegram account. If you got it, send OTP here after reading the below format. \n\nIf OTP is `12345`, **please send it as** `1 2 3 4 5`.", filters=filters.text, timeout=600, reply_markup=cancel_kb)
-    except PhoneNumberInvalid:
-        await phone_number_msg.reply('`PHONE_NUMBER` **is invalid.**')
-        await client_auth.disconnect()
-        return
-        
-    if not phone_code_msg or not phone_code_msg.text:
-        await client_auth.disconnect()
-        return
-        
-    if phone_code_msg.text.startswith('/'):
-        await client_auth.disconnect()
-        return await phone_code_msg.reply('<b>Process cancelled!</b>')
-        
-    try:
-        phone_code = phone_code_msg.text.replace(" ", "")
-        await client_auth.sign_in(phone_number, code.phone_code_hash, phone_code)
-    except PhoneCodeInvalid:
-        await phone_code_msg.reply('**OTP is invalid.**')
-        await client_auth.disconnect()
-        return
-    except PhoneCodeExpired:
-        await phone_code_msg.reply('**OTP is expired.**')
-        await client_auth.disconnect()
-        return
-    except SessionPasswordNeeded:
-        two_step_msg = await bot.ask(user_id, '**Your account has enabled two-step verification. Please provide the password.**', filters=filters.text, timeout=300, reply_markup=cancel_kb)
-        
-        if not two_step_msg or not two_step_msg.text:
+            code = await client_auth.send_code(phone_number)
+        except PhoneNumberInvalid:
+            await phone_number_msg.reply('❌ **Phone Number is invalid!** Start over with /login.')
             await client_auth.disconnect()
             return
             
-        if two_step_msg.text.startswith('/'):
-            await client_auth.disconnect()
-            return await two_step_msg.reply('<b>Process cancelled!</b>')
+        # --- OTP RETRY LOOP ---
+        while True:
+            phone_code_msg = await bot.ask(
+                user_id, 
+                "**📩 Enter OTP:**\n\n"
+                "Please check for the login code in your official Telegram app.\n"
+                "*(You can type the code directly, e.g., `12345`)*", 
+                filters=filters.text, 
+                timeout=300, 
+                reply_markup=cancel_kb
+            )
             
-        try:
-            password = two_step_msg.text
-            await client_auth.check_password(password=password)
-        except PasswordHashInvalid:
-            await two_step_msg.reply('**Invalid Password Provided**')
-            await client_auth.disconnect()
-            return
+            if phone_code_msg.text.startswith('/'):
+                await client_auth.disconnect()
+                return await phone_code_msg.reply('<b>Process cancelled!</b>')
+                
+            # Strip spaces automatically if the user decides to include them anyway
+            phone_code = phone_code_msg.text.replace(" ", "")
             
-    string_session = await client_auth.export_session_string()
-    await client_auth.disconnect()
-    
-    if len(string_session) < SESSION_STRING_SIZE:
-        return await message.reply('<b>Invalid session string</b>')
+            try:
+                await client_auth.sign_in(phone_number, code.phone_code_hash, phone_code)
+                break # Success! Exit the OTP loop.
+                
+            except PhoneCodeInvalid:
+                await phone_code_msg.reply('❌ **OTP is incorrect!** Please double-check the code and try again.')
+                continue # Loops back to ask for OTP again!
+                
+            except PhoneCodeExpired:
+                await phone_code_msg.reply('⏳ **OTP Expired!** The official Telegram API only keeps auth codes valid for 5 minutes. Please run /login again to get a new code.')
+                await client_auth.disconnect()
+                return
+                
+            except SessionPasswordNeeded:
+                # --- 2FA RETRY LOOP ---
+                while True:
+                    two_step_msg = await bot.ask(user_id, '**🔒 Account is protected by 2FA. Please enter your Two-Step Verification Password:**', filters=filters.text, timeout=300, reply_markup=cancel_kb)
+                    
+                    if two_step_msg.text.startswith('/'):
+                        await client_auth.disconnect()
+                        return await two_step_msg.reply('<b>Process cancelled!</b>')
+                        
+                    password = two_step_msg.text
+                    try:
+                        await client_auth.check_password(password=password)
+                        break # Success! Exit 2FA loop.
+                    except PasswordHashInvalid:
+                        await two_step_msg.reply('❌ **Incorrect Password!** Please try again.')
+                        continue # Loops back to ask for 2FA again!
+                break # Break out of outer OTP loop since we solved 2FA
+
+        # --- SUCCESSFUL LOGIN ---
+        string_session = await client_auth.export_session_string()
+        await client_auth.disconnect()
         
-    is_prem = False
-    first_name = ""
-    try:
-        uclient = Client(":memory:", session_string=string_session, api_id=api_id, api_hash=api_hash)
-        await uclient.connect()
-        me = await uclient.get_me()
-        is_prem = getattr(me, "is_premium", False)
-        first_name = me.first_name or "User"
-        
-        await db.set_session(message.from_user.id, session=string_session)
-        await db.set_api_id(message.from_user.id, api_id=api_id)
-        await db.set_api_hash(message.from_user.id, api_hash=api_hash)
-        
+        if len(string_session) < SESSION_STRING_SIZE:
+            return await bot.send_message(user_id, '❌ **Fatal Error:** Invalid session string generated.')
+            
+        is_prem = False
+        first_name = "User"
         try:
-            await uclient.disconnect()
+            uclient = Client(":memory:", session_string=string_session, api_id=api_id, api_hash=api_hash)
+            await uclient.connect()
+            me = await uclient.get_me()
+            is_prem = getattr(me, "is_premium", False)
+            first_name = me.first_name or "User"
+            try: await uclient.disconnect()
+            except: pass
         except Exception:
             pass
-    except Exception as e:
-        return await message.reply_text(f"<b>ERROR IN LOGIN:</b> `{e}`")
+            
+        await db.set_session(user_id, session=string_session)
+        await db.set_api_id(user_id, api_id=api_id)
+        await db.set_api_hash(user_id, api_hash=api_hash)
         
-    prem_text = "⭐ <b>Telegram Premium:</b> <code>Active (4GB Uploads Enabled)</code>" if is_prem else "🔹 <b>Account Type:</b> <code>Standard (2GB Upload Limit)</code>"
+        prem_text = "⭐ <b>Telegram Premium:</b> <code>Active (4GB Uploads Enabled)</code>" if is_prem else "🔹 <b>Account Type:</b> <code>Standard (2GB Upload Limit)</code>"
 
-    success_msg = (
-        f"✅ <b>Account Login Successful!</b>\n\n"
-        f"👤 <b>Logged in as:</b> <code>{first_name}</code>\n"
-        f"{prem_text}\n\n"
-        f"<i>If you encounter any AUTH KEY errors later, run /logout and /login again.</i>"
-    )
-    await bot.send_message(message.from_user.id, success_msg)
+        success_msg = (
+            f"✅ <b>Account Login Successful!</b>\n\n"
+            f"👤 <b>Logged in as:</b> <code>{first_name}</code>\n"
+            f"{prem_text}\n\n"
+            f"<i>Your session is securely isolated in the database. You can now use the bot for private downloads!</i>"
+        )
+        await bot.send_message(user_id, success_msg, parse_mode=enums.ParseMode.HTML)
+
+    # --- ERROR HANDLERS ---
+    except ListenerStopped:
+        # Silently caught when Cancel button is pressed
+        if client_auth and client_auth.is_connected:
+            try: await client_auth.disconnect()
+            except: pass
+        return
+        
+    except asyncio.TimeoutError:
+        # 5 Minute Limit Reached
+        timeout_msg = (
+            "⏱ **Login Session Timed Out!**\n\n"
+            "**Why did this happen?**\n"
+            "You took longer than 5 minutes to reply to a prompt. To save server RAM and maintain security, the bot automatically closed the login listener.\n\n"
+            "🔄 **Fix:** Please gather your API ID, Hash, and Phone Number, and send `/login` to start fresh."
+        )
+        await bot.send_message(user_id, timeout_msg)
+        if client_auth and client_auth.is_connected:
+            try: await client_auth.disconnect()
+            except: pass
+        return
+        
+    except Exception as e:
+        await bot.send_message(user_id, f"<b>❌ ERROR IN LOGIN:</b> `{e}`", parse_mode=enums.ParseMode.HTML)
+        if client_auth and client_auth.is_connected:
+            try: await client_auth.disconnect()
+            except: pass
 
 # ==============================================================================
 # --- BROADCAST ---
