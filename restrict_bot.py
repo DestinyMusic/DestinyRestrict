@@ -1,5 +1,4 @@
 # -*- coding: utf-8 -*-
-#
 import os
 import psutil
 import time
@@ -2968,20 +2967,23 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             if filter_thread_id:
                 status_text_header += f"**Filter:** `Topic {filter_thread_id} Only` 🎯\n"
 
+            kwargs_status = {"chat_id": msg_chat_id}
+            if msg_id: 
+                kwargs_status["reply_to_message_id"] = msg_id
+            if message and message.message_thread_id:
+                kwargs_status["message_thread_id"] = message.message_thread_id
+
             if is_restricted:
                 status_message = await client.send_message(
-                    message.chat.id,
-                    f"⚡ **Initializing Task...**\n{status_text_header}\nSource: {source_title}\nTotal Files: {total_count}",
-                    reply_to_message_id=message.id,
-                    message_thread_id=message.message_thread_id
+                    text=f"⚡ **Initializing Task...**\n{status_text_header}\nSource: {source_title}\nTotal Files: {total_count}",
+                    **kwargs_status
                 )
             else:
                 status_message = await client.send_message(
-                    message.chat.id,
-                    f"{status_text_header}\n\n{generate_bar(0)}\n\n"
+                    text=f"{status_text_header}\n\n{generate_bar(0)}\n\n"
                     f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
                     f"**Total:** {total_count}\n**Processed:** 0\n**Success:** 0 | **Skipped:** 0\n**Failed:** 0\n**ETA:** ...",
-                    reply_to_message_id=message.id
+                    **kwargs_status
                 )
 
             last_update_time = time.time()
@@ -3131,7 +3133,10 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 f"└ ❌ **Failed:** `{failed_count}`"
             )
             
-            try: await client.send_message(message.chat.id, final_text, reply_to_message_id=message.id)
+            try: 
+                kwargs_final = {"chat_id": msg_chat_id, "text": final_text}
+                if msg_id: kwargs_final["reply_to_message_id"] = msg_id
+                await client.send_message(**kwargs_final)
             except: pass
             try: await status_message.delete()
             except: pass
