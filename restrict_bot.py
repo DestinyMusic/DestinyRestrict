@@ -1692,7 +1692,7 @@ async def login_handler(bot: Client, message: Message):
     try:
         # --- API CREDENTIALS ---
         if API_ID != 0 and API_HASH:
-            await message.reply("**🔑 Specific API ID and HASH found in variables. Using them automatically...**")
+            await message.reply("🔑 **Specific API ID and HASH found in variables. Using them automatically...**")
             api_id, api_hash = API_ID, API_HASH
         else:
             api_id_msg = await bot.ask(user_id, "<b>Send Your API ID.</b>", filters=filters.text, timeout=300, reply_markup=cancel_kb)
@@ -1742,8 +1742,10 @@ async def login_handler(bot: Client, message: Message):
             phone_code_msg = await bot.ask(
                 user_id, 
                 "**📩 Enter OTP:**\n\n"
-                "Please check for the login code in your official Telegram app.\n"
-                "*(You can type the code directly, e.g., `12345`)*", 
+                "Please check for the login code in your official Telegram app.\n\n"
+                "⚠️ **CRITICAL SECURITY RULE:**\n"
+                "You MUST send the code with spaces! If the code is `12345`, send it as `1 2 3 4 5`.\n"
+                "*(If you send it normally, Telegram will instantly delete the code to prevent hacking)*", 
                 filters=filters.text, 
                 timeout=300, 
                 reply_markup=cancel_kb
@@ -1753,15 +1755,22 @@ async def login_handler(bot: Client, message: Message):
                 await client_auth.disconnect()
                 return await phone_code_msg.reply('<b>Process cancelled!</b>')
                 
-            # Strip spaces automatically if the user decides to include them anyway
-            phone_code = phone_code_msg.text.replace(" ", "")
+            raw_code = phone_code_msg.text.strip()
+            
+            # Catch the Telegram Anti-Phishing Trap instantly
+            if raw_code.isdigit() and len(raw_code) >= 4:
+                await phone_code_msg.reply("❌ **You sent the code without spaces!**\nTelegram's anti-phishing system has instantly expired your code. You must run `/login` again to get a new code, and remember to use spaces (e.g., `1 2 3 4 5`).")
+                await client_auth.disconnect()
+                return
+                
+            phone_code = raw_code.replace(" ", "")
             
             try:
                 await client_auth.sign_in(phone_number, code.phone_code_hash, phone_code)
                 break # Success! Exit the OTP loop.
                 
             except PhoneCodeInvalid:
-                await phone_code_msg.reply('❌ **OTP is incorrect!** Please double-check the code and try again.')
+                await phone_code_msg.reply('❌ **OTP is incorrect!** Please double-check the code and try again (with spaces).')
                 continue # Loops back to ask for OTP again!
                 
             except PhoneCodeExpired:
