@@ -110,7 +110,10 @@ if not DB_URI:
 # 🟡 OPTIONAL: LOG CHANNEL
 # --------------------------------------------------------------------------
 _raw_log = (os.environ.get("LOG_CHANNEL") or "").strip()
-LOG_CHANNEL = int(_raw_log) if _raw_log.replace("-", "").isdigit() else 0
+if _raw_log:
+    LOG_CHANNEL = _raw_log if "/" in _raw_log else (int(_raw_log) if _raw_log.replace("-", "").isdigit() else 0)
+else:
+    LOG_CHANNEL = 0
 
 # --------------------------------------------------------------------------
 # ⚙️ OPTIONAL: SETTINGS
@@ -2675,9 +2678,43 @@ async def send_log(text):
         return
     try:
         chat_id, topic_id = parse_chat_topic(LOG_CHANNEL)
-        await app.send_message(chat_id, text, message_thread_id=topic_id)
+        await app.send_message(chat_id, text, message_thread_id=topic_id, disable_web_page_preview=True)
     except Exception as e:
         print(f"❌ Failed to send log: {e}")
+
+# --- SMART LOG ROUTING ---
+USER_LOG_CACHE = {}
+
+async def get_fallback_log_chat(client_to_use, client_identifier, bot_id=None):
+    """Finds the best available scratchpad chat. Tries LOG_CHANNEL -> ADMINS -> Bot's PM."""
+    if client_identifier in USER_LOG_CACHE:
+        return USER_LOG_CACHE[client_identifier]
+        
+    targets = []
+    if LOG_CHANNEL:
+        c_id, t_id = parse_chat_topic(LOG_CHANNEL)
+        targets.append((c_id, t_id))
+        
+    for admin in ADMINS:
+        targets.append((admin, None))
+        
+    # 🟢 If all else fails, use the DM between the User and the Bot!
+    if bot_id and client_to_use != app:
+        targets.append((bot_id, None))
+    else:
+        targets.append(("me", None)) # Failsafe for bot itself
+    
+    for c_id, t_id in targets:
+        try:
+            # 🟢 Pre-flight check to ensure write access BEFORE doing heavy uploads
+            msg = await client_to_use.send_message(chat_id=c_id, text="🔄", message_thread_id=t_id)
+            await msg.delete()
+            USER_LOG_CACHE[client_identifier] = (c_id, t_id)
+            return c_id, t_id
+        except Exception:
+            continue
+            
+    return "me", None
 
 async def check_disk_space():
     try:
@@ -2751,8 +2788,6 @@ async def start_task_final(client: Client, message_context: Message, task_data: 
             else:
                 await message_context.reply(start_msg)
     except: pass
-    
-    await send_log(f"▶️ **Task Started**\nUser: `{user_id}`\nLink: `{task_data['link'][:40]}...`")
 
     if user_id not in ACTIVE_PROCESSES:
         ACTIVE_PROCESSES[user_id] = {}
@@ -2978,6 +3013,21 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 is_restricted=is_restricted, allowed_types=allowed_types,
                 source_title=source_title, current_msg_id=fromID, to_id=toID
             )
+
+            # 🟢 [DETAILED LOGGING] Send the detailed log to the Log Channel now that we know the Source!
+            log_user_name = message.from_user.first_name if message and message.from_user else "User"
+            log_user_link = f"[{log_user_name}](tg://user?id={user_id})"
+            log_src_topic = f" ({filter_thread_id})" if filter_thread_id else ""
+            log_dst_topic = f" ({dest_thread_id})" if dest_thread_id else ""
+            log_dst_display = f"{dest_chat_id}" + (f"/{dest_thread_id}" if dest_thread_id else "")
+            
+            detailed_log = (
+                f"▶️ **Task Started**\n"
+                f"**User:** {log_user_link} (`{user_id}`)\n"
+                f"**Task:** {source_title}{log_src_topic} -> {dest_title}{log_dst_topic}\n"
+                f"**Link:** {text} -> `{log_dst_display}`"
+            )
+            await send_log(detailed_log)
             
             status_text_header = f"**Batch Task Started!** 🚀\n"
             if filter_thread_id:
@@ -3441,14 +3491,18 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                 elif msg_fresh.audio: file_size = msg_fresh.audio.file_size
 
                 if file_size > split_limit:
-                    if is_premium and LOG_CHANNEL and acc:
+                    if is_premium and acc:
                         if status_message: await status_message.edit_text(f"🚀 **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
                         async with USER_DOWNLOAD_SEMAPHORES[user_id]:
                             file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
                         if down_task and not down_task.done(): down_task.cancel()
                         
-                        if status_message: await status_message.edit_text(f"☁️ **Uploading to Log Server (Premium Bypass)...**")
-                        log_chat_id = int(str(LOG_CHANNEL).split("/")[0]) if "/" in str(LOG_CHANNEL) else int(LOG_CHANNEL)
+                        if status_message: await status_message.edit_text(f"☁️ **Uploading via Premium Session...**")
+                        
+                        # 🟢 [FIX] Smart Fallback: Tries Log Channel -> Admins -> Bot's DM!
+                        # We pass the bot's own ID so the User Session knows where to DM it if needed.
+                        bot_id = client.me.id if getattr(client, "me", None) else int(BOT_TOKEN.split(":")[0])
+                        log_chat_id, log_topic_id = await get_fallback_log_chat(acc, user_id, bot_id=bot_id)
                         
                         up_task = asyncio.create_task(upstatus(client, status_message, status_message.chat.id, index, total_count, header_text)) if status_message else None
                         caption = msg.caption if msg.caption else ""
@@ -3457,6 +3511,8 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         
                         try:
                             kwargs = {"chat_id": log_chat_id, "caption": caption}
+                            if log_topic_id: 
+                                kwargs["message_thread_id"] = log_topic_id
                             if caption_entities: kwargs["caption_entities"] = caption_entities
                             p_args = [status_message, "up", task_uuid]
                             
@@ -3467,7 +3523,9 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                             
                             if sent_msg:
                                 try:
-                                    await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_message, chat_id=dest_chat_id, from_chat_id=log_chat_id, message_id=sent_msg.id, message_thread_id=dest_thread_id)
+                                    # 🟢 [POV FIX] If User Session uploaded to the Bot's DM, the Bot sees the chat as `user_id`!
+                                    bot_read_chat_id = user_id if log_chat_id == bot_id else log_chat_id
+                                    await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_message, chat_id=dest_chat_id, from_chat_id=bot_read_chat_id, message_id=sent_msg.id, message_thread_id=dest_thread_id)
                                 except Exception:
                                     await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_message, chat_id=dest_chat_id, from_chat_id=log_chat_id, message_id=sent_msg.id, message_thread_id=dest_thread_id)
                         except Exception as up_err:
@@ -4020,8 +4078,13 @@ async def watcher_worker_loop(wid_str):
 
             # --- FALLBACK TO DOWNLOAD MODE ---
             try:
-                log_chat_id, log_topic_id = parse_chat_topic(LOG_CHANNEL) if LOG_CHANNEL else (owner_id, None)
-                dummy_status = await app.send_message(log_chat_id, f"⬇️ **Watcher:** Processing ID `{msg.id}`...", message_thread_id=log_topic_id)
+                # 🟢 [FIX] Use Smart Fallback for the Bot's Watcher Status
+                log_chat_id, log_topic_id = await get_fallback_log_chat(app, "BOT")
+                
+                kwargs_status = {"chat_id": log_chat_id, "text": f"⬇️ **Watcher:** Processing ID `{msg.id}`..."}
+                if log_topic_id: kwargs_status["message_thread_id"] = log_topic_id
+                
+                dummy_status = await app.send_message(**kwargs_status)
 
                 task_uuid = uuid.uuid4().hex
                 if owner_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[owner_id] = {}
