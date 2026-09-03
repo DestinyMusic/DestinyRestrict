@@ -588,6 +588,7 @@ async def safe_send(client_to_use, user_id, dest_chat_id, task_uuid, is_bot, cor
 
 PENDING_TASKS = {}
 PROGRESS = {}
+LAST_UI_EDIT = {}  # 🟢 NEW: Global UI Clock
 SESSION_STRING_SIZE = 351
 
 MAX_CONCURRENT_TASKS_PER_USER = int(os.environ.get("MAX_TASKS_PER_USER", "3"))
@@ -980,32 +981,35 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
         if rec["current"] == rec["total"] and rec["total"] > 0:
             break
             
-        header_section = f"{header_text}\n" if header_text else ""
+        now = time.time()
+        last_edit = LAST_UI_EDIT.get(msg_id, 0)
+        time_since_edit = now - last_edit
 
-        status = (
-            f"📥 **Downloading File ({index}/{total_count})**\n"
-            f"└ 📂 `{max(0, total_count-index)}` remaining\n\n"
-            f"**{rec.get('percent', 0):.1f}%** │ `{generate_bar(rec.get('percent', 0), length=12)}`\n\n"
-            f"{header_section}"
-            f"🚀 **Speed:** `{_pretty_bytes(rec.get('speed', 0))}/s`\n"
-            f"💾 **Size:** `{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}`\n"
-            f"⏳ **ETA:** `{get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)}`"
-        )
+        # 🟢 Global Clock: Has it been 30 seconds across the entire batch?
+        if time_since_edit >= 30 or last_edit == 0:
+            header_section = f"{header_text}\n" if header_text else ""
+            status = (
+                f"📥 **Downloading File ({index}/{total_count})**\n"
+                f"└ 📂 `{max(0, total_count-index)}` remaining\n\n"
+                f"**{rec.get('percent', 0):.1f}%** │ `{generate_bar(rec.get('percent', 0), length=12)}`\n\n"
+                f"{header_section}"
+                f"🚀 **Speed:** `{_pretty_bytes(rec.get('speed', 0))}/s`\n"
+                f"💾 **Size:** `{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}`\n"
+                f"⏳ **ETA:** `{get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)}`"
+            )
 
-        if status != last_text:
-            try:
-                await client.edit_message_text(chat, msg_id, status)
-                last_text = status
-            except FloodWait as e:
-                logger.warning(f"UI Rate Limit ({e.value}s). Silently downloading in background without UI updates.")
-                # If hit with a massive ban, sleep the UI updater out, but the download keeps going!
-                await asyncio.sleep(min(e.value, 600)) 
-                continue
-            except Exception as e:
-                logger.debug(f"Progress bar edit skipped: {e}")
+            if status != last_text:
+                try:
+                    await client.edit_message_text(chat, msg_id, status)
+                    last_text = status
+                    LAST_UI_EDIT[msg_id] = time.time()
+                except FloodWait as e:
+                    logger.warning(f"UI Rate Limit ({e.value}s). Pushing next UI update to future.")
+                    LAST_UI_EDIT[msg_id] = time.time() + e.value
+                except Exception as e:
+                    logger.debug(f"Progress bar edit skipped: {e}")
         
-        # 🟢 Strict 30-Second UI Update Cycle to prevent Telegram Bans
-        await asyncio.sleep(30)
+        await asyncio.sleep(2)
             
 async def upstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = ""):
     msg_id = status_message.id
@@ -1019,32 +1023,35 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
         if rec["current"] == rec["total"] and rec["total"] > 0:
             break
             
-        header_section = f"{header_text}\n" if header_text else ""
+        now = time.time()
+        last_edit = LAST_UI_EDIT.get(msg_id, 0)
+        time_since_edit = now - last_edit
 
-        status = (
-            f"☁️ **Uploading File ({index}/{total_count})**\n"
-            f"└ 📤 `{max(0, total_count-index)}` remaining\n\n"
-            f"**{rec.get('percent', 0):.1f}%** │ `{generate_bar(rec.get('percent', 0), length=12)}`\n\n"
-            f"{header_section}"
-            f"🚀 **Speed:** `{_pretty_bytes(rec.get('speed', 0))}/s`\n"
-            f"💾 **Size:** `{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}`\n"
-            f"⏳ **ETA:** `{get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)}`"
-        )
+        # 🟢 Global Clock: Has it been 30 seconds across the entire batch?
+        if time_since_edit >= 30 or last_edit == 0:
+            header_section = f"{header_text}\n" if header_text else ""
+            status = (
+                f"☁️ **Uploading File ({index}/{total_count})**\n"
+                f"└ 📤 `{max(0, total_count-index)}` remaining\n\n"
+                f"**{rec.get('percent', 0):.1f}%** │ `{generate_bar(rec.get('percent', 0), length=12)}`\n\n"
+                f"{header_section}"
+                f"🚀 **Speed:** `{_pretty_bytes(rec.get('speed', 0))}/s`\n"
+                f"💾 **Size:** `{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}`\n"
+                f"⏳ **ETA:** `{get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)}`"
+            )
 
-        if status != last_text:
-            try:
-                await client.edit_message_text(chat, msg_id, status)
-                last_text = status
-            except FloodWait as e:
-                logger.warning(f"UI Rate Limit ({e.value}s). Silently uploading in background without UI updates.")
-                # If hit with a massive ban, sleep the UI updater out, but the upload keeps going!
-                await asyncio.sleep(min(e.value, 600))
-                continue
-            except Exception as e:
-                logger.debug(f"Progress bar edit skipped: {e}")
+            if status != last_text:
+                try:
+                    await client.edit_message_text(chat, msg_id, status)
+                    last_text = status
+                    LAST_UI_EDIT[msg_id] = time.time()
+                except FloodWait as e:
+                    logger.warning(f"UI Rate Limit ({e.value}s). Pushing next UI update to future.")
+                    LAST_UI_EDIT[msg_id] = time.time() + e.value
+                except Exception as e:
+                    logger.debug(f"Progress bar edit skipped: {e}")
         
-        # 🟢 Strict 30-Second UI Update Cycle to prevent Telegram Bans
-        await asyncio.sleep(30)
+        await asyncio.sleep(2)
             
 def get_message_type(msg: Message):
     if msg.document: return "Document"
@@ -3565,6 +3572,11 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
     safe_filename = sanitize_filename(original_filename)
     if not safe_filename.strip(): safe_filename = f"{msgid}.dat"
     file_path_to_save = task_folder_path / safe_filename
+
+    # 🟢 [FIX] Wipe previous file's progress so stale 86.6% numbers NEVER carry over!
+    if status_message:
+        PROGRESS.pop(f"{status_message.id}:down", None)
+        PROGRESS.pop(f"{status_message.id}:up", None)
 
     down_task = None
     if status_message:
