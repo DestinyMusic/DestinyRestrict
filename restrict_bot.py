@@ -4150,7 +4150,8 @@ HTML_DASHBOARD = """
         .theme-btn.active { border-color: var(--accent); background: rgba(59,130,246,0.1); }
         .dot { width: 10px; height: 10px; border-radius: 50%; }
 
-        .container { max-width: 850px; margin: 0 auto; padding: 20px; }
+        .container { max-width: 50%; margin: 0 auto; padding: 20px; transition: max-width 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
+        @media (max-width: 768px) { .container { max-width: 100% !important; } } /* Keeps mobile view readable */
         .section-title { font-size: 20px; font-weight: 800; margin: 25px 0 15px 0; color: #fff; display: flex; justify-content: space-between; align-items: center; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 20px; }
         .card { background: var(--card); border-radius: 20px; padding: 20px; border: 1px solid var(--card-border); transition: 0.3s; }
@@ -4218,6 +4219,8 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('downloads', 'Downloads')">📥 Downloads</div>
             <div class="menu-item" onclick="switchView('watchers', 'Watchers')">📡 Watchers</div>
             <div class="menu-item" onclick="switchView('chats', 'Chats & IDs')">💬 Chats & IDs</div>
+            <div class="menu-item" onclick="switchView('speedtest', 'Speedtest')">🚀 Speedtest</div>
+            <div class="menu-item" onclick="switchView('sos', 'System SOS')">🖥 System SOS</div>
             <div class="menu-item" onclick="switchView('logs', 'Logs')">📋 System Logs</div>
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
@@ -4314,6 +4317,51 @@ HTML_DASHBOARD = """
                 </div>
             </div>
 
+            <!-- SPEEDTEST VIEW -->
+            <div id="view-speedtest" class="view-section">
+                <div class="section-title">
+                    <span>Network Speed Diagnostic</span>
+                    <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px; background: #3b82f6;" onclick="runWebSpeedtest()">🚀 Run Speedtest</button>
+                </div>
+                <div class="card" style="text-align: center; padding: 30px;">
+                    <div id="speedtest-status" style="color: #94a3b8; font-size: 14px; margin-bottom: 20px;">Click the button above to measure server bandwidth and latency.</div>
+                    <div id="speedtest-results" style="display: none; text-align: left;">
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
+                            <div style="background: var(--bg); padding: 16px; border-radius: 14px; border: 1px solid var(--card-border);">
+                                <div class="card-label">Download Speed</div>
+                                <div class="card-stat" id="st-dl" style="color: #10b981;">0 Mbps</div>
+                            </div>
+                            <div style="background: var(--bg); padding: 16px; border-radius: 14px; border: 1px solid var(--card-border);">
+                                <div class="card-label">Upload Speed</div>
+                                <div class="card-stat" id="st-ul" style="color: #38bdf8;">0 Mbps</div>
+                            </div>
+                        </div>
+                        <div style="font-size: 13px; color: #cbd5e1; line-height: 1.6;">
+                            <div>🏓 <b>Ping:</b> <span id="st-ping">-</span></div>
+                            <div>🏢 <b>Server:</b> <span id="st-server">-</span></div>
+                            <div>🤝 <b>Sponsor:</b> <span id="st-sponsor">-</span></div>
+                        </div>
+                        <div id="st-img-container" style="margin-top: 20px; text-align: center;"></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- SOS VIEW -->
+            <div id="view-sos" class="view-section">
+                <div class="section-title">
+                    <span>Deep System Diagnostics (SOS)</span>
+                    <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="loadSosStats()">🔄 Refresh Stats</button>
+                </div>
+                <div class="grid" id="sos-grid">
+                    <div class="card"><div class="card-label">Operating System</div><div class="card-stat" id="sos-os" style="font-size: 14px; margin-top:8px;">Loading...</div></div>
+                    <div class="card"><div class="card-label">Kernel Release</div><div class="card-stat" id="sos-kernel" style="font-size: 14px; margin-top:8px;">Loading...</div></div>
+                    <div class="card"><div class="card-label">RAM Usage</div><div class="card-stat" id="sos-ram" style="font-size: 16px; margin-top:8px;">Loading...</div></div>
+                    <div class="card"><div class="card-label">Disk Space Free</div><div class="card-stat" id="sos-disk" style="font-size: 16px; margin-top:8px;">Loading...</div></div>
+                    <div class="card" style="grid-column: span 2;"><div class="card-label">Current Boot Bandwidth (Recv / Sent)</div><div class="card-stat" id="sos-boot-bw" style="font-size: 15px; margin-top:8px;">Loading...</div></div>
+                    <div class="card" style="grid-column: span 2;"><div class="card-label" id="sos-month-label">Monthly Bandwidth</div><div class="card-stat" id="sos-month-bw" style="font-size: 15px; margin-top:8px;">Loading...</div></div>
+                </div>
+            </div>
+
             <div id="view-logs" class="view-section">
                 <div class="section-title">
                     <span>System & Maintenance Logs</span>
@@ -4331,6 +4379,16 @@ HTML_DASHBOARD = """
 
             <div id="view-settings" class="view-section">
                 
+                <div class="section-title">Interface Settings</div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Liquid UI (Fluid Width)</h3>
+                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Adjust how wide and fluid the dashboard feels. (50% to 100%)</p>
+                    <div class="input-group">
+                        <label>Current Width: <span id="liquid-val">50</span>%</label>
+                        <input type="range" id="liquid-slider" min="50" max="100" value="50" oninput="applyLiquidUI(this.value)" style="width: 100%; accent-color: var(--accent); cursor: pointer;">
+                    </div>
+                </div>
+
                 <div class="section-title">Telegram Session Management</div>
                 <div class="card" style="margin-bottom: 20px;">
                     <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Connect Telegram via Web</h3>
@@ -4429,10 +4487,22 @@ HTML_DASHBOARD = """
         let currentUser = localStorage.getItem('tg_uid') || null;
         let chatsLoaded = false;
 
+        function applyLiquidUI(val) {
+            document.getElementById('liquid-val').innerText = val;
+            document.querySelector('.container').style.maxWidth = val + '%';
+            localStorage.setItem('liquid_ui_val', val);
+        }
+
         if (currentUser) {
             document.getElementById('login-view').style.display = 'none';
             document.getElementById('app-view').style.display = 'block';
             document.getElementById('profile-id').innerText = "ID: " + currentUser;
+            
+            // Apply Liquid UI Settings instantly on load
+            const savedLiquid = localStorage.getItem('liquid_ui_val') || "50";
+            applyLiquidUI(savedLiquid);
+            setTimeout(() => { if (document.getElementById('liquid-slider')) document.getElementById('liquid-slider').value = savedLiquid; }, 100);
+
             fetchStats();
             setInterval(fetchStats, 5000);
         }
@@ -4478,9 +4548,59 @@ HTML_DASHBOARD = """
             document.getElementById('nav-title').innerText = title;
             toggleSidebar();
 
-            if (viewId === 'chats') {
-                loadWebChats();
+            if (viewId === 'chats') loadWebChats();
+            if (viewId === 'sos') loadSosStats();
+        }
+
+        async function runWebSpeedtest() {
+            const statusEl = document.getElementById('speedtest-status');
+            const resultsEl = document.getElementById('speedtest-results');
+            statusEl.innerHTML = "<i>⏱ Running Speedtest... This takes about 10-15 seconds to measure ping, download, and upload speeds. Please wait...</i>";
+            resultsEl.style.display = 'none';
+
+            try {
+                const res = await fetch(`/api/speedtest?user_id=${currentUser}`);
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    statusEl.innerHTML = "✅ <b>Speedtest Completed Successfully!</b>";
+                    resultsEl.style.display = 'block';
+                    document.getElementById('st-dl').innerText = data.download;
+                    document.getElementById('st-ul').innerText = data.upload;
+                    document.getElementById('st-ping').innerText = data.ping;
+                    document.getElementById('st-server').innerText = data.server;
+                    document.getElementById('st-sponsor').innerText = data.sponsor;
+                    
+                    const imgContainer = document.getElementById('st-img-container');
+                    if (data.share_image) {
+                        imgContainer.innerHTML = `<img src="${data.share_image}" alt="Speedtest Result" style="max-width: 100%; border-radius: 14px; border: 1px solid var(--card-border);">`;
+                    } else {
+                        imgContainer.innerHTML = '';
+                    }
+                } else {
+                    statusEl.innerHTML = `<span style="color: var(--danger);">❌ Error: ${data.message}</span>`;
+                }
+            } catch(e) {
+                statusEl.innerHTML = `<span style="color: var(--danger);">❌ Network connection error while running speedtest.</span>`;
             }
+        }
+
+        async function loadSosStats() {
+            if (!currentUser) return;
+            try {
+                const res = await fetch(`/api/sos?user_id=${currentUser}`);
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    document.getElementById('sos-os').innerText = data.os;
+                    document.getElementById('sos-kernel').innerText = data.kernel;
+                    document.getElementById('sos-ram').innerText = `${data.ram_percent}% (${data.ram_used} / ${data.ram_total})`;
+                    document.getElementById('sos-disk').innerText = `${data.disk_percent}% free (${data.disk_free} / ${data.disk_total})`;
+                    document.getElementById('sos-boot-bw').innerText = `📥 ${data.boot_download}  │  📤 ${data.boot_upload}`;
+                    document.getElementById('sos-month-label').innerText = `Monthly Bandwidth (${data.month_name})`;
+                    document.getElementById('sos-month-bw').innerText = `Downloaded: ${data.month_download}  │  Uploaded: ${data.month_upload}  │  Total: ${data.month_total}`;
+                }
+            } catch(e) {}
         }
 
         function setTheme(themeName, el) {
@@ -5154,6 +5274,87 @@ async def _api_chats_handler(request):
         
     return web.json_response({"status": "success", "chats": chat_list})
 
+async def _api_speedtest_handler(request):
+    try:
+        uid = int(request.query.get("user_id", 0))
+    except:
+        uid = 0
+    
+    session_str = await db.get_session(uid)
+    if not session_str and uid not in ADMINS:
+        return web.json_response({"status": "error", "message": "Unauthorized"})
+
+    def run_speedtest_sync():
+        try:
+            st = speedtest.Speedtest()
+            st.get_best_server()
+            st.download()
+            st.upload()
+            st.results.share()
+            return st.results.dict(), None
+        except Exception as e:
+            return None, str(e)
+
+    result, error = await asyncio.to_thread(run_speedtest_sync)
+    if error or not result:
+        return web.json_response({"status": "error", "message": error or "Speedtest failed"})
+
+    dl_mbps = result['download'] / 1_000_000
+    ul_mbps = result['upload'] / 1_000_000
+    
+    return web.json_response({
+        "status": "success",
+        "download": f"{dl_mbps:.2f} Mbps",
+        "upload": f"{ul_mbps:.2f} Mbps",
+        "ping": f"{result['ping']} ms",
+        "server": f"{result['server']['name']} ({result['server']['country']})",
+        "sponsor": result['server']['sponsor'],
+        "share_image": result.get("share", "")
+    })
+
+async def _api_sos_handler(request):
+    try:
+        uid = int(request.query.get("user_id", 0))
+    except:
+        uid = 0
+        
+    session_str = await db.get_session(uid)
+    if not session_str and uid not in ADMINS:
+        return web.json_response({"status": "error", "message": "Unauthorized"})
+
+    m_down, m_up, m_total, month_name = await db.get_monthly_bandwidth()
+    
+    try:
+        with open("/etc/os-release") as f:
+            os_info = dict(line.strip().split("=", 1) for line in f if "=" in line)
+        os_name = os_info.get("PRETTY_NAME", f'"{platform.system()} {platform.release()}"').strip('"')
+    except Exception:
+        os_name = f"{platform.system()} {platform.release()}"
+
+    mem = psutil.virtual_memory()
+    disk = psutil.disk_usage('/')
+    net = psutil.net_io_counters()
+
+    return web.json_response({
+        "status": "success",
+        "os": os_name,
+        "hostname": socket.gethostname(),
+        "kernel": platform.uname().release,
+        "cpu_percent": psutil.cpu_percent(interval=0.1),
+        "ram_percent": mem.percent,
+        "ram_used": _pretty_bytes(mem.used),
+        "ram_total": _pretty_bytes(mem.total),
+        "disk_percent": disk.percent,
+        "disk_free": _pretty_bytes(disk.free),
+        "disk_total": _pretty_bytes(disk.total),
+        "boot_download": _pretty_bytes(net.bytes_recv),
+        "boot_upload": _pretty_bytes(net.bytes_sent),
+        "month_name": month_name,
+        "month_download": _pretty_bytes(m_down),
+        "month_upload": _pretty_bytes(m_up),
+        "month_total": _pretty_bytes(m_total)
+    })
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -5163,6 +5364,8 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/stats", _api_stats_handler)
     app_web.router.add_get("/api/logs", _api_logs_handler)
     app_web.router.add_get("/api/chats", _api_chats_handler)
+    app_web.router.add_get("/api/speedtest", _api_speedtest_handler)
+    app_web.router.add_get("/api/sos", _api_sos_handler)
     app_web.router.add_get("/api/logs/download", _api_download_log_handler)
     app_web.router.add_post("/api/auth/login", _api_login_handler)
     app_web.router.add_post("/api/auth/password", _api_password_handler)
