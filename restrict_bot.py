@@ -1192,7 +1192,8 @@ async def cancel_callback(client: Client, query):
             "• Use `/watch` to set up an auto-forwarder.\n"
             "• Type `/help` for the master guide."
         )
-        await query.message.edit(cancel_text)
+        try: await query.message.edit(cancel_text)
+        except Exception: pass
         return
 
     if data == "cancel_all":
@@ -1218,7 +1219,8 @@ async def cancel_callback(client: Client, query):
             "🛡 **Why is this useful?**\n"
             "Cancelling heavy, stuck, or accidental batches frees up the server's bandwidth and clears your queue so you can start fresh."
         )
-        await query.message.edit(cancel_all_text)
+        try: await query.message.edit(cancel_all_text)
+        except Exception: pass
         return
 
     if data.startswith("cancel_task:"):
@@ -1243,7 +1245,8 @@ async def cancel_callback(client: Client, query):
             f"**What happens now?**\n"
             f"The current file chunk will finish, and then the process will cleanly abort. Your other queued tasks (if any) will now speed up!"
         )
-        await query.message.edit(cancel_single_text)
+        try: await query.message.edit(cancel_single_text)
+        except Exception: pass
         return
         
 @app.on_callback_query(filters.regex("^close_menu"))
@@ -1258,8 +1261,10 @@ async def close_menu(client, query):
             "• `/watchers` - Manage live forwards\n"
             "• `/help` - Open the master guide"
         )
-        await query.message.edit(help_text)
-    await query.answer("Closed.", show_alert=False)
+        try: await query.message.edit(help_text)
+        except Exception: pass
+    try: await query.answer("Closed.", show_alert=False)
+    except Exception: pass
 
 @app.on_message(filters.command(["log"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def send_log_handler(client: Client, message: Message):
@@ -1666,14 +1671,17 @@ async def cancel_logout_cb(client, query):
         "Your Telegram session remains securely linked to the bot's database. \n\n"
         "🔒 **Security Note:** Because you did not log out, your active `/watch` monitors will continue running seamlessly in the background without interruption."
     )
-    await query.message.edit(cancel_logout_text)
-    await query.answer("Session kept active.", show_alert=False)
+    try: await query.message.edit(cancel_logout_text)
+    except Exception: pass
+    try: await query.answer("Session kept active.", show_alert=False)
+    except Exception: pass
 
 @app.on_callback_query(filters.regex("^confirm_logout$"))
 async def confirm_logout_cb(client, query):
     user_id = query.from_user.id
     
-    await query.message.edit("📡 **Connecting to Telegram to terminate session...**")
+    try: await query.message.edit("📡 **Connecting to Telegram to terminate session...**")
+    except Exception: pass
 
     session_string = await db.get_session(user_id)
     api_id = await db.get_api_id(user_id)
@@ -1697,18 +1705,22 @@ async def confirm_logout_cb(client, query):
             
             try:
                 await user_client.log_out()
-                await query.message.edit("✅ **Session successfully removed from Telegram Devices.**")
+                try: await query.message.edit("✅ **Session successfully removed from Telegram Devices.**")
+                except Exception: pass
             except Exception as e:
                 if "terminated" in str(e) or "Connection" in str(e):
-                    await query.message.edit("✅ **Session terminated successfully.**")
+                    try: await query.message.edit("✅ **Session terminated successfully.**")
+                    except Exception: pass
                 else:
                     raise e
             
         except AuthKeyUnregistered:
-            await query.message.edit("⚠️ **Session was already invalid.** Cleaning local database...")
+            try: await query.message.edit("⚠️ **Session was already invalid.** Cleaning local database...")
+            except Exception: pass
         except Exception as e:
             logger.warning(f"Remote logout warning for {user_id}: {e}")
-            await query.message.edit("✅ **Local session cleared.** (Remote session might already be gone)")
+            try: await query.message.edit("✅ **Local session cleared.** (Remote session might already be gone)")
+            except Exception: pass
         finally:
             try:
                 if user_client and user_client.is_connected:
@@ -1740,8 +1752,10 @@ async def confirm_logout_cb(client, query):
     await db.set_api_id(user_id, api_id=None)
     await db.set_api_hash(user_id, api_hash=None)
     
-    await query.message.reply("**Logout Complete** ♦\n(You are now disconnected. All active batch tasks have been cleanly cancelled.)")
-    await query.answer()
+    try: await query.message.reply("**Logout Complete** ♦\n(You are now disconnected. All active batch tasks have been cleanly cancelled.)")
+    except Exception: pass
+    try: await query.answer()
+    except Exception: pass
 
 from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
 from pyromod.exceptions import ListenerStopped
@@ -1766,8 +1780,10 @@ async def cancel_login_cb(client, query):
         "<i>What next?</i>\n"
         "You can continue using public bot features, or send <code>/login</code> whenever you are ready to try linking your account again."
     )
-    await query.message.edit(cancel_login_text, parse_mode=enums.ParseMode.HTML)
-    await query.answer("Login Cancelled", show_alert=False)
+    try: await query.message.edit(cancel_login_text, parse_mode=enums.ParseMode.HTML)
+    except Exception: pass
+    try: await query.answer("Login Cancelled", show_alert=False)
+    except Exception: pass
     
 @app.on_message(filters.private & ~filters.forwarded & filters.command(["login"]))
 async def login_handler(bot: Client, message: Message):
@@ -2220,7 +2236,8 @@ async def unwatch_callback(client, query):
         )
         if cancelled_tasks > 0:
             msg += f"\n\n🛑 Intercepted and Cancelled `{cancelled_tasks}` active watcher downloads."
-        await query.message.edit(msg)
+        try: await query.message.edit(msg)
+        except Exception: pass
         return
 
     # --- Delete Single Route by Unique MongoDB ID ---
@@ -2229,10 +2246,12 @@ async def unwatch_callback(client, query):
     try:
         watcher = await db.db.watchers.find_one({"_id": ObjectId(wid)})
     except Exception:
-        return await query.answer("Watcher not found or invalid ID.", show_alert=True)
+        try: return await query.answer("Watcher not found or invalid ID.", show_alert=True)
+        except Exception: return
         
     if not watcher:
-        return await query.answer("Watcher already removed.", show_alert=True)
+        try: return await query.answer("Watcher already removed.", show_alert=True)
+        except Exception: return
 
     owner_id = watcher["user_id"]
     source_id = watcher["source_id"]
@@ -2264,7 +2283,8 @@ async def unwatch_callback(client, query):
     if cancelled_tasks > 0:
         msg += f"\n\n🛑 **Cancelled `{cancelled_tasks}` active ongoing downloads** originating from this watcher."
         
-    await query.message.edit(msg)
+    try: await query.message.edit(msg)
+    except Exception: pass
 
 # ==============================================================================
 # --- CORE: receive links / start tasks / processing / cancel checks ---
@@ -2393,7 +2413,8 @@ async def dl_handler(client: Client, message: Message):
 async def destination_callback(client: Client, query):
     user_id = query.from_user.id
     if user_id not in PENDING_TASKS:
-        return await query.answer("❌ Task expired. Send link again.", show_alert=True)
+        try: return await query.answer("❌ Task expired. Send link again.", show_alert=True)
+        except Exception: return
     choice = query.data
     
     if choice == "dest_dm":
@@ -2404,14 +2425,16 @@ async def destination_callback(client: Client, query):
     elif choice == "dest_custom":
         PENDING_TASKS[user_id]["status"] = "waiting_id"
         buttons = [[InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]]
-        await query.message.edit_text(
-            "📝 **Send the Target Chat ID**\n\n"
-            "Examples:\n"
-            "• Channel/Group: `-100123456789`\n"
-            "• Specific Topic: `-100123456789/5`\n\n"
-            "⚠️ __Make sure I am an admin in that chat!__",
-            reply_markup=InlineKeyboardMarkup(buttons)
-        )
+        try:
+            await query.message.edit_text(
+                "📝 **Send the Target Chat ID**\n\n"
+                "Examples:\n"
+                "• Channel/Group: `-100123456789`\n"
+                "• Specific Topic: `-100123456789/5`\n\n"
+                "⚠️ __Make sure I am an admin in that chat!__",
+                reply_markup=InlineKeyboardMarkup(buttons)
+            )
+        except Exception: pass
 
 def get_filter_keyboard(current_types):
     buttons = []
@@ -2575,7 +2598,8 @@ async def ask_for_speed(message_or_query):
 async def speed_callback(client: Client, query):
     user_id = query.from_user.id
     if user_id not in PENDING_TASKS:
-        await query.answer("❌ Task expired.", show_alert=True)
+        try: await query.answer("❌ Task expired.", show_alert=True)
+        except Exception: pass
         return
     
     choice = query.data
@@ -2583,11 +2607,13 @@ async def speed_callback(client: Client, query):
     
     if choice == "speed_manual":
         PENDING_TASKS[user_id]["status"] = "waiting_speed_input"
-        await query.message.edit(
-            "⏱ **Enter Delay (Seconds)**\n\n"
-            "Every time a new message arrives, I will wait this long before forwarding it.",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]])
-        )
+        try:
+            await query.message.edit(
+                "⏱ **Enter Delay (Seconds)**\n\n"
+                "Every time a new message arrives, I will wait this long before forwarding it.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data="cancel_setup")]])
+            )
+        except Exception: pass
         return
 
     if choice == "speed_0":
