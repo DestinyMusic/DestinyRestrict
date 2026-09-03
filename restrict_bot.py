@@ -1082,16 +1082,26 @@ async def send_start(client: Client, message: Message):
 
     welcome_video_url = "https://files.catbox.moe/o9azww.mp4"
     
-    # 🟢 AUTO-DETECT URL (Checks for custom WEB_URL, then Render, then Koyeb)
-    raw_url = os.environ.get("WEB_URL") or os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("KOYEB_PUBLIC_DOMAIN")
+    # 🟢 UNIVERSAL URL AUTO-DETECTOR (HuggingFace, Render, Koyeb, Railway, Custom)
+    raw_url = (
+        os.environ.get("WEB_URL") or 
+        os.environ.get("SPACE_HOST") or 
+        os.environ.get("RENDER_EXTERNAL_URL") or 
+        os.environ.get("KOYEB_PUBLIC_DOMAIN") or
+        os.environ.get("RAILWAY_STATIC_URL")
+    )
     
     if raw_url:
-        # Ensure it has https:// so the Telegram button doesn't crash
-        web_url = f"https://{raw_url}" if not raw_url.startswith("http") else raw_url
+        raw_url = raw_url.rstrip("/")
+        # Force HTTP/HTTPS prefix to prevent Telegram inline button crash
+        if not raw_url.startswith("http://") and not raw_url.startswith("https://"):
+            web_url = f"https://{raw_url}"
+        else:
+            web_url = raw_url
     else:
-        # If no URL is detected, tell the user to set it
-        web_url = "https://example.com/please-set-web-url-in-env"
-    
+        # Failsafe for Localhost or VPS without domain set
+        web_url = f"http://127.0.0.1:{PORT}"
+
     welcome_text = (
         f"<b>👋 Hi {message.from_user.mention}, I am the Restricted Content Bot.</b>\n\n"
         "<blockquote expandable>"
@@ -1104,7 +1114,7 @@ async def send_start(client: Client, message: Message):
         "</blockquote>\n\n"
         f"<b>🌐 Web Dashboard:</b>\n"
         f"Control the bot, add tasks, and monitor active downloads directly from your browser:\n"
-        f"🔗 {web_url}"
+        f"🔗 <code>{web_url}</code>"
     )
     
     buttons = [
