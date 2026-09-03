@@ -1073,11 +1073,15 @@ def get_message_type(msg: Message):
 async def send_start(client: Client, message: Message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name
+    if message.from_user.last_name:
+        user_name += f" {message.from_user.last_name}"
     
     try:
         if not await db.is_user_exist(user_id):
             await db.add_user(user_id, user_name)
             logger.info(f"New user {user_id} saved to database.") 
+        else:
+            await db.col.update_one({"id": int(user_id)}, {"$set": {"name": user_name}})
     except Exception as e:
         logger.error(f"Failed to save user {user_id}: {e}", exc_info=True)
 
@@ -3160,7 +3164,34 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
 
 async def process_links_logic(client: Client, message: Message, text: str, dest_chat_id=None, dest_thread_id=None, dest_title="Direct Message", delay=3, acc_user_id=None, task_uuid=None, is_restricted=False, allowed_types=None, resume_from_id=None, saved_source_title=None):
     user_id = acc_user_id or (message.from_user.id if message and message.from_user else 0)
-    user_mention = message.from_user.mention if message and message.from_user else f"User({user_id})"
+    
+    # 🟢 Resolve Real User Name (Not Bot Name)
+    real_user_name = None
+    if message and message.from_user and not message.from_user.is_bot:
+        real_user_name = message.from_user.first_name
+        if message.from_user.last_name:
+            real_user_name += f" {message.from_user.last_name}"
+            
+    if not real_user_name and user_id:
+        user_doc = await db.col.find_one({"id": int(user_id)})
+        if user_doc and user_doc.get("name") and not str(user_doc.get("name")).startswith("User "):
+            real_user_name = user_doc.get("name")
+            
+    if not real_user_name and user_id:
+        try:
+            tg_user = await client.get_users(user_id)
+            if tg_user:
+                real_user_name = tg_user.first_name or "User"
+                if tg_user.last_name:
+                    real_user_name += f" {tg_user.last_name}"
+                await db.col.update_one({"id": int(user_id)}, {"$set": {"name": real_user_name}})
+        except Exception:
+            real_user_name = "User"
+            
+    if not real_user_name:
+        real_user_name = "User"
+
+    user_mention = f"[{real_user_name}](tg://user?id={user_id})"
     msg_chat_id = message.chat.id if message else user_id
     msg_id = message.id if message else None
     
@@ -3282,8 +3313,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             )
 
             # 🟢 [DETAILED LOGGING] Send the detailed log to the Log Channel now that we know the Source!
-            log_user_name = message.from_user.first_name if message and message.from_user else "User"
-            log_user_link = f"[{log_user_name}](tg://user?id={user_id})"
+            log_user_link = f"[{real_user_name}](tg://user?id={user_id})"
             log_src_topic = f" ({filter_thread_id})" if filter_thread_id else ""
             log_dst_topic = f" ({dest_thread_id})" if dest_thread_id else ""
             log_dst_display = f"{dest_chat_id}" + (f"/{dest_thread_id}" if dest_thread_id else "")
