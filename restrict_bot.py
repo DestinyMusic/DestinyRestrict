@@ -170,6 +170,7 @@ To extract restricted files sent to you by other Bots or Users in Direct Message
 <b>🔑 ACCOUNT & SESSION</b>
 • <code>/login</code> - <b>Link Your Account:</b> Securely connects your personal account session so the bot can bypass "Saving Restricted" limits and read your PMs.
 • <code>/logout</code> - <b>Disconnect Safely:</b> Terminates your saved session and cleans up active watchers.
+• <code>/chats</code> - <b>Chats & Channel Explorer:</b> Extract IDs of all your private chats, groups, channels, or bots with expandable quotes and filters.
 </blockquote>
 ▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬"""
 
@@ -2390,36 +2391,49 @@ async def chats_cmd(client: Client, message: Message):
     user_id = message.from_user.id
     args = message.command[1:] if len(message.command) > 1 else []
     
-    if not args:
-        help_text = (
-            "**Chats Help Menu**\n"
-            "Use it for getting all chats ID for use with other commands. You can use a filter to tell the bot what type of chats to show.\n\n"
-            "**Command Arguments**\n"
-            "`/chats all`\n"
-            "`/chats FILTER`\n\n"
-            "**Get all chats**\n"
-            "`/chats all`\n\n"
-            "**Get specific chats**\n"
-            "`/chats user`\n"
-            "`/chats bot`\n"
-            "`/chats group`\n"
-            "`/chats channel`\n"
+    # 🟢 1. CLEAN WARNING IF NOT LOGGED IN / NO SESSION IN DB
+    session_str = await db.get_session(user_id)
+    if not session_str:
+        not_logged_in_text = (
+            "<b>⚠️ TELEGRAM SESSION NOT CONNECTED</b>\n\n"
+            "<blockquote expandable>"
+            "You cannot fetch your chat IDs because your personal Telegram account is not linked to this bot yet!\n\n"
+            "💡 <b>How to Connect:</b>\n"
+            "• <b>Via Telegram:</b> Send <code>/login</code> and follow the prompts.\n"
+            "• <b>Via Web Portal:</b> Open <b>Settings</b> and enter your phone number to sign in.\n\n"
+            "<i>Once connected, send <code>/chats</code> again to explore all your chat IDs.</i>"
+            "</blockquote>"
         )
-        return await message.reply(help_text)
+        return await message.reply(not_logged_in_text, parse_mode=enums.ParseMode.HTML)
+
+    # 🟢 2. BEAUTIFUL HELP MENU (WHEN RUN WITHOUT ARGUMENTS)
+    if not args:
+        help_menu = (
+            "<b>💬 CHATS & CHANNELS EXPLORER</b>\n"
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬\n"
+            "<blockquote expandable>"
+            "Quickly extract chat, channel, group, and bot IDs associated with your logged-in account. You can copy these IDs directly to use in <code>/watch</code> or <code>/dl</code>!\n\n"
+            "<b>📑 COMMAND ARGUMENTS</b>\n"
+            "• <code>/chats all</code> - <i>Fetch all categories</i>\n"
+            "• <code>/chats group</code> - <i>Fetch Groups & Supergroups only</i>\n"
+            "• <code>/chats channel</code> - <i>Fetch Broadcast Channels only</i>\n"
+            "• <code>/chats bot</code> - <i>Fetch Direct Bots only</i>\n"
+            "• <code>/chats user</code> - <i>Fetch Direct User PMs only</i>\n\n"
+            "🛡 <b>Flood Protection:</b> Results are delivered in pages of 50 with an automated 6-second interval between pages."
+            "</blockquote>\n"
+            "▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬"
+        )
+        return await message.reply(help_menu, parse_mode=enums.ParseMode.HTML)
 
     filter_type = args[0].lower()
     if filter_type not in ["all", "user", "bot", "group", "channel"]:
-        return await message.reply("❌ **Invalid filter.** Use `all`, `user`, `bot`, `group`, or `channel`.")
-    
+        return await message.reply("❌ **Invalid argument.** Please use: `all`, `group`, `channel`, `bot`, or `user`.")
+
     uclient = USER_CLIENTS.get(user_id)
     
-    # 🟢 DYNAMIC WAKE-UP: If session exists in DB but isn't running, start it now!
+    # 🟢 3. DYNAMIC WAKE-UP FOR INTERRUPTED SESSIONS
     if not uclient or not uclient.is_connected:
-        session_str = await db.get_session(user_id)
-        if not session_str:
-            return await message.reply("❌ **Not Connected:** You must `/login` to your Telegram session first.")
-        
-        status = await message.reply("🔄 **Waking up your Telegram Session...**")
+        status = await message.reply("🔄 <b>Connecting your Telegram session...</b>", parse_mode=enums.ParseMode.HTML)
         try:
             api_id = await db.get_api_id(user_id) or API_ID
             api_hash = await db.get_api_hash(user_id) or API_HASH
@@ -2427,18 +2441,19 @@ async def chats_cmd(client: Client, message: Message):
             uclient.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
             await uclient.start()
             USER_CLIENTS[user_id] = uclient
-            await status.edit("🔄 **Session Active! Fetching your chats now...**")
+            await status.edit("🔄 <b>Session Active! Fetching your dialogs...</b>", parse_mode=enums.ParseMode.HTML)
         except Exception as e:
-            return await status.edit(f"❌ **Session Error:** `{e}`\nPlease `/logout` and `/login` again.")
+            return await status.edit(f"❌ <b>Session Expired or Broken:</b> <code>{e}</code>\nPlease run <code>/logout</code> and <code>/login</code> again.")
     else:
-        status = await message.reply("🔄 **Fetching your chat list. Please wait...**")
-    
+        status = await message.reply("🔄 <b>Fetching your chats... Please wait</b>", parse_mode=enums.ParseMode.HTML)
+
     users, groups, channels, bots = [], [], [], []
     
     try:
         async for d in uclient.get_dialogs():
             name = html.escape(d.chat.title or d.chat.first_name or "Unknown")
-            line = f"{name} | <code>{d.chat.id}</code>"
+            cid = d.chat.id
+            line = f"• <b>{name}</b> │ <code>{cid}</code>"
             
             if d.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
                 groups.append(line)
@@ -2449,32 +2464,42 @@ async def chats_cmd(client: Client, message: Message):
             elif d.chat.type == enums.ChatType.PRIVATE:
                 users.append(line)
     except Exception as e:
-        return await status.edit(f"❌ **Error fetching chats:** {e}")
+        return await status.edit(f"❌ <b>Error reading dialogs:</b> <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
         
     await status.delete()
-    
+
     def chunk_list(items, chunk_size=50):
         return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
         
     categories = []
-    if filter_type in ["all", "group"]: categories.append(("👥 Groups", groups))
-    if filter_type in ["all", "channel"]: categories.append(("📢 Channels", channels))
-    if filter_type in ["all", "bot"]: categories.append(("🤖 Bots", bots))
-    if filter_type in ["all", "user"]: categories.append(("👤 Users", users))
-    
+    if filter_type in ["all", "group"]: categories.append(("👥 Groups & Supergroups", "👥", groups))
+    if filter_type in ["all", "channel"]: categories.append(("📢 Broadcast Channels", "📢", channels))
+    if filter_type in ["all", "bot"]: categories.append(("🤖 Telegram Bots", "🤖", bots))
+    if filter_type in ["all", "user"]: categories.append(("👤 User Direct Messages", "👤", users))
+
     found_any = False
-    for cat_name, cat_list in categories:
-        if not cat_list: 
+    for title, emoji, items in categories:
+        if not items:
             continue
         found_any = True
-        chunks = chunk_list(cat_list, 50)
+        chunks = chunk_list(items, 50)
+        total_pages = len(chunks)
+        
         for i, chunk in enumerate(chunks, 1):
-            text = f"<b>{cat_name} - Page {i}</b>\n<blockquote expandable>\n" + "\n".join(chunk) + "\n</blockquote>"
+            text = (
+                f"<b>{emoji} {title} (Page {i}/{total_pages})</b>\n"
+                f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬\n"
+                f"<blockquote expandable>\n"
+                + "\n".join(chunk) +
+                f"\n</blockquote>\n"
+                f"▬▬▬▬▬▬▬▬▬▬▬▬▬▬▬✘▬"
+            )
             await message.reply(text, parse_mode=enums.ParseMode.HTML)
-            await asyncio.sleep(6) # 🟢 6-second delay to strictly prevent FloodWait
-            
+            if i < total_pages or len(categories) > 1:
+                await asyncio.sleep(6) # Safe 6-second rate limit pause
+
     if not found_any:
-        await message.reply(f"⚠️ No chats found for filter: **{filter_type}**")
+        await message.reply(f"⚠️ No active dialogs found matching filter: <b>{filter_type}</b>", parse_mode=enums.ParseMode.HTML)
 
 @app.on_message(filters.command(["dl"]) & (filters.private | filters.group))
 async def dl_handler(client: Client, message: Message):
@@ -4190,6 +4215,7 @@ HTML_DASHBOARD = """
             <div class="menu-item active" onclick="switchView('home', 'Home')">🏠 Home</div>
             <div class="menu-item" onclick="switchView('downloads', 'Downloads')">📥 Downloads</div>
             <div class="menu-item" onclick="switchView('watchers', 'Watchers')">📡 Watchers</div>
+            <div class="menu-item" onclick="switchView('chats', 'Chats & IDs')">💬 Chats & IDs</div>
             <div class="menu-item" onclick="switchView('logs', 'Logs')">📋 System Logs</div>
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
@@ -4254,6 +4280,36 @@ HTML_DASHBOARD = """
                     <button class="primary-btn" style="width: auto; padding: 8px 16px; font-size: 12px;" onclick="openTaskModal()">+ Add Watcher</button>
                 </div>
                 <div id="watchers-list"><div style="color: #64748b;">Loading watchers...</div></div>
+            </div>
+
+            <div id="view-chats" class="view-section">
+                <div class="section-title">
+                    <span>Your Telegram Dialogs</span>
+                    <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="loadWebChats(true)">🔄 Refresh</button>
+                </div>
+                
+                <div id="web-chats-warning" class="card" style="display:none; border-color: var(--danger); margin-bottom: 20px;">
+                    <strong style="color: var(--danger);">⚠️ Telegram Session Not Connected</strong>
+                    <p style="font-size: 12px; color: #94a3b8; margin: 6px 0 0 0;">Please connect your Telegram account in the <b>Settings</b> tab or run <code>/login</code> in the bot to view your dialog list.</p>
+                </div>
+
+                <div id="web-chats-content">
+                    <div class="input-group">
+                        <input type="text" id="web-chat-search" placeholder="🔍 Search by name or chat ID..." oninput="renderFilteredChats()">
+                    </div>
+                    
+                    <div style="display: flex; gap: 8px; margin-bottom: 16px; overflow-x: auto; padding-bottom: 4px;">
+                        <button class="theme-btn active" id="filter-btn-all" onclick="filterChatsCategory('All', this)">All</button>
+                        <button class="theme-btn" id="filter-btn-group" onclick="filterChatsCategory('Group', this)">👥 Groups</button>
+                        <button class="theme-btn" id="filter-btn-channel" onclick="filterChatsCategory('Channel', this)">📢 Channels</button>
+                        <button class="theme-btn" id="filter-btn-bot" onclick="filterChatsCategory('Bot', this)">🤖 Bots</button>
+                        <button class="theme-btn" id="filter-btn-user" onclick="filterChatsCategory('User', this)">👤 Users</button>
+                    </div>
+
+                    <div id="web-chats-list">
+                        <div style="color: #64748b;">Loading dialogs...</div>
+                    </div>
+                </div>
             </div>
 
             <div id="view-logs" class="view-section">
@@ -4419,6 +4475,10 @@ HTML_DASHBOARD = """
             event.currentTarget.classList.add('active');
             document.getElementById('nav-title').innerText = title;
             toggleSidebar();
+
+            if (viewId === 'chats') {
+                loadWebChats();
+            }
         }
 
         function setTheme(themeName, el) {
@@ -4439,22 +4499,89 @@ HTML_DASHBOARD = """
         function closeTaskModal() { document.getElementById('taskModal').classList.remove('show'); }
         function toggleMode(val) { document.getElementById('delay-group').style.display = 'block'; }
 
-        async function fetchChatsList() {
+        let allLoadedChats = [];
+        let currentChatCat = 'All';
+
+        async function loadWebChats(force = false) {
             if (!currentUser) return;
+            const container = document.getElementById('web-chats-list');
+            const warnBox = document.getElementById('web-chats-warning');
+            
+            if (force) container.innerHTML = '<div style="color: #64748b;">Refreshing dialogs from Telegram...</div>';
+
             try {
                 const res = await fetch(`/api/chats?user_id=${currentUser}`);
                 const data = await res.json();
+                
                 if (data.status === 'success') {
+                    warnBox.style.display = 'none';
+                    allLoadedChats = data.chats || [];
+                    
+                    // Update Modal Datalist as well
                     const dl = document.getElementById('tg-chats-list');
-                    dl.innerHTML = '';
-                    data.chats.forEach(c => {
-                        const opt = document.createElement('option');
-                        opt.value = c.id;
-                        opt.text = c.name;
-                        dl.appendChild(opt);
-                    });
+                    if (dl) {
+                        dl.innerHTML = '';
+                        allLoadedChats.forEach(c => {
+                            const opt = document.createElement('option');
+                            opt.value = c.id;
+                            opt.text = c.name;
+                            dl.appendChild(opt);
+                        });
+                    }
+
+                    renderFilteredChats();
+                } else {
+                    warnBox.style.display = 'block';
+                    container.innerHTML = '<div style="color: #64748b;">No chats available. Connect session first.</div>';
                 }
-            } catch(e) {}
+            } catch(e) {
+                container.innerHTML = '<div style="color: var(--danger);">Failed to load dialogs.</div>';
+            }
+        }
+
+        function filterChatsCategory(cat, btn) {
+            currentChatCat = cat;
+            document.querySelectorAll('#web-chats-content .theme-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            renderFilteredChats();
+        }
+
+        function renderFilteredChats() {
+            const query = (document.getElementById('web-chat-search').value || '').toLowerCase();
+            const listEl = document.getElementById('web-chats-list');
+            
+            const filtered = allLoadedChats.filter(c => {
+                const matchesCat = currentChatCat === 'All' || c.name.toLowerCase().includes(`[${currentChatCat.toLowerCase()}`);
+                const matchesQuery = c.name.toLowerCase().includes(query) || c.id.includes(query);
+                return matchesCat && matchesQuery;
+            });
+
+            if (!filtered.length) {
+                listEl.innerHTML = '<div style="color: #64748b; padding: 12px 0;">No matching dialogs found.</div>';
+                return;
+            }
+
+            listEl.innerHTML = '';
+            filtered.forEach(c => {
+                listEl.innerHTML += `
+                    <div class="task-row" style="margin-bottom: 8px;">
+                        <div>
+                            <div style="font-weight: 700; color: #fff; font-size: 13px;">${c.name}</div>
+                            <div style="font-size: 11px; color: var(--accent); margin-top: 2px;">ID: <code>${c.id}</code></div>
+                        </div>
+                        <button class="task-kill" style="color: var(--accent); border-color: var(--card-border); background: var(--bg);" onclick="copyChatId('${c.id}')">📋 COPY ID</button>
+                    </div>
+                `;
+            });
+        }
+
+        function copyChatId(id) {
+            navigator.clipboard.writeText(id);
+            alert("Copied ID: " + id);
+        }
+
+        async function fetchChatsList() {
+            await loadWebChats();
         }
 
         async function fetchStats() {
@@ -5557,14 +5684,14 @@ async def main():
         public_commands = [
             BotCommand("start", "⚡ Check if bot is alive"),
             BotCommand("help", "📚 View the detailed usage guide"),
+            BotCommand("chats", "💬 List your chat & channel IDs"),
             BotCommand("dl", "📥 Download or forward from a link"),
             BotCommand("watch", "👀 Setup a live auto-forwarder"),
             BotCommand("watchers", "📋 List your active watchers"),
             BotCommand("unwatch", "🗑 Stop watching a source"),
             BotCommand("cancel", "🚫 Cancel an ongoing task"),
             BotCommand("login", "🔑 Login to your Telegram session"),
-            BotCommand("logout", "🚪 Logout from your session"),
-            BotCommand("chats", "📝 Get chat id's")
+            BotCommand("logout", "🚪 Logout from your session")
         ]
 
         admin_commands = public_commands + [
