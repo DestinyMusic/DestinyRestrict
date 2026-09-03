@@ -735,6 +735,22 @@ def sanitize_filename(filename: str) -> str:
         ext = ".dat"
     return f"{name}{ext}"
 
+async def get_topic_title(client, chat_id, topic_id):
+    """Dynamically fetches the real name of a Telegram Forum Topic."""
+    if not topic_id: return ""
+    try:
+        msg = await client.get_messages(chat_id, topic_id)
+        if msg:
+            if hasattr(msg, "forum_topic") and msg.forum_topic and getattr(msg.forum_topic, "title", None):
+                return f" ({msg.forum_topic.title})"
+            if getattr(msg, "action", None) and getattr(msg.action, "title", None):
+                return f" ({msg.action.title})"
+            if getattr(msg, "reply_to_message", None) and getattr(msg.reply_to_message, "forum_topic", None):
+                if getattr(msg.reply_to_message.forum_topic, "title", None):
+                    return f" ({msg.reply_to_message.forum_topic.title})"
+    except Exception: pass
+    return f" (Topic {topic_id})"
+
 async def check_link_restriction(user_id, link_text):
     raw = (link_text or "").strip()
     raw = raw.replace("https://", "").replace("http://", "")
@@ -2704,7 +2720,8 @@ async def process_custom_destination(client: Client, message: Message):
         try:
             chat = await client.get_chat(dest_chat_id)
             title = chat.title or chat.first_name or "Target Chat"
-            if dest_thread_id: title += f" (Topic {dest_thread_id})" # 🟢 Append Topic
+            if dest_thread_id: 
+                title += await get_topic_title(client, dest_chat_id, dest_thread_id)
 
             bot_member = await client.get_chat_member(chat.id, "me")
             if bot_member.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
@@ -2867,6 +2884,9 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
         else:
             chat = await user_client.get_chat(source_id)
             source_title = chat.title or str(source_id)
+
+        if parsed.get("topic_id"):
+            source_title += await get_topic_title(user_client, source_id, parsed["topic_id"])
 
     except Exception as e:
         is_pub = parsed.get("kind") == "public" if 'parsed' in locals() else False
@@ -3280,7 +3300,6 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                         else:
                             raise
                     source_title = source_chat.title or source_chat.first_name or "Source Chat"
-                    if filter_thread_id: source_title += f" (Topic {filter_thread_id})" # 🟢 Append Topic
                     ACTUAL_CHAT_ID = source_chat.id
                     IS_PUBLIC_LINK = False
                 
@@ -3302,6 +3321,13 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             if saved_source_title and source_title == "Unknown Source":
                 source_title = saved_source_title
 
+            t_name = ""
+            if filter_thread_id:
+                fetcher = acc if acc else client
+                topic_addon = await get_topic_title(fetcher, ACTUAL_CHAT_ID, filter_thread_id)
+                source_title += topic_addon
+                t_name = topic_addon.strip(" ()")
+
             ACTIVE_PROCESSES[user_id][task_uuid].update({"source_title": source_title, "total": total_count, "current": 0})
             
             # 🟢 [DB SAVE] Register task for Auto-Resume with the CORRECT fetched source title
@@ -3312,23 +3338,23 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 source_title=source_title, current_msg_id=fromID, to_id=toID
             )
 
-            # 🟢 [DETAILED LOGGING] Send the detailed log to the Log Channel now that we know the Source!
+            # 🟢 [DETAILED LOGGING] Cleaned up to prevent double Topic IDs!
             log_user_link = f"[{real_user_name}](tg://user?id={user_id})"
-            log_src_topic = f" ({filter_thread_id})" if filter_thread_id else ""
-            log_dst_topic = f" ({dest_thread_id})" if dest_thread_id else ""
             log_dst_display = f"{dest_chat_id}" + (f"/{dest_thread_id}" if dest_thread_id else "")
             
             detailed_log = (
                 f"▶️ **Task Started**\n"
                 f"**User:** {log_user_link} (`{user_id}`)\n"
-                f"**Task:** {source_title}{log_src_topic} -> {dest_title}{log_dst_topic}\n"
+                f"**Task:** {source_title} -> {dest_title}\n"
                 f"**Link:** {text} -> `{log_dst_display}`"
             )
             await send_log(detailed_log)
             
             status_text_header = f"**Batch Task Started!** 🚀\n"
+            inner_header = ""
             if filter_thread_id:
-                status_text_header += f"**Filter:** `Topic {filter_thread_id} Only` 🎯\n"
+                status_text_header += f"**Filter:** `{t_name} Only` 🎯\n"
+                inner_header = f"Filter: {t_name} Only 🎯"
 
             kwargs_status = {"chat_id": msg_chat_id}
             if msg_id: 
@@ -3350,7 +3376,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 )
 
             last_update_time = time.time()
-            inner_header = f"Filter: Topic {filter_thread_id} Only 🎯" if filter_thread_id else ""
+            # 🟢 Deleted the old hardcoded inner_header line here!
 
             for index, msgid in enumerate(range(fromID, toID+1), start=1):
                 loop_start_time = time.time()
@@ -3381,7 +3407,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                             user_id, task_uuid, filter_thread_id, allowed_types
                         )
                     else:
-                        # Unchanged fallback for all Private/Restricted files
+                        # 🟢 Perfectly passes the clean inner_header generated above
                         task_result = await handle_private(
                             client, acc, message, chatid, msgid, index, total_count, 
                             status_message, dest_chat_id, dest_thread_id, delay, 
@@ -5319,7 +5345,8 @@ async def _api_add_task(request):
             try:
                 d_chat = await uclient.get_chat(dest_chat_id)
                 dest_title = d_chat.title or d_chat.first_name or str(dest_chat_id)
-                if dest_thread_id: dest_title += f" (Topic {dest_thread_id})"
+                if dest_thread_id: 
+                    dest_title += await get_topic_title(uclient, dest_chat_id, dest_thread_id)
             except:
                 dest_title = str(dest_chat_id)
 
@@ -5396,7 +5423,8 @@ async def _api_add_watcher(request):
                 chat = await user_client.get_chat(parsed["chat_id"])
             source_id = chat.id
             source_title = chat.title or str(source_id)
-            if parsed.get("topic_id"): source_title += f" (Topic {parsed['topic_id']})"
+            if parsed.get("topic_id"): 
+                source_title += await get_topic_title(user_client, source_id, parsed["topic_id"])
         except Exception:
             source_id = parsed.get("chat_id")
             source_title = "Watched Source"
@@ -5406,7 +5434,8 @@ async def _api_add_watcher(request):
             try:
                 d_chat = await user_client.get_chat(dest_chat_id)
                 dest_title = d_chat.title or d_chat.first_name or str(dest_chat_id)
-                if dest_thread_id: dest_title += f" (Topic {dest_thread_id})"
+                if dest_thread_id: 
+                    dest_title += await get_topic_title(user_client, dest_chat_id, dest_thread_id)
             except: pass
 
         # 🟢 FIX 2: Dynamically start the background listener if it's inactive
