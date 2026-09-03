@@ -4150,8 +4150,15 @@ HTML_DASHBOARD = """
         .theme-btn.active { border-color: var(--accent); background: rgba(59,130,246,0.1); }
         .dot { width: 10px; height: 10px; border-radius: 50%; }
 
-        .container { max-width: 50%; margin: 0 auto; padding: 20px; transition: max-width 0.4s cubic-bezier(0.4, 0, 0.2, 1); }
-        @media (max-width: 768px) { .container { max-width: 100% !important; } } /* Keeps mobile view readable */
+        :root { --liquid-width: 50%; }
+        .container { 
+            width: var(--liquid-width); 
+            min-width: 320px; /* Prevents the UI from completely vanishing if you slide to 0% */
+            max-width: 100%; 
+            margin: 0 auto; 
+            padding: 20px; 
+            transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1); 
+        }
         .section-title { font-size: 20px; font-weight: 800; margin: 25px 0 15px 0; color: #fff; display: flex; justify-content: space-between; align-items: center; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 20px; }
         .card { background: var(--card); border-radius: 20px; padding: 20px; border: 1px solid var(--card-border); transition: 0.3s; }
@@ -4385,7 +4392,7 @@ HTML_DASHBOARD = """
                     <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Adjust how wide and fluid the dashboard feels. (50% to 100%)</p>
                     <div class="input-group">
                         <label>Current Width: <span id="liquid-val">50</span>%</label>
-                        <input type="range" id="liquid-slider" min="50" max="100" value="50" oninput="applyLiquidUI(this.value)" style="width: 100%; accent-color: var(--accent); cursor: pointer;">
+                        <input type="range" id="liquid-slider" min="0" max="100" value="50" oninput="applyLiquidUI(this.value)" style="width: 100%; accent-color: var(--accent); cursor: pointer;">
                     </div>
                 </div>
 
@@ -4489,7 +4496,7 @@ HTML_DASHBOARD = """
 
         function applyLiquidUI(val) {
             document.getElementById('liquid-val').innerText = val;
-            document.querySelector('.container').style.maxWidth = val + '%';
+            document.documentElement.style.setProperty('--liquid-width', val + '%');
             localStorage.setItem('liquid_ui_val', val);
         }
 
