@@ -483,7 +483,7 @@ WATCHER_MEDIA_GROUPS = {}              # ALBUM WATCHER TRACKER
 SERVER_UPLOAD_LIMIT = asyncio.Semaphore(int(os.environ.get("SERVER_UPLOAD_LIMIT", 30))) 
 USER_SEMAPHORE_LIMIT = 3 
 USER_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(USER_SEMAPHORE_LIMIT))
-USER_DOWNLOAD_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(1))
+USER_DOWNLOAD_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(3))
 
 from collections import defaultdict
 
@@ -3597,12 +3597,17 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
 
                 if file_size > split_limit:
                     if is_premium and acc:
-                        if status_message: await status_message.edit_text(f"🚀 **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
+                        if USER_DOWNLOAD_SEMAPHORES[user_id].locked():
+                            try:
+                                if status_message: await status_message.edit_text(f"🚀 **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
+                            except FloodWait: pass
                         async with USER_DOWNLOAD_SEMAPHORES[user_id]:
                             file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
                         if down_task and not down_task.done(): down_task.cancel()
                         
-                        if status_message: await status_message.edit_text(f"☁️ **Uploading via Premium Session...**")
+                        try:
+                            if status_message: await status_message.edit_text(f"☁️ **Uploading via Premium Session...**")
+                        except FloodWait: pass
                         
                         # 🟢 [FIX] Smart Fallback: Tries Log Channel -> Admins -> Bot's DM!
                         # We pass the bot's own ID so the User Session knows where to DM it if needed.
@@ -3642,12 +3647,17 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                             except Exception: pass
                         return True
                     else:
-                        if status_message: await status_message.edit_text(f"✂️ **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
+                        if USER_DOWNLOAD_SEMAPHORES[user_id].locked():
+                            try:
+                                if status_message: await status_message.edit_text(f"✂️ **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
+                            except FloodWait: pass
                         async with USER_DOWNLOAD_SEMAPHORES[user_id]:
                             file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
                         if down_task and not down_task.done(): down_task.cancel()
                         
-                        if status_message: await status_message.edit_text(f"✂️ **Splitting large file ({_pretty_bytes(file_size)})...**")
+                        try:
+                            if status_message: await status_message.edit_text(f"✂️ **Splitting large file ({_pretty_bytes(file_size)})...**")
+                        except FloodWait: pass
                         parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
                         
                         if status_message and f"{status_message.id}:up" in PROGRESS: del PROGRESS[f"{status_message.id}:up"]
@@ -3684,7 +3694,10 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                     return True 
                 else:
                     try:
-                        if status_message: await status_message.edit_text(f"⏳ **Queued...**\nWaiting for active download to finish...")
+                        if USER_DOWNLOAD_SEMAPHORES[user_id].locked():
+                            try:
+                                if status_message: await status_message.edit_text(f"⏳ **Queued...**\nWaiting for active download to finish...")
+                            except FloodWait: pass
                         async with USER_DOWNLOAD_SEMAPHORES[user_id]:
                             file_path = await asyncio.wait_for(
                                 fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid]),
