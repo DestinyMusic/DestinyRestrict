@@ -4167,9 +4167,16 @@ HTML_DASHBOARD = """
         .menu-item { padding: 16px 24px; display: flex; align-items: center; gap: 16px; color: #cbd5e1; font-weight: 600; cursor: pointer; transition: 0.2s; }
         .menu-item:hover, .menu-item.active { background: rgba(59, 130, 246, 0.1); color: #fff; border-left: 4px solid var(--accent); }
         
-        .profile-menu { position: absolute; top: 70px; right: 20px; background: var(--card); border: 1px solid var(--card-border); border-radius: 20px; padding: 20px; width: 280px; display: none; z-index: 105; box-shadow: 0 15px 40px rgba(0,0,0,0.6); }
+        .profile-menu { 
+            position: absolute; top: 65px; right: 15px; 
+            background: color-mix(in srgb, var(--card) var(--glass-bg, 100%), transparent); 
+            backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px));
+            border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); 
+            border-radius: 18px; padding: 15px; width: 260px; display: none; z-index: 105; 
+            box-shadow: 0 15px 40px rgba(0,0,0,0.8); max-height: 85vh; overflow-y: auto; 
+        }
         .profile-menu.show { display: block; }
-        .user-info { display: flex; flex-direction: column; gap: 4px; padding-bottom: 15px; border-bottom: 1px solid var(--card-border); margin-bottom: 15px; }
+        .user-info { display: flex; flex-direction: column; gap: 2px; padding-bottom: 10px; border-bottom: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); margin-bottom: 12px; }
         .theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px; }
         .theme-btn { background: var(--bg); border: 1px solid var(--card-border); padding: 8px 10px; border-radius: 10px; font-size: 11px; color: #fff; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: 0.2s; }
         .theme-btn.active { border-color: var(--accent); background: rgba(59,130,246,0.1); }
@@ -4212,17 +4219,17 @@ HTML_DASHBOARD = """
         .btn-cancel { flex: 1; padding: 14px; border-radius: 12px; font-weight: 700; cursor: pointer; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); }
 
         /* Pill theme button layout */
-        .theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-bottom: 15px; }
+        .theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
         .theme-pill { 
-            padding: 10px 14px; border-radius: 999px; font-size: 12px; font-weight: 700; cursor: pointer; 
-            display: flex; align-items: center; gap: 8px; transition: 0.2s; border: 1.5px solid transparent; 
+            padding: 7px 10px; border-radius: 999px; font-size: 11px; font-weight: 700; cursor: pointer; 
+            display: flex; align-items: center; gap: 6px; transition: 0.2s; border: 1.5px solid transparent; 
             text-decoration: none; user-select: none;
         }
-        .theme-pill.active { border-color: var(--accent); box-shadow: 0 0 12px var(--glow); }
-        .theme-pill .dots-group { display: flex; align-items: center; gap: 4px; }
-        .theme-pill .dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+        .theme-pill.active { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
+        .theme-pill .dots-group { display: flex; align-items: center; gap: 3px; }
+        .theme-pill .dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 4px currentColor; }
         .theme-pill .pill-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .theme-pill .check { font-size: 11px; margin-left: 2px; }
+        .theme-pill .check { font-size: 10px; margin-left: 2px; }
     </style>
 </head>
 <body>
