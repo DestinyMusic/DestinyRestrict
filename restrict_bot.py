@@ -3539,7 +3539,59 @@ async def handle_restricted_private(client, acc, chat_id, msgid, **kwargs):
 async def handle_restricted_live(client, acc, chat_id, msgid, **kwargs):
     return await _execute_restricted_download_upload(client, acc, chat_id, msgid, **kwargs)
 
-
+async def build_rich_caption(file_path, msg_type, msg):
+    try:
+        file_name = "Unknown"
+        if msg_type == "Audio" and getattr(msg, "audio", None): file_name = getattr(msg.audio, "file_name", "Audio.m4a")
+        elif msg_type == "Video" and getattr(msg, "video", None): file_name = getattr(msg.video, "file_name", "Video.mp4")
+        elif getattr(msg, "document", None): file_name = getattr(msg.document, "file_name", "File.dat")
+        
+        if not file_path or not os.path.exists(file_path):
+            return None
+            
+        size_bytes = os.path.getsize(file_path)
+        size_str = _pretty_bytes(size_bytes)
+        
+        if msg_type == "Audio":
+            bitrate_str = "16Bit - 44.1kHz" # Fallback Default
+            try:
+                cmd = ["mediainfo", "--Inform=Audio;%BitDepth%Bit - %SamplingRate/String%", str(file_path)]
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                stdout, _ = await proc.communicate()
+                out = stdout.decode().strip()
+                if out and "Bit" in out:
+                    bitrate_str = out.replace(".1", "").replace(" kHz", "kHz")
+            except: pass
+            
+            return f"<b>{html.escape(file_name)}</b>\n\n🗂 <code>{size_str}</code>\n🎧 <code>{bitrate_str}</code>"
+            
+        elif msg_type == "Video":
+            w = getattr(msg.video, "width", 0) if getattr(msg, "video", None) else 0
+            h = getattr(msg.video, "height", 0) if getattr(msg, "video", None) else 0
+            dur = getattr(msg.video, "duration", 0) if getattr(msg, "video", None) else 0
+            dur_str = f"{dur//60}m{dur%60}s" if dur else "Unknown"
+            
+            audio_lng = "Unknown"
+            sub_lng = "None"
+            try:
+                cmd = ["mediainfo", "--Inform=General;%Audio_Language_List%|%Text_Language_List%", str(file_path)]
+                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                stdout, _ = await proc.communicate()
+                out = stdout.decode().strip().split('|')
+                if len(out) == 2:
+                    a_list, s_list = out[0], out[1]
+                    if a_list: audio_lng = a_list.split()[0]
+                    if s_list: sub_lng = s_list.split()[0]
+                elif len(out) == 1 and out[0]:
+                    audio_lng = out[0].split()[0]
+            except: pass
+            
+            return f"<b>{html.escape(file_name)}</b>\n\n🗂 <code>{size_str}</code> 💎 <code>{w}x{h}</code>\n⏳ <code>{dur_str}</code> 💬 <code>{sub_lng}</code>\n🔊 <code>{audio_lng}</code>"
+            
+    except Exception as e:
+        logger.debug(f"Rich caption generation failed: {e}")
+    return None
+    
 # ==============================================================================
 # --- CORE RESTRICTED DOWNLOAD / UPLOAD ENGINE ---
 # ==============================================================================
@@ -3573,7 +3625,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
     if not safe_filename.strip(): safe_filename = f"{msgid}.dat"
     file_path_to_save = task_folder_path / safe_filename
 
-    # 🟢 [FIX] Wipe previous file's progress so stale 86.6% numbers NEVER carry over!
+    # 🟢 [FIX] Wipe previous file's progress so stale numbers NEVER carry over!
     if status_message:
         PROGRESS.pop(f"{status_message.id}:down", None)
         PROGRESS.pop(f"{status_message.id}:up", None)
@@ -3621,31 +3673,46 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                             if status_message: await status_message.edit_text(f"☁️ **Uploading via Premium Session...**")
                         except FloodWait: pass
                         
-                        # 🟢 [FIX] Smart Fallback: Tries Log Channel -> Admins -> Bot's DM!
-                        # We pass the bot's own ID so the User Session knows where to DM it if needed.
                         bot_id = client.me.id if getattr(client, "me", None) else int(BOT_TOKEN.split(":")[0])
                         log_chat_id, log_topic_id = await get_fallback_log_chat(acc, user_id, bot_id=bot_id)
                         
                         up_task = asyncio.create_task(upstatus(client, status_message, status_message.chat.id, index, total_count, header_text)) if status_message else None
-                        caption = msg.caption if msg.caption else ""
-                        caption_entities = msg.caption_entities if getattr(msg, "caption_entities", None) else None
+                        
+                        # --- 🟢 RICH CAPTION EXTRACTION ---
+                        custom_cap = await build_rich_caption(file_path, msg_type, msg_fresh)
+                        if custom_cap:
+                            caption = custom_cap
+                            caption_entities = None
+                            p_mode = enums.ParseMode.HTML
+                        else:
+                            caption = msg_fresh.caption if getattr(msg_fresh, "caption", None) else ""
+                            caption_entities = msg_fresh.caption_entities if getattr(msg_fresh, "caption_entities", None) else None
+                            p_mode = None
+
+                        a_dur = getattr(msg_fresh.audio, "duration", 0) if getattr(msg_fresh, "audio", None) else 0
+                        a_perf = getattr(msg_fresh.audio, "performer", None) if getattr(msg_fresh, "audio", None) else None
+                        a_tit = getattr(msg_fresh.audio, "title", None) if getattr(msg_fresh, "audio", None) else None
+
+                        v_dur = getattr(msg_fresh.video, "duration", 0) if getattr(msg_fresh, "video", None) else 0
+                        v_w = getattr(msg_fresh.video, "width", 0) if getattr(msg_fresh, "video", None) else 0
+                        v_h = getattr(msg_fresh.video, "height", 0) if getattr(msg_fresh, "video", None) else 0
+
                         sent_msg = None
                         
                         try:
                             kwargs = {"chat_id": log_chat_id, "caption": caption}
-                            if log_topic_id: 
-                                kwargs["message_thread_id"] = log_topic_id
+                            if log_topic_id: kwargs["message_thread_id"] = log_topic_id
                             if caption_entities: kwargs["caption_entities"] = caption_entities
+                            if p_mode: kwargs["parse_mode"] = p_mode
                             p_args = [status_message, "up", task_uuid]
                             
                             if "Document" == msg_type: sent_msg = await acc.send_document(document=file_path, progress=progress, progress_args=p_args, **kwargs)
-                            elif "Video" == msg_type: sent_msg = await acc.send_video(video=file_path, duration=msg.video.duration, width=msg.video.width, height=msg.video.height, progress=progress, progress_args=p_args, **kwargs)
-                            elif "Audio" == msg_type: sent_msg = await acc.send_audio(audio=file_path, progress=progress, progress_args=p_args, **kwargs)
+                            elif "Video" == msg_type: sent_msg = await acc.send_video(video=file_path, duration=v_dur, width=v_w, height=v_h, progress=progress, progress_args=p_args, **kwargs)
+                            elif "Audio" == msg_type: sent_msg = await acc.send_audio(audio=file_path, duration=a_dur, performer=a_perf, title=a_tit, progress=progress, progress_args=p_args, **kwargs)
                             else: sent_msg = await acc.send_document(document=file_path, progress=progress, progress_args=p_args, **kwargs)
                             
                             if sent_msg:
                                 try:
-                                    # 🟢 [POV FIX] If User Session uploaded to the Bot's DM, the Bot sees the chat as `user_id`!
                                     bot_read_chat_id = user_id if log_chat_id == bot_id else log_chat_id
                                     await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_message, chat_id=dest_chat_id, from_chat_id=bot_read_chat_id, message_id=sent_msg.id, message_thread_id=dest_thread_id)
                                 except Exception:
@@ -3670,13 +3737,23 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         try:
                             if status_message: await status_message.edit_text(f"✂️ **Splitting large file ({_pretty_bytes(file_size)})...**")
                         except FloodWait: pass
+
+                        # --- 🟢 RICH CAPTION EXTRACTION FOR SPLIT PARTS ---
+                        custom_cap = await build_rich_caption(file_path, msg_type, msg_fresh)
+                        if custom_cap:
+                            caption = custom_cap
+                            caption_entities = None
+                            p_mode = enums.ParseMode.HTML
+                        else:
+                            caption = msg_fresh.caption if getattr(msg_fresh, "caption", None) else ""
+                            caption_entities = msg_fresh.caption_entities if getattr(msg_fresh, "caption_entities", None) else None
+                            p_mode = None
+
                         parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
                         
                         if status_message and f"{status_message.id}:up" in PROGRESS: del PROGRESS[f"{status_message.id}:up"]
 
                         up_task = asyncio.create_task(upstatus(client, status_message, status_message.chat.id, index, total_count, header_text)) if status_message else None
-                        caption = msg.caption if msg.caption else ""
-                        caption_entities = msg.caption_entities if getattr(msg, "caption_entities", None) else None
                     
                     async with USER_SEMAPHORES[user_id]:
                         async with SERVER_UPLOAD_LIMIT:
@@ -3685,10 +3762,15 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                                 while True:
                                     await USER_FLOOD_LOCKS[user_id].wait_if_locked() 
                                     try:
+                                        kwargs = {"chat_id": dest_chat_id, "document": str(part), "caption": caption}
+                                        if caption_entities: kwargs["caption_entities"] = caption_entities
+                                        if p_mode: kwargs["parse_mode"] = p_mode
+                                        if dest_thread_id: kwargs["message_thread_id"] = dest_thread_id
+                                        
                                         try:
-                                            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_document, chat_id=dest_chat_id, document=str(part), caption=caption, caption_entities=caption_entities, message_thread_id=dest_thread_id)
+                                            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_document, **kwargs)
                                         except Exception:
-                                            if acc: await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_document, chat_id=dest_chat_id, document=str(part), caption=caption, caption_entities=caption_entities, message_thread_id=dest_thread_id)
+                                            if acc: await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_document, **kwargs)
                                         break
                                     except FloodWait as e: 
                                         if e.value > 300: raise e
@@ -3746,8 +3828,16 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
             PROGRESS.pop(f"{status_message.id}:down", None)
         up_task = asyncio.create_task(upstatus(client, status_message, status_message.chat.id, index, total_count, header_text)) if status_message else None
         
-        caption = msg.caption if msg.caption else None
-        caption_entities = msg.caption_entities if getattr(msg, "caption_entities", None) else None
+        # --- 🟢 RICH CAPTION EXTRACTION FOR NORMAL FILES ---
+        custom_cap = await build_rich_caption(file_path, msg_type, msg_fresh)
+        if custom_cap:
+            caption = custom_cap
+            caption_entities = None
+            p_mode = enums.ParseMode.HTML
+        else:
+            caption = msg_fresh.caption if getattr(msg_fresh, "caption", None) else None
+            caption_entities = msg_fresh.caption_entities if getattr(msg_fresh, "caption_entities", None) else None
+            p_mode = None
         
         upload_success = False
         
@@ -3760,15 +3850,24 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                     try:
                         kwargs = {"chat_id": dest_chat_id, "message_thread_id": dest_thread_id, "caption": caption}
                         if caption_entities: kwargs["caption_entities"] = caption_entities
+                        if p_mode: kwargs["parse_mode"] = p_mode
                         if ph_path and os.path.exists(ph_path): kwargs["thumb"] = ph_path
                             
                         p_args = [status_message, "up", task_uuid] if status_message else None
                         p_func = progress if status_message else None
 
+                        a_dur = getattr(msg_fresh.audio, "duration", 0) if getattr(msg_fresh, "audio", None) else 0
+                        a_perf = getattr(msg_fresh.audio, "performer", None) if getattr(msg_fresh, "audio", None) else None
+                        a_tit = getattr(msg_fresh.audio, "title", None) if getattr(msg_fresh, "audio", None) else None
+
+                        v_dur = getattr(msg_fresh.video, "duration", 0) if getattr(msg_fresh, "video", None) else 0
+                        v_w = getattr(msg_fresh.video, "width", 0) if getattr(msg_fresh, "video", None) else 0
+                        v_h = getattr(msg_fresh.video, "height", 0) if getattr(msg_fresh, "video", None) else 0
+
                         try:
                             if msg_type == "Document": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
-                            elif msg_type == "Video": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_video, video=file_path, duration=getattr(msg.video, 'duration', 0) or 0, width=getattr(msg.video, 'width', 0) or 0, height=getattr(msg.video, 'height', 0) or 0, progress=p_func, progress_args=p_args, **kwargs)
-                            elif msg_type == "Audio": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_audio, audio=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Video": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_video, video=file_path, duration=v_dur, width=v_w, height=v_h, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Audio": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_audio, audio=file_path, duration=a_dur, performer=a_perf, title=a_tit, progress=p_func, progress_args=p_args, **kwargs)
                             elif msg_type == "Photo": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_photo, photo=file_path, **kwargs)
                             elif msg_type == "Voice": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
                             elif msg_type == "Animation": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_animation, animation=file_path, **kwargs)
@@ -3776,8 +3875,8 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         except Exception:
                             if acc:
                                 if msg_type == "Document": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
-                                elif msg_type == "Video": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_video, video=file_path, duration=getattr(msg.video, 'duration', 0) or 0, width=getattr(msg.video, 'width', 0) or 0, height=getattr(msg.video, 'height', 0) or 0, progress=p_func, progress_args=p_args, **kwargs)
-                                elif msg_type == "Audio": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_audio, audio=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                                elif msg_type == "Video": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_video, video=file_path, duration=v_dur, width=v_w, height=v_h, progress=p_func, progress_args=p_args, **kwargs)
+                                elif msg_type == "Audio": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_audio, audio=file_path, duration=a_dur, performer=a_perf, title=a_tit, progress=p_func, progress_args=p_args, **kwargs)
                                 elif msg_type == "Photo": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_photo, photo=file_path, **kwargs)
                                 elif msg_type == "Voice": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
                                 elif msg_type == "Animation": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_animation, animation=file_path, **kwargs)
