@@ -738,10 +738,31 @@ def sanitize_filename(filename: str) -> str:
 async def get_topic_title(client, chat_id, topic_id):
     """Dynamically fetches the real name of a Telegram Forum Topic."""
     if not topic_id: return ""
+    
+    # 1. High-Level Method (Kurigram/Pyrofork Native)
     try:
-        msg = await client.get_messages(chat_id, topic_id)
+        if hasattr(client, "get_forum_topic"):
+            topic = await client.get_forum_topic(chat_id, int(topic_id))
+            if isinstance(topic, list) and topic and getattr(topic[0], "title", None): 
+                return f" ({topic[0].title})"
+            elif getattr(topic, "title", None):
+                return f" ({topic.title})"
+    except Exception: pass
+
+    # 2. Raw MTProto API Method (Bulletproof for all topics)
+    try:
+        from pyrogram.raw.functions.channels import GetForumTopicsByID
+        peer = await client.resolve_peer(chat_id)
+        res = await client.invoke(GetForumTopicsByID(channel=peer, topics=[int(topic_id)]))
+        if getattr(res, "topics", None) and len(res.topics) > 0:
+            return f" ({res.topics[0].title})"
+    except Exception: pass
+
+    # 3. Last-Resort Message Fallback
+    try:
+        msg = await client.get_messages(chat_id, int(topic_id))
         if msg:
-            if hasattr(msg, "forum_topic") and msg.forum_topic and getattr(msg.forum_topic, "title", None):
+            if getattr(msg, "forum_topic", None) and getattr(msg.forum_topic, "title", None):
                 return f" ({msg.forum_topic.title})"
             if getattr(msg, "action", None) and getattr(msg.action, "title", None):
                 return f" ({msg.action.title})"
@@ -749,6 +770,7 @@ async def get_topic_title(client, chat_id, topic_id):
                 if getattr(msg.reply_to_message.forum_topic, "title", None):
                     return f" ({msg.reply_to_message.forum_topic.title})"
     except Exception: pass
+
     return f" (Topic {topic_id})"
 
 async def check_link_restriction(user_id, link_text):
@@ -2560,11 +2582,15 @@ async def dl_handler(client: Client, message: Message):
         return await message.reply(status_text, quote=True)
 
     if message.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+        dest_title = message.chat.title or "This Group"
+        if message.message_thread_id:
+            dest_title += await get_topic_title(client, message.chat.id, message.message_thread_id)
+            
         PENDING_TASKS[user_id] = {
             "link": link_text,
             "dest_chat_id": message.chat.id,
             "dest_thread_id": message.message_thread_id,
-            "dest_title": message.chat.title or "This Group",
+            "dest_title": dest_title,
             "status": "waiting_speed_choice", # <<< FIX
             "is_restricted": is_restricted
         }
