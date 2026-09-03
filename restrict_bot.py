@@ -628,6 +628,7 @@ def _parse_chat_target(text: str):
 def _parse_source_link(src_link: str):
     raw = (src_link or "").strip()
     raw = raw.replace("https://", "").replace("http://", "")
+    raw = raw.replace("t.me/s/", "t.me/") # 🟢 FIX: Strip web preview tags safely
     raw = raw.replace("t.me/", "")
     raw = raw.split("?", 1)[0].strip("/")
 
@@ -794,7 +795,8 @@ async def check_link_restriction(user_id, link_text):
 
     try:
         # 1. Handle Bot DMs cleanly (Routes to User Session)
-        if "t.me/b/" in link_text or str(parts[0]).lower().endswith("bot"):
+        # 🟢 FIX: Ensure it is explicitly a Bot DM (len == 1), not a public channel ending in "bot"
+        if "t.me/b/" in link_text or (str(parts[0]).lower().endswith("bot") and len(parts) == 1):
             is_private = True
             if "t.me/b/" in link_text:
                 chat_id = parts[1] if len(parts) > 1 else parts[0]
@@ -848,11 +850,10 @@ async def check_link_restriction(user_id, link_text):
 
         # PYROGRAM NATIVE MAGIC: Feed the string chat_id directly.
         # It handles public usernames and bots without joining!
-        msg = None
         if msg_id:
             try:
                 msg = await check_client.get_messages(chat_id, msg_id)
-            except Exception:
+            except Exception as bot_err:
                 if check_client == app and user_session:
                     api_id = await db.get_api_id(user_id) or API_ID
                     api_hash = await db.get_api_hash(user_id) or API_HASH
@@ -861,11 +862,14 @@ async def check_link_restriction(user_id, link_text):
                     is_temp_client = True
                     try:
                         msg = await check_client.get_messages(chat_id, msg_id)
-                    except Exception:
-                        pass # Ignore error so we can cleanly fallback to checking the chat directly
+                    except Exception as user_err:
+                        raise user_err
+                else:
+                    raise bot_err
 
-        # If the specific message was found, check its restrictions
-        if msg and not msg.empty:
+            if not msg or msg.empty:
+                raise Exception("Message not found or inaccessible.")
+
             if getattr(msg.chat, "has_protected_content", False) or getattr(msg, "has_protected_content", False):
                 is_restricted = True
                 status_msg = "🔒 **Source is RESTRICTED** (Will use Download Mode)"
@@ -873,17 +877,15 @@ async def check_link_restriction(user_id, link_text):
                 is_restricted = False
                 status_msg = "🔓 **Source is PUBLIC/UNRESTRICTED** (Will use Fast Forward)"
         else:
-            # Fallback: The specific message was deleted (common in batches), so we check the chat instead!
             try:
                 chat = await check_client.get_chat(chat_id)
             except Exception as bot_err:
                 if check_client == app and user_session:
                     api_id = await db.get_api_id(user_id) or API_ID
                     api_hash = await db.get_api_hash(user_id) or API_HASH
-                    if not is_temp_client:
-                        check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
-                        await check_client.connect()
-                        is_temp_client = True
+                    check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+                    await check_client.connect()
+                    is_temp_client = True
                     try:
                         chat = await check_client.get_chat(chat_id)
                     except Exception as user_err:
@@ -893,10 +895,10 @@ async def check_link_restriction(user_id, link_text):
 
             if getattr(chat, "has_protected_content", False):
                 is_restricted = True
-                status_msg = "🔒 **Source is RESTRICTED** (Will use Download Mode)"
+                status_msg = "🔒 **Channel is RESTRICTED** (Will use Download Mode)"
             else:
                 is_restricted = False
-                status_msg = "🔓 **Source is PUBLIC/UNRESTRICTED** (Deleted messages will be gracefully skipped)"
+                status_msg = "🔓 **Channel is PUBLIC/UNRESTRICTED**"
 
     except Exception as e:
         err_str = str(e)
@@ -3133,20 +3135,13 @@ async def start_task_final(client: Client, message_context: Message, task_data: 
         )
     )   
 
-async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: int, dest_chat_id, dest_thread_id, user_id, task_uuid, filter_thread_id, allowed_types):
-    """Isolated function ONLY for Public Unrestricted links. Returns SUCCESS, SKIPPED, or FAILED."""
-
+async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: int, dest_chat_id, dest_thread_id, user_id, task_uuid, filter_thread_id, allowed_types, delay=3):
+    """Fast-Path exclusively for Public Unrestricted links. Supports Albums."""
+    
     msg = None
+    fetcher = acc if acc else client
     try:
-        if acc:
-            try:
-                msg = await acc.get_messages(chatid, msgid)
-            except Exception:
-                pass
-        
-        if not msg or msg.empty:
-            msg = await client.get_messages(chatid, msgid)
-            
+        msg = await fetcher.get_messages(chatid, msgid)
     except Exception as e:
         logger.error(f"Failed to fetch msg {msgid}: {e}")
         return "FAILED"
@@ -3158,7 +3153,7 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
     if filter_thread_id is not None:
         actual_thread = getattr(msg, "message_thread_id", None)
         if actual_thread is None:
-            if getattr(msg, "reply_to_top_message_id", None) != filter_thread_id and getattr(msg, "reply_to_message_id", None) != filter_thread_id and msg.id != filter_thread_id:
+            if filter_thread_id != 1 and getattr(msg, "reply_to_top_message_id", None) != filter_thread_id and getattr(msg, "reply_to_message_id", None) != filter_thread_id and msg.id != filter_thread_id:
                 return "SKIPPED"
         elif actual_thread != filter_thread_id:
             return "SKIPPED"
@@ -3171,46 +3166,59 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
     if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)):
         return "FAILED"
 
-    # Fast-Forwarding
+    # 🟢 Text Fast-Forward
     if msg_type == "Text":
         try:
             await client.send_message(dest_chat_id, msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
             return "SUCCESS"
-        except Exception as e:
-            logger.warning(f"Bot text forward failed: {e}. Falling back to User Session...")
-            try:
-                await acc.send_message(dest_chat_id, msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
-                return "SUCCESS"
-            except Exception as e2:
-                logger.error(f"User Session text forward failed for {msgid}: {e2}")
-                return "FAILED"
+        except Exception:
+            if acc:
+                try:
+                    await acc.send_message(dest_chat_id, msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
+                    return "SUCCESS"
+                except Exception: return "FAILED"
+            return "FAILED"
 
     try:
         await USER_FLOOD_LOCKS[user_id].wait_if_locked()
-        try:
-            # Bot copies using raw chatid
-            copy_res = await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
-            if not copy_res: 
-                raise ValueError("Bot copy returned None (Bot lacks direct access)")
-            return "SUCCESS"
-        except Exception as e1:
-            logger.warning(f"Bot copy failed for {msgid}: {e1}. Falling back to User Session...")
-            # Fallback to User Session copying
+        
+        # 🟢 ALBUM LOGIC RE-INTEGRATED
+        if msg.media_group_id:
+            try: m_group = await fetcher.get_media_group(chatid, msgid)
+            except: m_group = [msg]
+            
+            group_size = len(m_group)
+            if task_uuid:
+                for m in m_group: batch_temp.SKIP_IDS[task_uuid].add(m.id)
+
             try:
-                owner_copy = await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
-                return "SUCCESS" if owner_copy else "FAILED"
-            except Exception as e2:
-                logger.error(f"User Session copy also failed for {msgid}: {e2}")
-                return "FAILED"
+                copy_res = await client.copy_media_group(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
+            except Exception:
+                if acc: copy_res = await acc.copy_media_group(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
+                else: copy_res = False
+            
+            if copy_res:
+                if delay > 0 and group_size > 1: await asyncio.sleep(delay * (group_size - 1))
+                return "SUCCESS"
+            return "FAILED"
+
+        # 🟢 Single Media Copy
+        try:
+            copy_res = await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
+            if not copy_res: raise ValueError()
+            return "SUCCESS"
+        except Exception:
+            if acc:
+                try: 
+                    copy_res = await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
+                    return "SUCCESS" if copy_res else "FAILED"
+                except Exception: return "FAILED"
+            return "FAILED"
+
     except FloodWait as e:
         USER_FLOOD_LOCKS[user_id].set_lock(e.value + 5)
         await asyncio.sleep(e.value + 5)
-        try:
-            owner_copy = await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
-            return "SUCCESS" if owner_copy else "FAILED"
-        except Exception as e3:
-            logger.error(f"FloodWait recovery copy failed for {msgid}: {e3}")
-            return "FAILED"
+        return "FAILED" # Will be retried or caught gracefully
     except Exception as e:
         logger.error(f"Total copy failure for {msgid}: {e}")
         return "FAILED"
@@ -3435,16 +3443,25 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 try:
                     chatid = ACTUAL_CHAT_ID
                     
-                    # 🟢 Rely completely on the universal router built into handle_private!
-                    task_result = await handle_private(
-                        client, acc, message, chatid, msgid, index, total_count, 
-                        status_message, dest_chat_id, dest_thread_id, delay, 
-                        user_id, task_uuid, 
-                        is_restricted=is_restricted, 
-                        header_text=inner_header,
-                        filter_thread_id=filter_thread_id, 
-                        allowed_types=allowed_types 
-                    )
+                    # 🟢 FIX: Determine if link is a Public string username
+                    is_pub = isinstance(parsed_source.get("chat_id"), str) and not str(parsed_source.get("chat_id")).lstrip('-').isdigit()
+
+                    # 🟢 FIX: Strict Separation of Concerns! Fast path vs Heavy path.
+                    if is_pub and not is_restricted:
+                        task_result = await handle_public_unrestricted(
+                            client, acc, chatid, msgid, dest_chat_id, dest_thread_id, 
+                            user_id, task_uuid, filter_thread_id, allowed_types, delay
+                        )
+                    else:
+                        task_result = await handle_private(
+                            client, acc, message, chatid, msgid, index, total_count, 
+                            status_message, dest_chat_id, dest_thread_id, delay, 
+                            user_id, task_uuid, 
+                            is_restricted=is_restricted, 
+                            header_text=inner_header,
+                            filter_thread_id=filter_thread_id, 
+                            allowed_types=allowed_types 
+                        )
                 
                 except FloodWait as e:
                     if e.value > 300:
@@ -3577,7 +3594,8 @@ async def _fetch_and_validate_msg(client, acc, chatid, msgid, user_id, filter_th
     if filter_thread_id is not None:
         actual_thread = getattr(msg, "message_thread_id", None)
         if actual_thread is None:
-            if getattr(msg, "reply_to_top_message_id", None) != filter_thread_id and getattr(msg, "reply_to_message_id", None) != filter_thread_id and msg.id != filter_thread_id:
+            # 🟢 FIX: If targeting General Topic (1), a missing thread ID is a valid match!
+            if filter_thread_id != 1 and getattr(msg, "reply_to_top_message_id", None) != filter_thread_id and getattr(msg, "reply_to_message_id", None) != filter_thread_id and msg.id != filter_thread_id:
                 return None, None
         elif actual_thread != filter_thread_id:
             return None, None
@@ -6125,6 +6143,18 @@ async def watcher_worker_loop(wid_str):
                 if msg_type not in allowed_types:
                     await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
                     continue
+
+                # 🟢 FIX: TOPIC LEAK PREVENTION FOR CATCH-UP ENGINE
+                if source_thread is not None:
+                    actual_thread = getattr(msg, "message_thread_id", None)
+                    if actual_thread is None:
+                        # Allow General Topic (1) to pass if actual_thread is None
+                        if source_thread != 1 and getattr(msg, "reply_to_top_message_id", None) != source_thread and getattr(msg, "reply_to_message_id", None) != source_thread and msg.id != source_thread:
+                            await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
+                            continue
+                    elif actual_thread != source_thread:
+                        await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
+                        continue
 
                 # 🟢 DELAY ENFORCEMENT (Maintains exact chronological order)
                 if delay > 0:
