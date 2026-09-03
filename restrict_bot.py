@@ -4117,7 +4117,10 @@ HTML_DASHBOARD = """
         [data-theme="gold"] { --bg: #120e09; --card: #211910; --card-border: #382c1b; --accent: #f59e0b; --glow: rgba(245, 158, 11, 0.4); --sidebar: #0a0805; }
 
         * { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; transition: background 0.3s; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; transition: background 0.3s; position: relative; z-index: 0; }
+        body::before, body::after { content: ''; position: fixed; border-radius: 50%; filter: blur(90px); z-index: -1; opacity: var(--blob-opacity, 0); transition: opacity 0.5s, background 0.3s; pointer-events: none; }
+        body::before { width: 50vw; height: 50vw; background: var(--accent); top: -20vw; left: -10vw; }
+        body::after { width: 40vw; height: 40vw; background: var(--glow); bottom: -10vw; right: -5vw; }
         
         .view-section { display: none; padding-bottom: 40px; }
         .view-section.active { display: block; }
@@ -4128,7 +4131,7 @@ HTML_DASHBOARD = """
         .login-title { font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 6px; }
         .login-subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 28px; }
 
-        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--card-border); position: sticky; top: 0; z-index: 100; }
+        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: color-mix(in srgb, rgba(10, 10, 10, 0.85) var(--glass-bg, 100%), transparent); backdrop-filter: blur(calc(12px + var(--glass-blur, 0px))); -webkit-backdrop-filter: blur(calc(12px + var(--glass-blur, 0px))); border-bottom: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); position: sticky; top: 0; z-index: 100; }
         .nav-brand { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 800; }
         .nav-brand-icon { width: 34px; height: 34px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--glow); color: white; font-size: 14px; }
         .nav-controls { display: flex; align-items: center; gap: 12px; }
@@ -4161,7 +4164,7 @@ HTML_DASHBOARD = """
         }
         .section-title { font-size: 20px; font-weight: 800; margin: 25px 0 15px 0; color: #fff; display: flex; justify-content: space-between; align-items: center; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 20px; }
-        .card { background: var(--card); border-radius: 20px; padding: 20px; border: 1px solid var(--card-border); transition: 0.3s; }
+        .card { background: color-mix(in srgb, var(--card) var(--glass-bg, 100%), transparent); backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px)); border-radius: 20px; padding: 20px; border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); box-shadow: 0 8px 32px rgba(0, 0, 0, var(--glass-shadow, 0)); transition: 0.3s; }
         .card-stat { font-size: 24px; font-weight: 800; color: #fff; margin-top: 5px; }
         .card-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
 
@@ -4390,9 +4393,16 @@ HTML_DASHBOARD = """
                 <div class="card" style="margin-bottom: 20px;">
                     <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Liquid UI (Fluid Width)</h3>
                     <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Adjust how wide and fluid the dashboard feels. (50% to 100%)</p>
-                    <div class="input-group">
+                    <div class="input-group" style="margin-bottom: 25px;">
                         <label>Current Width: <span id="liquid-val">50</span>%</label>
                         <input type="range" id="liquid-slider" min="0" max="100" value="50" oninput="applyLiquidUI(this.value)" style="width: 100%; accent-color: var(--accent); cursor: pointer;">
+                    </div>
+                    
+                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Glass Effect (Liquid Transparency)</h3>
+                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Adjust the transparency and blur of panels to create a frosted glass aesthetic.</p>
+                    <div class="input-group">
+                        <label>Glass Intensity: <span id="glass-val">0</span>%</label>
+                        <input type="range" id="glass-slider" min="0" max="100" value="0" oninput="applyLiquidGlass(this.value)" style="width: 100%; accent-color: var(--accent); cursor: pointer;">
                     </div>
                 </div>
 
@@ -4500,6 +4510,25 @@ HTML_DASHBOARD = """
             localStorage.setItem('liquid_ui_val', val);
         }
 
+        function applyLiquidGlass(val) {
+            document.getElementById('glass-val').innerText = val;
+            
+            // As slider goes up: blur increases, background opacity drops, glow blobs appear
+            const blurPx = (val / 100) * 20; 
+            const bgAlpha = 100 - (val / 100 * 65);       // Opacity drops to 35% max
+            const borderAlpha = 100 - (val / 100 * 50);   // Border drops to 50% max
+            const blobOpacity = (val / 100) * 0.45;       // Background glows appear (45% opacity max)
+            const shadowAlpha = (val / 100) * 0.4;        // Adds drop-shadow to separate glass from bg
+
+            document.documentElement.style.setProperty('--glass-blur', blurPx + 'px');
+            document.documentElement.style.setProperty('--glass-bg', bgAlpha + '%');
+            document.documentElement.style.setProperty('--glass-border', borderAlpha + '%');
+            document.documentElement.style.setProperty('--blob-opacity', blobOpacity);
+            document.documentElement.style.setProperty('--glass-shadow', shadowAlpha);
+            
+            localStorage.setItem('liquid_glass_val', val);
+        }
+
         if (currentUser) {
             document.getElementById('login-view').style.display = 'none';
             document.getElementById('app-view').style.display = 'block';
@@ -4508,7 +4537,14 @@ HTML_DASHBOARD = """
             // Apply Liquid UI Settings instantly on load
             const savedLiquid = localStorage.getItem('liquid_ui_val') || "50";
             applyLiquidUI(savedLiquid);
-            setTimeout(() => { if (document.getElementById('liquid-slider')) document.getElementById('liquid-slider').value = savedLiquid; }, 100);
+            
+            const savedGlass = localStorage.getItem('liquid_glass_val') || "0";
+            applyLiquidGlass(savedGlass);
+
+            setTimeout(() => { 
+                if (document.getElementById('liquid-slider')) document.getElementById('liquid-slider').value = savedLiquid; 
+                if (document.getElementById('glass-slider')) document.getElementById('glass-slider').value = savedGlass; 
+            }, 100);
 
             fetchStats();
             setInterval(fetchStats, 5000);
