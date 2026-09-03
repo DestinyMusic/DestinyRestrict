@@ -3312,23 +3312,25 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 if source_ref is None:
                     return await message.reply("❌ Could not resolve source chat.")
 
-                # Directly process public strings without forcing get_chat
-                if isinstance(source_ref, str) and not source_ref.lstrip('-').isdigit():
-                    ACTUAL_CHAT_ID = source_ref
-                    IS_PUBLIC_LINK = True
-                    source_title = source_ref
-                else:
-                    try:
-                        source_chat = await client.get_chat(source_ref)
-                    except Exception:
-                        if acc:
-                            source_chat = await acc.get_chat(source_ref)
-                        else:
-                            raise
-                    source_title = source_chat.title or source_chat.first_name or "Source Chat"
+                # 🟢 Attempt to get the REAL name of the channel
+                try:
+                    source_chat = await client.get_chat(source_ref)
+                    source_title = source_chat.title or source_chat.first_name or str(source_ref)
                     ACTUAL_CHAT_ID = source_chat.id
-                    IS_PUBLIC_LINK = False
-                
+                except Exception:
+                    if acc:
+                        try:
+                            source_chat = await acc.get_chat(source_ref)
+                            source_title = source_chat.title or source_chat.first_name or str(source_ref)
+                            ACTUAL_CHAT_ID = source_chat.id
+                        except Exception:
+                            # Force fallback for public strings if get_chat fails
+                            ACTUAL_CHAT_ID = source_ref
+                            source_title = str(source_ref)
+                    else:
+                        ACTUAL_CHAT_ID = source_ref
+                        source_title = str(source_ref)
+                        
             except Exception as e: 
                 if not acc:
                     is_pub = isinstance(source_ref, str) and not str(source_ref).lstrip('-').isdigit()
@@ -3342,7 +3344,6 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                     )
                 logger.warning(f"Could not fetch chat title for {source_ref}: {e}")
                 ACTUAL_CHAT_ID = source_ref 
-                IS_PUBLIC_LINK = isinstance(source_ref, str) and not str(source_ref).lstrip('-').isdigit()
 
             if saved_source_title and source_title == "Unknown Source":
                 source_title = saved_source_title
@@ -3423,26 +3424,20 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 # ------------------------
 
                 is_success = False
+                task_result = "FAILED"  # 🟢 Failsafe: Prevents UnboundLocalError loop crashes
                 try:
-                    # USE THE CACHED INTEGER ID INSTEAD OF RESOLVING EVERY LOOP
                     chatid = ACTUAL_CHAT_ID
                     
-                    if IS_PUBLIC_LINK and not is_restricted:
-                        task_result = await handle_public_unrestricted(
-                            client, acc, chatid, msgid, dest_chat_id, dest_thread_id, 
-                            user_id, task_uuid, filter_thread_id, allowed_types
-                        )
-                    else:
-                        # 🟢 Perfectly passes the clean inner_header generated above
-                        task_result = await handle_private(
-                            client, acc, message, chatid, msgid, index, total_count, 
-                            status_message, dest_chat_id, dest_thread_id, delay, 
-                            user_id, task_uuid, 
-                            is_restricted=is_restricted, 
-                            header_text=inner_header,
-                            filter_thread_id=filter_thread_id, 
-                            allowed_types=allowed_types 
-                        )
+                    # 🟢 Rely completely on the universal router built into handle_private!
+                    task_result = await handle_private(
+                        client, acc, message, chatid, msgid, index, total_count, 
+                        status_message, dest_chat_id, dest_thread_id, delay, 
+                        user_id, task_uuid, 
+                        is_restricted=is_restricted, 
+                        header_text=inner_header,
+                        filter_thread_id=filter_thread_id, 
+                        allowed_types=allowed_types 
+                    )
                 
                 except FloodWait as e:
                     if e.value > 300:
