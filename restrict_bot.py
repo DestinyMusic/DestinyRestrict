@@ -1081,7 +1081,16 @@ async def send_start(client: Client, message: Message):
         logger.error(f"Failed to save user {user_id}: {e}", exc_info=True)
 
     welcome_video_url = "https://files.catbox.moe/o9azww.mp4"
-    web_url = os.environ.get("WEB_URL", "https://sagara686-stremio.hf.space")
+    
+    # 🟢 AUTO-DETECT URL (Checks for custom WEB_URL, then Render, then Koyeb)
+    raw_url = os.environ.get("WEB_URL") or os.environ.get("RENDER_EXTERNAL_URL") or os.environ.get("KOYEB_PUBLIC_DOMAIN")
+    
+    if raw_url:
+        # Ensure it has https:// so the Telegram button doesn't crash
+        web_url = f"https://{raw_url}" if not raw_url.startswith("http") else raw_url
+    else:
+        # If no URL is detected, tell the user to set it
+        web_url = "https://example.com/please-set-web-url-in-env"
     
     welcome_text = (
         f"<b>👋 Hi {message.from_user.mention}, I am the Restricted Content Bot.</b>\n\n"
