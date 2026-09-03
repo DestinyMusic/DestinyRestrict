@@ -627,9 +627,15 @@ def _parse_chat_target(text: str):
 
 def _parse_source_link(src_link: str):
     raw = (src_link or "").strip()
-    raw = raw.replace("https://", "").replace("http://", "")
-    raw = raw.replace("t.me/s/", "t.me/") # 🟢 FIX: Strip web preview tags safely
-    raw = raw.replace("t.me/", "")
+    
+    if "t.me/" in raw:
+        raw = raw.split("t.me/")[-1]
+    elif "telegram.me/" in raw:
+        raw = raw.split("telegram.me/")[-1]
+        
+    if raw.startswith("s/"):
+        raw = raw[2:]
+        
     raw = raw.split("?", 1)[0].strip("/")
 
     is_private_c = raw.startswith("c/")
@@ -776,8 +782,15 @@ async def get_topic_title(client, chat_id, topic_id):
 
 async def check_link_restriction(user_id, link_text):
     raw = (link_text or "").strip()
-    raw = raw.replace("https://", "").replace("http://", "")
-    raw = raw.replace("t.me/", "")
+    
+    if "t.me/" in raw:
+        raw = raw.split("t.me/")[-1]
+    elif "telegram.me/" in raw:
+        raw = raw.split("telegram.me/")[-1]
+        
+    if raw.startswith("s/"):
+        raw = raw[2:]
+        
     raw = raw.split("?", 1)[0].strip("/")
 
     if raw.startswith("+") or "joinchat" in raw:
@@ -851,21 +864,27 @@ async def check_link_restriction(user_id, link_text):
         # PYROGRAM NATIVE MAGIC: Feed the string chat_id directly.
         # It handles public usernames and bots without joining!
         if msg_id:
+            msg = None
+            bot_err_saved = None
             try:
                 msg = await check_client.get_messages(chat_id, msg_id)
-            except Exception as bot_err:
-                if check_client == app and user_session:
-                    api_id = await db.get_api_id(user_id) or API_ID
-                    api_hash = await db.get_api_hash(user_id) or API_HASH
-                    check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
-                    await check_client.connect()
-                    is_temp_client = True
-                    try:
-                        msg = await check_client.get_messages(chat_id, msg_id)
-                    except Exception as user_err:
-                        raise user_err
-                else:
-                    raise bot_err
+            except Exception as e:
+                bot_err_saved = e
+
+            if (bot_err_saved or not msg or msg.empty) and check_client == app and user_session:
+                api_id = await db.get_api_id(user_id) or API_ID
+                api_hash = await db.get_api_hash(user_id) or API_HASH
+                check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+                await check_client.connect()
+                is_temp_client = True
+                try:
+                    msg = await check_client.get_messages(chat_id, msg_id)
+                    bot_err_saved = None
+                except Exception as user_err:
+                    bot_err_saved = user_err
+                    
+            if bot_err_saved:
+                raise bot_err_saved
 
             if not msg or msg.empty:
                 raise Exception("Message not found or inaccessible.")
@@ -3166,6 +3185,11 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
     if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)):
         return "FAILED"
 
+    # 🟢 FIX: Mid-Batch Restriction Fallback Ejector
+    is_content_protected = getattr(msg, "has_protected_content", False) or getattr(msg.chat, "has_protected_content", False)
+    if is_content_protected:
+        return "FALLBACK_RESTRICTED"
+
     # 🟢 Text Fast-Forward
     if msg_type == "Text":
         try:
@@ -3452,6 +3476,17 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                             client, acc, chatid, msgid, dest_chat_id, dest_thread_id, 
                             user_id, task_uuid, filter_thread_id, allowed_types, delay
                         )
+                        # 🟢 FIX: Catch mid-batch restricted files and dynamically route them to the heavy downloader!
+                        if task_result == "FALLBACK_RESTRICTED":
+                            task_result = await handle_private(
+                                client, acc, message, chatid, msgid, index, total_count, 
+                                status_message, dest_chat_id, dest_thread_id, delay, 
+                                user_id, task_uuid, 
+                                is_restricted=True, # FORCE HEAVY MODE FOR THIS MESSAGE
+                                header_text=inner_header,
+                                filter_thread_id=filter_thread_id, 
+                                allowed_types=allowed_types 
+                            )
                     else:
                         task_result = await handle_private(
                             client, acc, message, chatid, msgid, index, total_count, 
@@ -6549,3 +6584,4 @@ if __name__ == "__main__":
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         pass
+        
