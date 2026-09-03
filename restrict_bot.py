@@ -3932,32 +3932,183 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
         gc.collect()
 
 # ==============================================================================
-# --- Koyeb health check (optional) ---
+# --- INTERACTIVE WEB DASHBOARD & HEALTH CHECK ---
 # ==============================================================================
 try:
     from aiohttp import web
 except ImportError:
     web = None
 
-async def _koyeb_health_handler(request):
-    return web.Response(text="OK", status=200)
+HTML_DASHBOARD = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>System Overview</title>
+    <style>
+        :root { --bg: #090e17; --card: #111827; --text: #f1f5f9; --accent: #3b82f6; --glow: rgba(59, 130, 246, 0.4); }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; }
+        .container { max-width: 700px; margin: 0 auto; padding-top: 20px; }
+        .header { display: flex; align-items: center; gap: 15px; margin-bottom: 5px; }
+        .header-title { font-size: 26px; font-weight: 800; color: #fff; letter-spacing: 0.5px; }
+        .header-subtitle { color: #94a3b8; font-size: 13px; margin-bottom: 30px; }
+        .btn-refresh { display: block; width: 100%; padding: 16px; background: var(--card); border: 1px solid #1e293b; border-radius: 16px; color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; text-align: center; transition: all 0.3s ease; margin-bottom: 30px; text-transform: uppercase; letter-spacing: 1px; }
+        .btn-refresh:hover { background: #1e293b; border-color: var(--accent); box-shadow: 0 0 20px var(--glow); transform: translateY(-2px); }
+        .grid { display: flex; flex-direction: column; gap: 16px; }
+        .card { background: var(--card); border-radius: 20px; padding: 20px 24px; display: flex; align-items: center; gap: 20px; border: 1px solid #1e293b; transition: all 0.3s ease; }
+        .card:hover { border-color: var(--accent); box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
+        .icon-box { width: 45px; height: 45px; border-radius: 14px; background: rgba(59, 130, 246, 0.1); display: flex; align-items: center; justify-content: center; font-size: 22px; }
+        .info-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 1.2px; margin-bottom: 6px; }
+        .info-value { font-size: 22px; font-weight: 800; color: #fff; }
+        .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <div class="icon-box" style="background: var(--accent); color: white; box-shadow: 0 0 15px var(--glow);">▶</div>
+            <div class="header-title">System Overview</div>
+        </div>
+        <div class="header-subtitle">Real-time performance and live stream activity</div>
+        
+        <button class="btn-refresh" onclick="fetchStats()">🔄 Refresh Data</button>
+
+        <div class="grid">
+            <div class="card">
+                <div class="icon-box" style="color: #3b82f6;">🕒</div>
+                <div>
+                    <div class="info-label">Uptime</div>
+                    <div class="info-value" id="uptime">Loading...</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="icon-box" style="color: #a855f7;">🤖</div>
+                <div>
+                    <div class="info-label">Active Downloads</div>
+                    <div class="info-value" id="active-tasks">Loading...</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="icon-box" style="color: #ec4899;">📡</div>
+                <div>
+                    <div class="info-label">Live Watchers</div>
+                    <div class="info-value"><span id="watchers">Loading...</span> <span class="pulse" style="color: #ef4444; font-size: 14px;">●</span></div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="icon-box" style="color: #10b981;">🧠</div>
+                <div>
+                    <div class="info-label">Server Load (RAM / CPU)</div>
+                    <div class="info-value" id="server-load">Loading...</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="icon-box" style="color: #f59e0b;">💾</div>
+                <div>
+                    <div class="info-label">Free Storage</div>
+                    <div class="info-value" id="disk-free">Loading...</div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="icon-box" style="color: #06b6d4;">⚡</div>
+                <div>
+                    <div class="info-label">Network Ping</div>
+                    <div class="info-value"><span id="ping">Loading...</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function fetchStats() {
+            const btn = document.querySelector('.btn-refresh');
+            btn.innerHTML = "🔄 REFRESHING...";
+            const startTime = performance.now();
+            
+            try {
+                const response = await fetch('/api/stats');
+                const data = await response.json();
+                const ping = Math.round(performance.now() - startTime);
+
+                document.getElementById('uptime').innerText = data.uptime;
+                document.getElementById('active-tasks').innerText = data.active_tasks + " Tasks";
+                document.getElementById('watchers').innerText = data.watchers + " Active";
+                document.getElementById('server-load').innerText = data.ram + "% / " + data.cpu + "%";
+                document.getElementById('disk-free').innerText = data.disk_free + " GB";
+                document.getElementById('ping').innerText = ping + " ms";
+            } catch (e) {
+                console.error("Failed to fetch stats", e);
+            } finally {
+                btn.innerHTML = "🔄 REFRESH DATA";
+            }
+        }
+
+        // Fetch on load and auto-refresh every 5 seconds!
+        fetchStats();
+        setInterval(fetchStats, 5000);
+    </script>
+</body>
+</html>
+"""
+
+async def _dashboard_ui_handler(request):
+    """Serves the beautiful HTML Dashboard"""
+    return web.Response(text=HTML_DASHBOARD, content_type='text/html', status=200)
+
+async def _api_stats_handler(request):
+    """Serves raw JSON data to the Dashboard for live updating"""
+    uptime_seconds = int(time.time() - BOT_START_TIME)
+    
+    # Calculate beautiful uptime format (X days, Xh: Xm: Xs)
+    days, rem = divmod(uptime_seconds, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, seconds = divmod(rem, 60)
+    
+    if days > 0:
+        uptime_str = f"{days} days, {hours:02d}h: {minutes:02d}m: {seconds:02d}s"
+    else:
+        uptime_str = f"{hours:02d}h: {minutes:02d}m: {seconds:02d}s"
+    
+    # Get Server Stats
+    mem = psutil.virtual_memory().percent
+    cpu = psutil.cpu_percent()
+    total, used, free = shutil.disk_usage(".")
+    disk_free = round(free / (1024**3), 1)
+    
+    # Get Bot Stats
+    active_count = sum(len(tasks) for tasks in ACTIVE_PROCESSES.values())
+    watcher_count = await db.db.watchers.count_documents({})
+    
+    return web.json_response({
+        "uptime": uptime_str,
+        "ram": mem,
+        "cpu": cpu,
+        "disk_free": disk_free,
+        "active_tasks": active_count,
+        "watchers": watcher_count
+    })
 
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None:
-        logger.info("aiohttp not installed; Koyeb health check not started.")
+        logger.info("aiohttp not installed; Web Dashboard not started.")
         return
     
-    # Uses the global PORT variable defined at the top of your script
     global PORT 
     
     app_web = web.Application()
-    app_web.router.add_get("/", _koyeb_health_handler)
-    app_web.router.add_get("/health", _koyeb_health_handler)
+    # Route the main pages to the HTML Dashboard
+    app_web.router.add_get("/", _dashboard_ui_handler)
+    app_web.router.add_get("/health", _dashboard_ui_handler)
+    # Route the hidden API that the Javascript talks to
+    app_web.router.add_get("/api/stats", _api_stats_handler)
+    
     runner = web.AppRunner(app_web)
     await runner.setup()
     site = web.TCPSite(runner, host, PORT)
     await site.start()
-    logger.info(f"Starting Koyeb health check server on port {PORT}...")
+    logger.info(f"🌐 Interactive Web Dashboard started on port {PORT}...")
 
 # ==============================================================================
 # --- MEDIAINFO HANDLER (Admin Only) ---
