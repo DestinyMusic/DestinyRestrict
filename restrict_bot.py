@@ -848,10 +848,11 @@ async def check_link_restriction(user_id, link_text):
 
         # PYROGRAM NATIVE MAGIC: Feed the string chat_id directly.
         # It handles public usernames and bots without joining!
+        msg = None
         if msg_id:
             try:
                 msg = await check_client.get_messages(chat_id, msg_id)
-            except Exception as bot_err:
+            except Exception:
                 if check_client == app and user_session:
                     api_id = await db.get_api_id(user_id) or API_ID
                     api_hash = await db.get_api_hash(user_id) or API_HASH
@@ -860,14 +861,11 @@ async def check_link_restriction(user_id, link_text):
                     is_temp_client = True
                     try:
                         msg = await check_client.get_messages(chat_id, msg_id)
-                    except Exception as user_err:
-                        raise user_err
-                else:
-                    raise bot_err
+                    except Exception:
+                        pass # Ignore error so we can cleanly fallback to checking the chat directly
 
-            if not msg or msg.empty:
-                raise Exception("Message not found or inaccessible.")
-
+        # If the specific message was found, check its restrictions
+        if msg and not msg.empty:
             if getattr(msg.chat, "has_protected_content", False) or getattr(msg, "has_protected_content", False):
                 is_restricted = True
                 status_msg = "🔒 **Source is RESTRICTED** (Will use Download Mode)"
@@ -875,15 +873,17 @@ async def check_link_restriction(user_id, link_text):
                 is_restricted = False
                 status_msg = "🔓 **Source is PUBLIC/UNRESTRICTED** (Will use Fast Forward)"
         else:
+            # Fallback: The specific message was deleted (common in batches), so we check the chat instead!
             try:
                 chat = await check_client.get_chat(chat_id)
             except Exception as bot_err:
                 if check_client == app and user_session:
                     api_id = await db.get_api_id(user_id) or API_ID
                     api_hash = await db.get_api_hash(user_id) or API_HASH
-                    check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
-                    await check_client.connect()
-                    is_temp_client = True
+                    if not is_temp_client:
+                        check_client = Client(":memory:", session_string=user_session, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+                        await check_client.connect()
+                        is_temp_client = True
                     try:
                         chat = await check_client.get_chat(chat_id)
                     except Exception as user_err:
@@ -893,10 +893,10 @@ async def check_link_restriction(user_id, link_text):
 
             if getattr(chat, "has_protected_content", False):
                 is_restricted = True
-                status_msg = "🔒 **Channel is RESTRICTED** (Will use Download Mode)"
+                status_msg = "🔒 **Source is RESTRICTED** (Will use Download Mode)"
             else:
                 is_restricted = False
-                status_msg = "🔓 **Channel is PUBLIC/UNRESTRICTED**"
+                status_msg = "🔓 **Source is PUBLIC/UNRESTRICTED** (Deleted messages will be gracefully skipped)"
 
     except Exception as e:
         err_str = str(e)
