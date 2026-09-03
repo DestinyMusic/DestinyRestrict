@@ -2670,7 +2670,7 @@ async def show_filter_menu(message_or_query, user_id):
         return
 
     if "allowed_types" not in task_data:
-        task_data["allowed_types"] = ["Video", "Document"]
+        task_data["allowed_types"] = ALL_MSG_TYPES.copy()
     task_data["status"] = "waiting_filter"
 
     kb = get_filter_keyboard(task_data["allowed_types"])
@@ -3136,10 +3136,17 @@ async def start_task_final(client: Client, message_context: Message, task_data: 
 async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: int, dest_chat_id, dest_thread_id, user_id, task_uuid, filter_thread_id, allowed_types):
     """Isolated function ONLY for Public Unrestricted links. Returns SUCCESS, SKIPPED, or FAILED."""
 
+    msg = None
     try:
-        # Uses native string resolution directly!
-        fetcher = acc if acc else client
-        msg = await fetcher.get_messages(chatid, msgid)
+        if acc:
+            try:
+                msg = await acc.get_messages(chatid, msgid)
+            except Exception:
+                pass
+        
+        if not msg or msg.empty:
+            msg = await client.get_messages(chatid, msgid)
+            
     except Exception as e:
         logger.error(f"Failed to fetch msg {msgid}: {e}")
         return "FAILED"
@@ -4691,12 +4698,12 @@ HTML_DASHBOARD = """
                     <div class="filter-grid">
                         <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Video" checked> Video</label>
                         <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Document" checked> Document</label>
-                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Audio"> Audio</label>
-                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Photo"> Photo</label>
-                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Voice"> Voice</label>
-                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Text"> Text</label>
-                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Animation"> Animation</label>
-                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Sticker"> Sticker</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Audio" checked> Audio</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Photo" checked> Photo</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Voice" checked> Voice</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Text" checked> Text</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Animation" checked> Animation</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Sticker" checked> Sticker</label>
                     </div>
                 </div>
                 <div class="modal-actions">
