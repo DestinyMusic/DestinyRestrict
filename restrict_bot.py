@@ -4139,45 +4139,42 @@ HTML_DASHBOARD = """
         [data-theme="golden-hour"] { --bg: #fffbeb; --card: #ffffff; --card-border: #fde68a; --text: #451a03; --subtext: #92400e; --accent: #d97706; --glow: rgba(217, 119, 6, 0.25); --sidebar: #fef3c7; }
 
         * { box-sizing: border-box; }
-        /* 🌊 Full-Screen Apple Music Liquid Flow */
+        /* 🌊 Apple Music Liquid Flow Animations - Slow & Elegant */
         @keyframes flowPrimary {
-            0% { transform: translate(-10%, -10%) scale(1); }
-            50% { transform: translate(25%, 30%) scale(1.3); }
-            100% { transform: translate(-10%, -10%) scale(1); }
+            0% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(15vw, -10vh) scale(1.1); }
+            66% { transform: translate(-15vw, 15vh) scale(0.9); }
+            100% { transform: translate(0, 0) scale(1); }
         }
         @keyframes flowSecondary {
-            0% { transform: translate(10%, 10%) scale(1.1); }
-            50% { transform: translate(-30%, -20%) scale(0.9); }
-            100% { transform: translate(10%, 10%) scale(1.1); }
+            0% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(-20vw, 15vh) scale(1.2); }
+            66% { transform: translate(20vw, -15vh) scale(0.8); }
+            100% { transform: translate(0, 0) scale(1); }
         }
 
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; transition: background 0.5s ease; position: relative; z-index: 0; }
         
-        /* MASSIVE dimensions (150vw/vh) guarantee the center of the screen is completely washed in color */
+        /* 120px blur creates the smooth mesh gradient without washing out the screen */
         body::before, body::after { 
-            content: ''; position: fixed; 
-            width: 150vw; height: 150vh; 
-            border-radius: 50%; 
-            filter: blur(180px); -webkit-filter: blur(180px); 
-            z-index: -1; 
-            opacity: calc(0.35 + var(--blob-opacity, 0)); 
-            transition: opacity 0.5s, background 0.5s; 
-            pointer-events: none; 
+            content: ''; position: fixed; border-radius: 50%; 
+            filter: blur(120px); -webkit-filter: blur(120px); z-index: -1; 
+            /* Deep, subtle base (0.08) so the black theme stays gorgeously dark */
+            opacity: calc(0.08 + var(--blob-opacity, 0)); 
+            transition: opacity 0.8s ease; pointer-events: none; 
             will-change: transform; 
+            background: var(--accent); /* Both use solid accent for maximum richness */
         }
         
-        /* Top-Left origin, sweeps across the middle */
         body::before { 
-            background: var(--accent); 
-            top: -25vh; left: -25vw; 
-            animation: flowPrimary 22s infinite ease-in-out; 
+            width: 70vw; height: 70vh; 
+            top: -10vh; left: -10vw; 
+            animation: flowPrimary 40s infinite ease-in-out; 
         }
-        
-        /* Bottom-Right origin, sweeps across the middle */
         body::after { 
-            background: var(--glow); 
-            bottom: -25vh; right: -25vw; 
-            animation: flowSecondary 26s infinite ease-in-out; 
+            width: 75vw; height: 75vh; 
+            bottom: -10vh; right: -10vw; 
+            animation: flowSecondary 48s infinite ease-in-out reverse; 
         }
 
         .view-section { display: none; padding-bottom: 40px; }
@@ -4643,12 +4640,13 @@ HTML_DASHBOARD = """
         function applyLiquidGlass(val) {
             document.getElementById('glass-val').innerText = val;
             
-            // As slider goes up: blur increases, background opacity drops, glow blobs appear
-            const blurPx = (val / 100) * 20; 
-            const bgAlpha = 100 - (val / 100 * 65);       // Opacity drops to 35% max
-            const borderAlpha = 100 - (val / 100 * 50);   // Border drops to 50% max
-            const blobOpacity = (val / 100) * 0.45;       // Background glows appear (45% opacity max)
-            const shadowAlpha = (val / 100) * 0.4;        // Adds drop-shadow to separate glass from bg
+            const blurPx = (val / 100) * 24; 
+            // Keep cards darker! Lowest opacity is now 55% so they stay beautifully tinted
+            const bgAlpha = 100 - (val / 100 * 45);       
+            const borderAlpha = 100 - (val / 100 * 60);   
+            // Keep blobs subtle! Max boost is only 0.25 so the screen stays comfortably dark
+            const blobOpacity = (val / 100) * 0.25;       
+            const shadowAlpha = (val / 100) * 0.5;        
 
             document.documentElement.style.setProperty('--glass-blur', blurPx + 'px');
             document.documentElement.style.setProperty('--glass-bg', bgAlpha + '%');
