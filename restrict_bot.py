@@ -4551,7 +4551,13 @@ HTML_DASHBOARD = """
             const listEl = document.getElementById('web-chats-list');
             
             const filtered = allLoadedChats.filter(c => {
-                const matchesCat = currentChatCat === 'All' || c.name.toLowerCase().includes(`[${currentChatCat.toLowerCase()}`);
+                let catMatchStr = '';
+                if (currentChatCat === 'Group') catMatchStr = '👥 group';
+                if (currentChatCat === 'Channel') catMatchStr = '📢 channel';
+                if (currentChatCat === 'Bot') catMatchStr = '🤖 bot';
+                if (currentChatCat === 'User') catMatchStr = '👤 user';
+
+                const matchesCat = currentChatCat === 'All' || c.name.toLowerCase().includes(catMatchStr);
                 const matchesQuery = c.name.toLowerCase().includes(query) || c.id.includes(query);
                 return matchesCat && matchesQuery;
             });
