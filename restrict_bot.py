@@ -3932,7 +3932,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
         gc.collect()
 
 # ==============================================================================
-# --- FULL STACK WEB DASHBOARD & API ENGINE ---
+# --- FULL-STACK STREMIO WEB ENGINE & AUTHENTICATION BRIDGE ---
 # ==============================================================================
 try:
     from aiohttp import web
@@ -3941,184 +3941,304 @@ except ImportError:
 
 HTML_DASHBOARD = """
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="amoled">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TG Stremio Dashboard</title>
+    <title>TG Stremio Portal</title>
     <style>
         :root { 
-            --bg: #090e17; --card: #111827; --text: #f1f5f9; --accent: #3b82f6; 
-            --glow: rgba(59, 130, 246, 0.4); --danger: #ef4444; --sidebar: #0f172a; 
+            --bg: #000000; --card: #0a0a0a; --card-border: #1f2937; --text: #f1f5f9; 
+            --accent: #3b82f6; --glow: rgba(59, 130, 246, 0.4); --danger: #ef4444; --sidebar: #050505; 
         }
+        [data-theme="royal"] { --bg: #0b0914; --card: #151124; --card-border: #2d244a; --accent: #8b5cf6; --glow: rgba(139, 92, 246, 0.4); --sidebar: #07050d; }
+        [data-theme="obsidian"] { --bg: #090e17; --card: #111827; --card-border: #1e293b; --accent: #10b981; --glow: rgba(16, 185, 129, 0.4); --sidebar: #070a12; }
+        [data-theme="rose"] { --bg: #14090c; --card: #241115; --card-border: #3d1b22; --accent: #f43f5e; --glow: rgba(244, 63, 94, 0.4); --sidebar: #0d0608; }
+        [data-theme="slate"] { --bg: #0f172a; --card: #1e293b; --card-border: #334155; --accent: #0ea5e9; --glow: rgba(14, 165, 233, 0.4); --sidebar: #090d16; }
+        [data-theme="gold"] { --bg: #120e09; --card: #211910; --card-border: #382c1b; --accent: #f59e0b; --glow: rgba(245, 158, 11, 0.4); --sidebar: #0a0805; }
+
         * { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; transition: background 0.3s; }
         
+        /* Views */
+        .view-section { display: none; padding-bottom: 40px; }
+        .view-section.active { display: block; }
+
+        /* Login Screen (Matching 60343.jpg) */
+        #login-view { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; background: radial-gradient(circle at center, #111827 0%, var(--bg) 100%); }
+        .login-card { background: var(--card); border: 1px solid var(--card-border); border-radius: 28px; width: 100%; max-width: 420px; padding: 36px 28px; box-shadow: 0 20px 50px rgba(0,0,0,0.8); text-align: center; }
+        .login-logo { width: 56px; height: 56px; background: var(--accent); border-radius: 50%; margin: 0 auto 20px auto; display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: 0 0 25px var(--glow); color: #fff; }
+        .login-title { font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 6px; }
+        .login-subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 28px; }
+
         /* Navbar */
-        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: rgba(17, 24, 39, 0.8); backdrop-filter: blur(10px); border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 100; }
-        .nav-brand { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 800; }
-        .nav-brand-icon { width: 32px; height: 32px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--glow); color: white; font-size: 14px; }
-        .nav-controls { display: flex; align-items: center; gap: 15px; }
-        .icon-btn { background: var(--card); border: 1px solid #1e293b; color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; }
+        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--card-border); position: sticky; top: 0; z-index: 100; }
+        .nav-brand { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 800; }
+        .nav-brand-icon { width: 34px; height: 34px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--glow); color: white; font-size: 14px; }
+        .nav-controls { display: flex; align-items: center; gap: 12px; }
+        .icon-btn { background: var(--card); border: 1px solid var(--card-border); color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; }
         .icon-btn:hover { border-color: var(--accent); }
 
-        /* Sidebar Overlay */
-        .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 200; opacity: 0; pointer-events: none; transition: 0.3s; }
-        .sidebar { position: fixed; top: 0; left: -300px; width: 280px; height: 100%; background: var(--sidebar); z-index: 201; border-right: 1px solid #1e293b; transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); padding: 20px 0; overflow-y: auto; }
+        /* Sidebar */
+        .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 200; opacity: 0; pointer-events: none; transition: 0.3s; }
+        .sidebar { position: fixed; top: 0; left: -300px; width: 280px; height: 100%; background: var(--sidebar); z-index: 201; border-right: 1px solid var(--card-border); transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); padding: 20px 0; overflow-y: auto; }
         .sidebar.open { left: 0; }
         .sidebar-overlay.open { opacity: 1; pointer-events: auto; }
         .menu-item { padding: 16px 24px; display: flex; align-items: center; gap: 16px; color: #cbd5e1; font-weight: 600; cursor: pointer; transition: 0.2s; }
-        .menu-item:hover { background: rgba(59, 130, 246, 0.1); color: #fff; border-left: 3px solid var(--accent); }
+        .menu-item:hover, .menu-item.active { background: rgba(59, 130, 246, 0.1); color: #fff; border-left: 4px solid var(--accent); }
         
-        /* User Profile Dropdown */
-        .profile-menu { position: absolute; top: 70px; right: 20px; background: var(--card); border: 1px solid #1e293b; border-radius: 16px; padding: 15px; width: 260px; display: none; z-index: 105; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        /* Profile Dropdown (Matching 60338.jpg) */
+        .profile-menu { position: absolute; top: 70px; right: 20px; background: var(--card); border: 1px solid var(--card-border); border-radius: 20px; padding: 20px; width: 280px; display: none; z-index: 105; box-shadow: 0 15px 40px rgba(0,0,0,0.6); }
         .profile-menu.show { display: block; }
-        .user-info { display: flex; flex-direction: column; gap: 4px; padding-bottom: 15px; border-bottom: 1px solid #1e293b; margin-bottom: 15px; }
+        .user-info { display: flex; flex-direction: column; gap: 4px; padding-bottom: 15px; border-bottom: 1px solid var(--card-border); margin-bottom: 15px; }
         .theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px; }
-        .theme-btn { background: #0f172a; border: 1px solid #1e293b; padding: 8px; border-radius: 8px; font-size: 11px; color: #fff; cursor: pointer; display: flex; align-items: center; gap: 6px; }
-        .theme-btn.active { border-color: var(--accent); }
+        .theme-btn { background: var(--bg); border: 1px solid var(--card-border); padding: 8px 10px; border-radius: 10px; font-size: 11px; color: #fff; cursor: pointer; display: flex; align-items: center; gap: 8px; transition: 0.2s; }
+        .theme-btn.active { border-color: var(--accent); background: rgba(59,130,246,0.1); }
         .dot { width: 10px; height: 10px; border-radius: 50%; }
 
-        /* Main Container */
-        .container { max-width: 800px; margin: 0 auto; padding: 20px; }
-        .section-title { font-size: 22px; font-weight: 800; margin: 30px 0 15px 0; color: #fff; }
-        
-        /* Cards */
-        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
-        .card { background: var(--card); border-radius: 20px; padding: 20px; display: flex; align-items: center; gap: 20px; border: 1px solid #1e293b; transition: 0.3s; }
-        .card-stat { font-size: 24px; font-weight: 800; color: #fff; }
-        .card-label { font-size: 12px; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
+        /* Container & Grid */
+        .container { max-width: 850px; margin: 0 auto; padding: 20px; }
+        .section-title { font-size: 20px; font-weight: 800; margin: 25px 0 15px 0; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .card { background: var(--card); border-radius: 20px; padding: 20px; border: 1px solid var(--card-border); transition: 0.3s; }
+        .card-stat { font-size: 24px; font-weight: 800; color: #fff; margin-top: 5px; }
+        .card-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
 
-        /* Action Buttons */
-        .primary-btn { width: 100%; padding: 16px; background: var(--accent); border: none; border-radius: 16px; color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; transition: 0.3s; margin-bottom: 20px; box-shadow: 0 4px 15px var(--glow); }
+        /* Inputs & Buttons */
+        .primary-btn { width: 100%; padding: 15px; background: var(--accent); border: none; border-radius: 14px; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; transition: 0.3s; box-shadow: 0 4px 20px var(--glow); text-transform: uppercase; letter-spacing: 0.5px; }
         .primary-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 25px var(--glow); }
+        .input-group { margin-bottom: 18px; text-align: left; }
+        .input-group label { display: block; font-size: 11px; color: #94a3b8; margin-bottom: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+        .input-group input, .input-group select { width: 100%; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 14px; outline: none; transition: 0.2s; }
+        .input-group input:focus { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
 
-        /* Task Modal */
-        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 300; display: none; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
+        /* Task Cards & Rows */
+        .task-row { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 15px; }
+        .task-kill { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.2); padding: 8px 16px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer; transition: 0.2s; }
+        .task-kill:hover { background: var(--danger); color: #fff; box-shadow: 0 0 15px rgba(239, 68, 68, 0.4); }
+
+        /* Filter Checkboxes */
+        .filter-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 18px; }
+        .filter-checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #cbd5e1; background: var(--bg); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--card-border); cursor: pointer; }
+        .filter-checkbox input { accent-color: var(--accent); width: 16px; height: 16px; }
+
+        /* Modal */
+        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 300; display: none; align-items: center; justify-content: center; backdrop-filter: blur(6px); padding: 20px; }
         .modal.show { display: flex; }
-        .modal-content { background: var(--card); width: 90%; max-width: 450px; border-radius: 24px; padding: 24px; border: 1px solid #1e293b; }
-        .input-group { margin-bottom: 16px; }
-        .input-group label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 8px; font-weight: 600; }
-        .input-group input, .input-group select { width: 100%; padding: 12px 16px; border-radius: 12px; border: 1px solid #1e293b; background: #0f172a; color: #fff; font-size: 14px; outline: none; }
-        .input-group input:focus { border-color: var(--accent); }
+        .modal-content { background: var(--card); width: 100%; max-width: 460px; border-radius: 24px; padding: 28px; border: 1px solid var(--card-border); box-shadow: 0 25px 60px rgba(0,0,0,0.8); max-height: 90vh; overflow-y: auto; }
         .modal-actions { display: flex; gap: 12px; margin-top: 24px; }
-        .btn-cancel, .btn-submit { flex: 1; padding: 14px; border-radius: 12px; font-weight: 700; cursor: pointer; border: none; }
-        .btn-cancel { background: #1e293b; color: #fff; }
-        .btn-submit { background: var(--accent); color: #fff; }
-        
-        .task-row { background: var(--sidebar); border: 1px solid #1e293b; border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
-        .task-kill { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.2); padding: 8px 16px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; }
+        .btn-cancel { flex: 1; padding: 14px; border-radius: 12px; font-weight: 700; cursor: pointer; border: 1px solid var(--card-border); background: var(--bg); color: #fff; }
     </style>
 </head>
 <body>
 
-    <!-- Navbar -->
-    <div class="navbar">
-        <div class="nav-brand">
-            <div class="icon-btn" onclick="toggleSidebar()" style="border:none;">☰</div>
-            <div class="nav-brand-icon">▶</div>
-            <span>TG Stremio</span>
-        </div>
-        <div class="nav-controls">
-            <div class="icon-btn" onclick="toggleProfile()">👤</div>
+    <!-- LOGIN VIEW -->
+    <div id="login-view">
+        <div class="login-card">
+            <div class="login-logo">▶</div>
+            <div class="login-title">TG Stremio Portal</div>
+            <div class="login-subtitle">Enter your Telegram ID & Web Password</div>
+            <form onsubmit="handleLogin(event)">
+                <div class="input-group">
+                    <label>Telegram User ID</label>
+                    <input type="number" id="login-uid" placeholder="e.g. 123456789" required>
+                </div>
+                <div class="input-group">
+                    <label>Web Password (Signup/Login)</label>
+                    <input type="password" id="login-pwd" placeholder="••••••••" required>
+                </div>
+                <button type="submit" class="primary-btn" style="margin-top: 10px;">Sign In / Register</button>
+            </form>
         </div>
     </div>
 
-    <!-- Sidebar -->
-    <div class="sidebar-overlay" onclick="toggleSidebar()"></div>
-    <div class="sidebar" id="sidebar">
-        <div class="menu-item">🏠 Home</div>
-        <div class="menu-item">🎬 Media</div>
-        <div class="menu-item">📚 Catalogs</div>
-        <div class="menu-item">📈 Admin</div>
-        <div class="menu-item">💳 Plans</div>
-        <div class="menu-item">🛡 Tokens</div>
-        <div class="menu-item">⚙️ Settings</div>
+    <!-- MAIN APP WRAPPER -->
+    <div id="app-view" style="display: none;">
+        <!-- Navbar -->
+        <div class="navbar">
+            <div class="nav-brand">
+                <div class="icon-btn" onclick="toggleSidebar()" style="border:none;">☰</div>
+                <div class="nav-brand-icon">▶</div>
+                <span id="nav-title">Home</span>
+            </div>
+            <div class="nav-controls">
+                <div class="icon-btn" onclick="toggleProfile()">👤</div>
+            </div>
+        </div>
+
+        <!-- Sidebar -->
+        <div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+        <div class="sidebar" id="sidebar">
+            <div class="menu-item active" onclick="switchView('home', 'Home')">🏠 Home</div>
+            <div class="menu-item" onclick="switchView('downloads', 'Downloads')">📥 Downloads</div>
+            <div class="menu-item" onclick="switchView('watchers', 'Watchers')">📡 Watchers</div>
+            <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
+        </div>
+
+        <!-- Profile Menu (Themes & Logout) -->
+        <div class="profile-menu" id="profile-menu">
+            <div class="user-info">
+                <strong id="profile-name">User</strong>
+                <span id="profile-id" style="color: #64748b; font-size: 11px;">ID: ...</span>
+                <span style="color: #10b981; font-size: 12px; margin-top: 4px;">● ONLINE</span>
+            </div>
+            <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; text-transform: uppercase; font-weight: 700;">App Theme</div>
+            <div class="theme-grid">
+                <div class="theme-btn active" onclick="setTheme('amoled', this)"><div class="dot" style="background:#000;"></div>AMOLED</div>
+                <div class="theme-btn" onclick="setTheme('royal', this)"><div class="dot" style="background:#8b5cf6;"></div>Royal Violet</div>
+                <div class="theme-btn" onclick="setTheme('obsidian', this)"><div class="dot" style="background:#10b981;"></div>Obsidian</div>
+                <div class="theme-btn" onclick="setTheme('rose', this)"><div class="dot" style="background:#f43f5e;"></div>Rose Quartz</div>
+                <div class="theme-btn" onclick="setTheme('slate', this)"><div class="dot" style="background:#0ea5e9;"></div>Slate Ocean</div>
+                <div class="theme-btn" onclick="setTheme('gold', this)"><div class="dot" style="background:#f59e0b;"></div>Golden Hour</div>
+            </div>
+            <button class="primary-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 12px; margin-top: 5px;" onclick="logout()">Logout</button>
+        </div>
+
+        <!-- Container Views -->
+        <div class="container">
+            
+            <!-- HOME VIEW -->
+            <div id="view-home" class="view-section active">
+                <button class="primary-btn" onclick="openTaskModal()" style="margin-bottom: 25px;">➕ CREATE NEW TASK / WATCHER</button>
+                <div class="section-title">System Overview</div>
+                <div class="grid">
+                    <div class="card">
+                        <div class="card-label">Server Uptime</div>
+                        <div class="card-stat" id="uptime">Loading...</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-label">Your Active Tasks</div>
+                        <div class="card-stat" id="active-tasks">Loading...</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-label">Your Live Watchers</div>
+                        <div class="card-stat" id="active-watchers">Loading...</div>
+                    </div>
+                    <div class="card">
+                        <div class="card-label">Hardware (RAM / CPU)</div>
+                        <div class="card-stat" id="hardware">Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- DOWNLOADS VIEW -->
+            <div id="view-downloads" class="view-section">
+                <div class="section-title">
+                    <span>Downloads & Forwarding Tasks</span>
+                    <button class="primary-btn" style="width: auto; padding: 8px 16px; font-size: 12px;" onclick="openTaskModal()">+ Add</button>
+                </div>
+                <div id="downloads-list"><div style="color: #64748b;">Loading downloads...</div></div>
+            </div>
+
+            <!-- WATCHERS VIEW -->
+            <div id="view-watchers" class="view-section">
+                <div class="section-title">
+                    <span>Live Auto-Watchers</span>
+                    <button class="primary-btn" style="width: auto; padding: 8px 16px; font-size: 12px;" onclick="openTaskModal()">+ Add Watcher</button>
+                </div>
+                <div id="watchers-list"><div style="color: #64748b;">Loading watchers...</div></div>
+            </div>
+
+            <!-- SETTINGS VIEW -->
+            <div id="view-settings" class="view-section">
+                <div class="section-title">Security & Credentials</div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Change Web Password</h3>
+                    <form onsubmit="changePassword(event)">
+                        <div class="input-group">
+                            <label>New Password</label>
+                            <input type="password" id="new-pwd" placeholder="Enter new password" required>
+                        </div>
+                        <button type="submit" class="primary-btn" style="padding: 12px;">Update Password</button>
+                    </form>
+                </div>
+            </div>
+
+        </div>
     </div>
 
-    <!-- Profile Menu -->
-    <div class="profile-menu" id="profile-menu">
-        <div class="user-info">
-            <strong>Admin Account</strong>
-            <span style="color: #10b981; font-size: 12px;">● ONLINE</span>
-        </div>
-        <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; text-transform: uppercase;">App Theme</div>
-        <div class="theme-grid">
-            <div class="theme-btn active"><div class="dot" style="background:#3b82f6;"></div>AMOLED</div>
-            <div class="theme-btn"><div class="dot" style="background:#8b5cf6;"></div>Royal Violet</div>
-            <div class="theme-btn"><div class="dot" style="background:#10b981;"></div>Obsidian</div>
-            <div class="theme-btn"><div class="dot" style="background:#ef4444;"></div>Rose Quartz</div>
-        </div>
-        <button class="primary-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 10px; margin: 0;" onclick="alert('Session secured.')">Logout</button>
-    </div>
-
-    <!-- Main Content -->
-    <div class="container">
-        
-        <button class="primary-btn" onclick="openTaskModal()">➕ CREATE NEW TASK</button>
-
-        <div class="section-title">System Overview</div>
-        <div class="grid">
-            <div class="card">
-                <div>
-                    <div class="card-label">Server Uptime</div>
-                    <div class="card-stat" id="uptime">Loading...</div>
-                </div>
-            </div>
-            <div class="card">
-                <div>
-                    <div class="card-label">Active Downloads</div>
-                    <div class="card-stat" id="active-tasks">Loading...</div>
-                </div>
-            </div>
-            <div class="card">
-                <div>
-                    <div class="card-label">Hardware (RAM/CPU)</div>
-                    <div class="card-stat" id="hardware">Loading...</div>
-                </div>
-            </div>
-            <div class="card">
-                <div>
-                    <div class="card-label">Storage Nodes</div>
-                    <div class="card-stat" id="storage">Loading...</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="section-title">Active Processes</div>
-        <div id="task-list">
-            <div style="color: #64748b; font-size: 14px;">Loading running tasks...</div>
-        </div>
-    </div>
-
-    <!-- Add Task Modal -->
+    <!-- TASK CREATION MODAL -->
     <div class="modal" id="taskModal">
         <div class="modal-content">
-            <h3 style="margin-top: 0;">Add Download Task</h3>
-            <div class="input-group">
-                <label>Telegram Source Link</label>
-                <input type="text" id="t-link" placeholder="https://t.me/channel/123">
-            </div>
-            <div class="input-group">
-                <label>Destination Chat ID</label>
-                <input type="text" id="t-dest" placeholder="-100123456789 (Must be admin)">
-            </div>
-            <div class="input-group">
-                <label>Forward Delay (Seconds)</label>
-                <input type="number" id="t-delay" value="3" min="0">
-            </div>
-            <div class="input-group">
-                <label>User ID Executor (Leave blank for Bot)</label>
-                <input type="text" id="t-user" placeholder="123456789">
-            </div>
-            <div class="modal-actions">
-                <button class="btn-cancel" onclick="closeTaskModal()">Cancel</button>
-                <button class="btn-submit" onclick="submitTask()">Start Task</button>
-            </div>
+            <h3 style="margin-top: 0; color: #fff; font-size: 18px; margin-bottom: 20px;">Create Task or Watcher</h3>
+            <form onsubmit="submitTask(event)">
+                <div class="input-group">
+                    <label>Task Mode</label>
+                    <select id="m-type" onchange="toggleMode(this.value)">
+                        <option value="dl">Download / Clone Batch (/dl)</option>
+                        <option value="watch">Live Auto-Forwarder (/watch)</option>
+                    </select>
+                </div>
+                <div class="input-group">
+                    <label>Telegram Source Link</label>
+                    <input type="text" id="t-link" placeholder="https://t.me/channel/100 or 101-120" required>
+                </div>
+                <div class="input-group">
+                    <label>Destination Chat ID / Topic</label>
+                    <input type="text" id="t-dest" placeholder="-100123456789 or leave blank for DM">
+                </div>
+                <div class="input-group" id="delay-group">
+                    <label>Forward Delay (Seconds)</label>
+                    <input type="number" id="t-delay" value="3" min="0">
+                </div>
+                <div class="input-group">
+                    <label>Media Filters (Allowed Types)</label>
+                    <div class="filter-grid">
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Video" checked> Video</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Document" checked> Document</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Audio"> Audio</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Photo"> Photo</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Voice"> Voice</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Text"> Text</label>
+                    </div>
+                </div>
+                <div class="modal-actions">
+                    <button type="button" class="btn-cancel" onclick="closeTaskModal()">Cancel</button>
+                    <button type="submit" class="primary-btn" style="flex:1; margin:0;">Launch Task</button>
+                </div>
+            </form>
         </div>
     </div>
 
     <script>
+        let currentUser = localStorage.getItem('tg_uid') || null;
+
+        if (currentUser) {
+            document.getElementById('login-view').style.display = 'none';
+            document.getElementById('app-view').style.display = 'block';
+            document.getElementById('profile-id').innerText = "ID: " + currentUser;
+            fetchStats();
+            setInterval(fetchStats, 5000);
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const uid = document.getElementById('login-uid').value;
+            const pwd = document.getElementById('login-pwd').value;
+            
+            const res = await fetch('/api/auth/login', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: uid, password: pwd})
+            });
+            const data = await res.json();
+            if (data.status === 'success') {
+                localStorage.setItem('tg_uid', uid);
+                currentUser = uid;
+                document.getElementById('login-view').style.display = 'none';
+                document.getElementById('app-view').style.display = 'block';
+                document.getElementById('profile-id').innerText = "ID: " + uid;
+                fetchStats();
+            } else {
+                alert("Login Failed: " + data.message);
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('tg_uid');
+            location.reload();
+        }
+
         function toggleSidebar() {
             document.getElementById('sidebar').classList.toggle('open');
             document.querySelector('.sidebar-overlay').classList.toggle('open');
@@ -4126,177 +4246,270 @@ HTML_DASHBOARD = """
         function toggleProfile() {
             document.getElementById('profile-menu').classList.toggle('show');
         }
-        function openTaskModal() { document.getElementById('taskModal').classList.add('show'); }
-        function closeTaskModal() { document.getElementById('taskModal').classList.remove('show'); }
-
-        async function fetchStats() {
-            try {
-                const response = await fetch('/api/stats');
-                const data = await response.json();
-
-                document.getElementById('uptime').innerText = data.uptime;
-                document.getElementById('active-tasks').innerText = data.active_tasks;
-                document.getElementById('hardware').innerText = data.ram + "% / " + data.cpu + "%";
-                document.getElementById('storage').innerText = data.disk_free + " GB Free";
-                
-                const taskList = document.getElementById('task-list');
-                taskList.innerHTML = "";
-                
-                if (data.task_details.length === 0) {
-                    taskList.innerHTML = "<div style='color: #64748b;'>😴 No tasks running on the server.</div>";
-                } else {
-                    data.task_details.forEach(task => {
-                        taskList.innerHTML += `
-                            <div class="task-row">
-                                <div>
-                                    <div style="font-size: 14px; font-weight: 600; color: #fff; word-break: break-all;">${task.name}</div>
-                                    <div style="font-size: 12px; color: #64748b; margin-top: 4px;">Target: ${task.dest}</div>
-                                </div>
-                                <button class="task-kill" onclick="killTask('${task.id}')">KILL</button>
-                            </div>
-                        `;
-                    });
-                }
-            } catch (e) { console.error(e); }
+        function switchView(viewId, title) {
+            document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
+            document.getElementById('view-' + viewId).classList.add('active');
+            document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'));
+            event.currentTarget.classList.add('active');
+            document.getElementById('nav-title').innerText = title;
+            toggleSidebar();
         }
 
-        async function submitTask() {
+        function setTheme(themeName, el) {
+            document.documentElement.setAttribute('data-theme', themeName);
+            document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+            localStorage.setItem('app_theme', themeName);
+        }
+        const savedTheme = localStorage.getItem('app_theme');
+        if (savedTheme) {
+            document.documentElement.setAttribute('data-theme', savedTheme);
+            document.querySelectorAll('.theme-btn').forEach(b => {
+                if(b.innerText.toLowerCase().includes(savedTheme)) b.click();
+            });
+        }
+
+        function openTaskModal() { document.getElementById('taskModal').classList.add('show'); }
+        function closeTaskModal() { document.getElementById('taskModal').classList.remove('show'); }
+        function toggleMode(val) {
+            document.getElementById('delay-group').style.display = val === 'watch' ? 'block' : 'block';
+        }
+
+        async function fetchStats() {
+            if (!currentUser) return;
+            try {
+                const res = await fetch(`/api/stats?user_id=${currentUser}`);
+                const data = await res.json();
+                
+                document.getElementById('uptime').innerText = data.uptime;
+                document.getElementById('active-tasks').innerText = data.active_tasks;
+                document.getElementById('active-watchers').innerText = data.active_watchers;
+                document.getElementById('hardware').innerText = data.ram + "% / " + data.cpu + "%";
+                
+                // Downloads list
+                const dlList = document.getElementById('downloads-list');
+                dlList.innerHTML = data.tasks.length ? '' : '<div style="color: #64748b;">No active downloads.</div>';
+                data.tasks.forEach(t => {
+                    dlList.innerHTML += `
+                        <div class="task-row">
+                            <div>
+                                <div style="font-weight: 700; color: #fff; font-size: 14px; word-break: break-all;">${t.name}</div>
+                                <div style="font-size: 11px; color: var(--accent); margin-top: 4px;">Destination: ${t.dest} | Progress: ${t.current}/${t.total} (${t.percent}%)</div>
+                            </div>
+                            <button class="task-kill" onclick="cancelTask('${t.id}')">CANCEL</button>
+                        </div>
+                    `;
+                });
+
+                // Watchers list
+                const wList = document.getElementById('watchers-list');
+                wList.innerHTML = data.watchers.length ? '' : '<div style="color: #64748b;">No active watchers.</div>';
+                data.watchers.forEach(w => {
+                    wList.innerHTML += `
+                        <div class="task-row">
+                            <div>
+                                <div style="font-weight: 700; color: #fff; font-size: 14px;">📡 ${w.source}</div>
+                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">To: ${w.dest} | Detected: ${w.detected} | Success: ${w.success}</div>
+                            </div>
+                            <button class="task-kill" onclick="cancelWatcher('${w.id}')">REMOVE</button>
+                        </div>
+                    `;
+                });
+            } catch(e) {}
+        }
+
+        async function submitTask(e) {
+            e.preventDefault();
+            const mode = document.getElementById('m-type').value;
             const link = document.getElementById('t-link').value;
             const dest = document.getElementById('t-dest').value;
             const delay = document.getElementById('t-delay').value;
-            const user = document.getElementById('t-user').value;
-
-            if (!link) return alert("Link is required!");
-
-            const btn = document.querySelector('.btn-submit');
-            btn.innerText = "Processing...";
             
-            try {
-                const res = await fetch('/api/task/add', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ link, dest, delay, user })
-                });
-                const result = await res.json();
-                if(result.status === "success") {
-                    alert("Task successfully injected into Telegram Bot!");
-                    closeTaskModal();
-                    fetchStats();
-                } else {
-                    alert("Error: " + result.message);
-                }
-            } catch(e) { alert("Failed to communicate with bot."); }
-            btn.innerText = "Start Task";
+            const filtersArr = [];
+            document.querySelectorAll('input[name="ftype"]:checked').forEach(cb => filtersArr.push(cb.value));
+
+            const endpoint = mode === 'watch' ? '/api/watcher/add' : '/api/task/add';
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: currentUser, link, dest, delay, filters: filtersArr})
+            });
+            const data = await res.json();
+            if (data.status === 'success') {
+                alert("Task started successfully!");
+                closeTaskModal();
+                fetchStats();
+            } else {
+                alert("Error: " + data.message);
+            }
         }
 
-        async function killTask(taskId) {
-            if (!confirm("Kill this process?")) return;
+        async function cancelTask(taskId) {
+            if (!confirm("Cancel this task?")) return;
             await fetch('/api/task/cancel', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ task_id: taskId })
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({task_id: taskId, user_id: currentUser})
             });
             fetchStats();
         }
 
-        fetchStats();
-        setInterval(fetchStats, 5000);
+        async function cancelWatcher(watcherId) {
+            if (!confirm("Remove this watcher?")) return;
+            await fetch('/api/watcher/cancel', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({watcher_id: watcherId, user_id: currentUser})
+            });
+            fetchStats();
+        }
+
+        async function changePassword(e) {
+            e.preventDefault();
+            const pwd = document.getElementById('new-pwd').value;
+            const res = await fetch('/api/auth/password', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({user_id: currentUser, password: pwd})
+            });
+            const data = await res.json();
+            if (data.status === 'success') {
+                alert("Password updated successfully!");
+                document.getElementById('new-pwd').value = '';
+            } else {
+                alert("Failed to update password.");
+            }
+        }
     </script>
 </body>
 </html>
 """
 
 async def _dashboard_ui_handler(request):
-    """Serves the frontend HTML Web Application"""
     return web.Response(text=HTML_DASHBOARD, content_type='text/html', status=200)
 
+async def _api_login_handler(request):
+    try:
+        data = await request.json()
+        user_id = int(data.get("user_id"))
+        password = data.get("password")
+        
+        user = await db.col.find_one({"id": user_id})
+        if not user:
+            # Auto-register user if not exist in DB
+            await db.add_user(user_id, f"User {user_id}")
+            user = await db.col.find_one({"id": user_id})
+
+        stored_pwd = user.get("web_password")
+        if not stored_pwd:
+            # First time signup
+            await db.col.update_one({"id": user_id}, {"$set": {"web_password": password}})
+            return web.json_response({"status": "success"})
+        
+        if stored_pwd == password:
+            return web.json_response({"status": "success"})
+        else:
+            return web.json_response({"status": "error", "message": "Incorrect password"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=400)
+
+async def _api_password_handler(request):
+    try:
+        data = await request.json()
+        user_id = int(data.get("user_id"))
+        password = data.get("password")
+        await db.col.update_one({"id": user_id}, {"$set": {"web_password": password}})
+        return web.json_response({"status": "success"})
+    except Exception:
+        return web.json_response({"status": "error"}, status=400)
+
 async def _api_stats_handler(request):
-    """Feeds live server data to the Dashboard"""
+    try:
+        user_id = int(request.query.get("user_id", 0))
+    except:
+        user_id = 0
+
     uptime_seconds = int(time.time() - BOT_START_TIME)
     days, rem = divmod(uptime_seconds, 86400)
     hours, rem = divmod(rem, 3600)
     minutes, seconds = divmod(rem, 60)
     uptime_str = f"{days}d, {hours:02d}h: {minutes:02d}m" if days > 0 else f"{hours:02d}h: {minutes:02d}m"
     
-    active_count = sum(len(tasks) for tasks in ACTIVE_PROCESSES.values())
-    
+    # User-specific tasks
+    user_tasks = ACTIVE_PROCESSES.get(user_id, {})
     task_details = []
-    for uid, tasks in ACTIVE_PROCESSES.items():
-        for t_id, info in tasks.items():
-            task_details.append({
-                "id": t_id,
-                "name": info.get("item", "Task")[:60] + ("..." if len(info.get("item", "")) > 60 else ""),
-                "dest": info.get("dest_title_name", str(uid))
-            })
-            
-    total, used, free = shutil.disk_usage(".")
-            
+    for t_id, info in user_tasks.items():
+        tot = info.get("total", 0)
+        curr = info.get("current", 0)
+        pct = round((curr / tot * 100), 1) if tot > 0 else 0
+        task_details.append({
+            "id": t_id,
+            "name": info.get("item", "Task"),
+            "dest": info.get("dest_title_name", "DM"),
+            "current": curr,
+            "total": tot,
+            "percent": pct
+        })
+
+    # User-specific watchers
+    watcher_cursor = db.db.watchers.find({"user_id": user_id})
+    watcher_details = []
+    async for w in watcher_cursor:
+        stats = w.get("stats", {})
+        watcher_details.append({
+            "id": str(w["_id"]),
+            "source": w.get("source_title", "Source"),
+            "dest": w.get("dest_title", "Destination"),
+            "detected": stats.get("detected", 0),
+            "success": stats.get("success", 0)
+        })
+
+    total_watchers = await db.db.watchers.count_documents({"user_id": user_id})
+
     return web.json_response({
         "uptime": uptime_str,
         "ram": psutil.virtual_memory().percent,
         "cpu": psutil.cpu_percent(),
-        "disk_free": round(free / (1024**3), 1),
-        "active_tasks": active_count,
-        "task_details": task_details
+        "active_tasks": len(user_tasks),
+        "active_watchers": total_watchers,
+        "tasks": task_details,
+        "watchers": watcher_details
     })
 
-async def _api_cancel_task(request):
-    """Two-way sync: Web UI -> Telegram Task Cancellation"""
-    try:
-        data = await request.json()
-        task_id = data.get("task_id")
-        if task_id:
-            CANCEL_FLAGS[task_id] = True
-            try: await db.remove_active_task(task_id)
-            except Exception: pass
-            return web.json_response({"status": "success"})
-    except Exception: pass
-    return web.json_response({"status": "error"}, status=400)
-
 async def _api_add_task(request):
-    """Two-way sync: Web UI -> Telegram Task Injection"""
     try:
         data = await request.json()
+        user_id = int(data.get("user_id"))
         link = data.get("link")
         dest_str = data.get("dest", "")
         delay = int(data.get("delay", 3))
-        user_input = data.get("user", "")
-        
-        if not link: return web.json_response({"status": "error", "message": "No link provided"})
-        
-        # 1. Determine which User Session to use
-        user_id = None
-        if user_input and str(user_input).isdigit():
-            user_id = int(user_input)
-        elif ADMINS:
-            user_id = ADMINS[0] # Default to the main Admin's session
-        else:
-            return web.json_response({"status": "error", "message": "No Admin ID configured to execute task."})
+        allowed_types = data.get("filters", ["Video", "Document"])
 
-        # 2. Parse destination
-        dest_chat_id = user_id # Default to DM
+        if not link: return web.json_response({"status": "error", "message": "No link provided"})
+
+        dest_chat_id = user_id
         dest_thread_id = None
         if dest_str:
             dest_chat_id, dest_thread_id = _parse_chat_target(dest_str)
-            
-        # 3. Quick restriction check
-        is_restricted, _ = await check_link_restriction(user_id, link)
-        if is_restricted is None: is_restricted = False # Failsafe
 
-        # 4. Inject straight into the Bot's task queue!
+        is_restricted, _ = await check_link_restriction(user_id, link)
+        if is_restricted is None: is_restricted = False
+
         task_uuid = uuid.uuid4().hex
         if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
         ACTIVE_PROCESSES[user_id][task_uuid] = {
-            "user": f"WebUI({user_id})", 
+            "user": f"WebUI({user_id})",
             "dest_title_name": str(dest_chat_id),
-            "item": link, 
-            "started": time.time()
+            "item": link,
+            "started": time.time(),
+            "total": 0,
+            "current": 0
         }
-        
+
         asyncio.create_task(
             process_links_logic(
                 client=app,
-                message=None, # Headless execution!
+                message=None,
                 text=link,
                 dest_chat_id=dest_chat_id,
                 dest_thread_id=dest_thread_id,
@@ -4305,36 +4518,92 @@ async def _api_add_task(request):
                 acc_user_id=user_id,
                 task_uuid=task_uuid,
                 is_restricted=is_restricted,
-                allowed_types=["Video", "Document", "Audio", "Photo", "Text"]
+                allowed_types=allowed_types
             )
         )
         return web.json_response({"status": "success"})
     except Exception as e:
-        logger.error(f"Web Injection Error: {e}")
         return web.json_response({"status": "error", "message": str(e)}, status=500)
 
+async def _api_cancel_task(request):
+    try:
+        data = await request.json()
+        task_id = data.get("task_id")
+        user_id = int(data.get("user_id", 0))
+        if task_id:
+            CANCEL_FLAGS[task_id] = True
+            try: await db.remove_active_task(task_id)
+            except: pass
+            return web.json_response({"status": "success"})
+    except: pass
+    return web.json_response({"status": "error"}, status=400)
+
+async def _api_add_watcher(request):
+    try:
+        data = await request.json()
+        user_id = int(data.get("user_id"))
+        link = data.get("link")
+        dest_str = data.get("dest", "")
+        allowed_types = data.get("filters", ["Video", "Document"])
+
+        dest_chat_id = user_id
+        dest_thread_id = None
+        if dest_str:
+            dest_chat_id, dest_thread_id = _parse_chat_target(dest_str)
+
+        is_restricted, _ = await check_link_restriction(user_id, link)
+        if is_restricted is None: is_restricted = False
+
+        parsed = _parse_source_link(link)
+        source_id = parsed["chat_id"]
+        source_title = "Watched Source"
+
+        await db.add_watcher(
+            user_id=user_id,
+            source_id=source_id,
+            dest_id=dest_chat_id,
+            source_thread=parsed.get("topic_id"),
+            dest_thread=dest_thread_id,
+            delay=0,
+            is_restricted=is_restricted,
+            source_title=source_title,
+            dest_title=str(dest_chat_id),
+            allowed_types=allowed_types
+        )
+        return web.json_response({"status": "success"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+
+async def _api_cancel_watcher(request):
+    try:
+        data = await request.json()
+        watcher_id = data.get("watcher_id")
+        user_id = int(data.get("user_id", 0))
+        if watcher_id:
+            await db.db.watchers.delete_one({"_id": ObjectId(watcher_id), "user_id": user_id})
+            return web.json_response({"status": "success"})
+    except: pass
+    return web.json_response({"status": "error"}, status=400)
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
-    if web is None:
-        logger.info("aiohttp not installed; Web Dashboard not started.")
-        return
-    
-    global PORT 
-    
+    if web is None: return
+    global PORT
     app_web = web.Application()
-    # Frontend Routes
     app_web.router.add_get("/", _dashboard_ui_handler)
     app_web.router.add_get("/health", _dashboard_ui_handler)
-    
-    # API Routes for the Two-Way Sync
     app_web.router.add_get("/api/stats", _api_stats_handler)
-    app_web.router.add_post("/api/task/cancel", _api_cancel_task)
+    app_web.router.add_post("/api/auth/login", _api_login_handler)
+    app_web.router.add_post("/api/auth/password", _api_password_handler)
     app_web.router.add_post("/api/task/add", _api_add_task)
+    app_web.router.add_post("/api/task/cancel", _api_cancel_task)
+    app_web.router.add_post("/api/watcher/add", _api_add_watcher)
+    app_web.router.add_post("/api/watcher/cancel", _api_cancel_watcher)
     
     runner = web.AppRunner(app_web)
     await runner.setup()
     site = web.TCPSite(runner, host, PORT)
     await site.start()
-    logger.info(f"🌐 Full-Stack Web Engine started on port {PORT}...")
+    logger.info(f"🌐 Full-Stack Stremio Web Portal started on port {PORT}...")
 
 # ==============================================================================
 # --- MEDIAINFO HANDLER (Admin Only) ---
