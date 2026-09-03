@@ -3932,7 +3932,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
         gc.collect()
 
 # ==============================================================================
-# --- INTERACTIVE WEB DASHBOARD & HEALTH CHECK ---
+# --- FULL STACK WEB DASHBOARD & API ENGINE ---
 # ==============================================================================
 try:
     from aiohttp import web
@@ -3944,108 +3944,261 @@ HTML_DASHBOARD = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>System Overview</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>TG Stremio Dashboard</title>
     <style>
-        :root { --bg: #090e17; --card: #111827; --text: #f1f5f9; --accent: #3b82f6; --glow: rgba(59, 130, 246, 0.4); }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; padding: 20px; }
-        .container { max-width: 700px; margin: 0 auto; padding-top: 20px; }
-        .header { display: flex; align-items: center; gap: 15px; margin-bottom: 5px; }
-        .header-title { font-size: 26px; font-weight: 800; color: #fff; letter-spacing: 0.5px; }
-        .header-subtitle { color: #94a3b8; font-size: 13px; margin-bottom: 30px; }
-        .btn-refresh { display: block; width: 100%; padding: 16px; background: var(--card); border: 1px solid #1e293b; border-radius: 16px; color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; text-align: center; transition: all 0.3s ease; margin-bottom: 30px; text-transform: uppercase; letter-spacing: 1px; }
-        .btn-refresh:hover { background: #1e293b; border-color: var(--accent); box-shadow: 0 0 20px var(--glow); transform: translateY(-2px); }
-        .grid { display: flex; flex-direction: column; gap: 16px; }
-        .card { background: var(--card); border-radius: 20px; padding: 20px 24px; display: flex; align-items: center; gap: 20px; border: 1px solid #1e293b; transition: all 0.3s ease; }
-        .card:hover { border-color: var(--accent); box-shadow: 0 4px 20px rgba(0,0,0,0.4); }
-        .icon-box { width: 45px; height: 45px; border-radius: 14px; background: rgba(59, 130, 246, 0.1); display: flex; align-items: center; justify-content: center; font-size: 22px; }
-        .info-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 1.2px; margin-bottom: 6px; }
-        .info-value { font-size: 22px; font-weight: 800; color: #fff; }
-        .pulse { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+        :root { 
+            --bg: #090e17; --card: #111827; --text: #f1f5f9; --accent: #3b82f6; 
+            --glow: rgba(59, 130, 246, 0.4); --danger: #ef4444; --sidebar: #0f172a; 
+        }
+        * { box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; }
+        
+        /* Navbar */
+        .navbar { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: rgba(17, 24, 39, 0.8); backdrop-filter: blur(10px); border-bottom: 1px solid #1e293b; position: sticky; top: 0; z-index: 100; }
+        .nav-brand { display: flex; align-items: center; gap: 10px; font-size: 18px; font-weight: 800; }
+        .nav-brand-icon { width: 32px; height: 32px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--glow); color: white; font-size: 14px; }
+        .nav-controls { display: flex; align-items: center; gap: 15px; }
+        .icon-btn { background: var(--card); border: 1px solid #1e293b; color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; }
+        .icon-btn:hover { border-color: var(--accent); }
+
+        /* Sidebar Overlay */
+        .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); backdrop-filter: blur(4px); z-index: 200; opacity: 0; pointer-events: none; transition: 0.3s; }
+        .sidebar { position: fixed; top: 0; left: -300px; width: 280px; height: 100%; background: var(--sidebar); z-index: 201; border-right: 1px solid #1e293b; transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); padding: 20px 0; overflow-y: auto; }
+        .sidebar.open { left: 0; }
+        .sidebar-overlay.open { opacity: 1; pointer-events: auto; }
+        .menu-item { padding: 16px 24px; display: flex; align-items: center; gap: 16px; color: #cbd5e1; font-weight: 600; cursor: pointer; transition: 0.2s; }
+        .menu-item:hover { background: rgba(59, 130, 246, 0.1); color: #fff; border-left: 3px solid var(--accent); }
+        
+        /* User Profile Dropdown */
+        .profile-menu { position: absolute; top: 70px; right: 20px; background: var(--card); border: 1px solid #1e293b; border-radius: 16px; padding: 15px; width: 260px; display: none; z-index: 105; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+        .profile-menu.show { display: block; }
+        .user-info { display: flex; flex-direction: column; gap: 4px; padding-bottom: 15px; border-bottom: 1px solid #1e293b; margin-bottom: 15px; }
+        .theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 15px; }
+        .theme-btn { background: #0f172a; border: 1px solid #1e293b; padding: 8px; border-radius: 8px; font-size: 11px; color: #fff; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+        .theme-btn.active { border-color: var(--accent); }
+        .dot { width: 10px; height: 10px; border-radius: 50%; }
+
+        /* Main Container */
+        .container { max-width: 800px; margin: 0 auto; padding: 20px; }
+        .section-title { font-size: 22px; font-weight: 800; margin: 30px 0 15px 0; color: #fff; }
+        
+        /* Cards */
+        .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 20px; }
+        .card { background: var(--card); border-radius: 20px; padding: 20px; display: flex; align-items: center; gap: 20px; border: 1px solid #1e293b; transition: 0.3s; }
+        .card-stat { font-size: 24px; font-weight: 800; color: #fff; }
+        .card-label { font-size: 12px; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
+
+        /* Action Buttons */
+        .primary-btn { width: 100%; padding: 16px; background: var(--accent); border: none; border-radius: 16px; color: #fff; font-size: 15px; font-weight: 700; cursor: pointer; transition: 0.3s; margin-bottom: 20px; box-shadow: 0 4px 15px var(--glow); }
+        .primary-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 25px var(--glow); }
+
+        /* Task Modal */
+        .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 300; display: none; align-items: center; justify-content: center; backdrop-filter: blur(5px); }
+        .modal.show { display: flex; }
+        .modal-content { background: var(--card); width: 90%; max-width: 450px; border-radius: 24px; padding: 24px; border: 1px solid #1e293b; }
+        .input-group { margin-bottom: 16px; }
+        .input-group label { display: block; font-size: 12px; color: #94a3b8; margin-bottom: 8px; font-weight: 600; }
+        .input-group input, .input-group select { width: 100%; padding: 12px 16px; border-radius: 12px; border: 1px solid #1e293b; background: #0f172a; color: #fff; font-size: 14px; outline: none; }
+        .input-group input:focus { border-color: var(--accent); }
+        .modal-actions { display: flex; gap: 12px; margin-top: 24px; }
+        .btn-cancel, .btn-submit { flex: 1; padding: 14px; border-radius: 12px; font-weight: 700; cursor: pointer; border: none; }
+        .btn-cancel { background: #1e293b; color: #fff; }
+        .btn-submit { background: var(--accent); color: #fff; }
+        
+        .task-row { background: var(--sidebar); border: 1px solid #1e293b; border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; }
+        .task-kill { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.2); padding: 8px 16px; border-radius: 8px; font-size: 12px; font-weight: 700; cursor: pointer; }
     </style>
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <div class="icon-box" style="background: var(--accent); color: white; box-shadow: 0 0 15px var(--glow);">▶</div>
-            <div class="header-title">System Overview</div>
-        </div>
-        <div class="header-subtitle">Real-time performance and live stream activity</div>
-        
-        <button class="btn-refresh" onclick="fetchStats()">🔄 Refresh Data</button>
 
+    <!-- Navbar -->
+    <div class="navbar">
+        <div class="nav-brand">
+            <div class="icon-btn" onclick="toggleSidebar()" style="border:none;">☰</div>
+            <div class="nav-brand-icon">▶</div>
+            <span>TG Stremio</span>
+        </div>
+        <div class="nav-controls">
+            <div class="icon-btn" onclick="toggleProfile()">👤</div>
+        </div>
+    </div>
+
+    <!-- Sidebar -->
+    <div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+    <div class="sidebar" id="sidebar">
+        <div class="menu-item">🏠 Home</div>
+        <div class="menu-item">🎬 Media</div>
+        <div class="menu-item">📚 Catalogs</div>
+        <div class="menu-item">📈 Admin</div>
+        <div class="menu-item">💳 Plans</div>
+        <div class="menu-item">🛡 Tokens</div>
+        <div class="menu-item">⚙️ Settings</div>
+    </div>
+
+    <!-- Profile Menu -->
+    <div class="profile-menu" id="profile-menu">
+        <div class="user-info">
+            <strong>Admin Account</strong>
+            <span style="color: #10b981; font-size: 12px;">● ONLINE</span>
+        </div>
+        <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; text-transform: uppercase;">App Theme</div>
+        <div class="theme-grid">
+            <div class="theme-btn active"><div class="dot" style="background:#3b82f6;"></div>AMOLED</div>
+            <div class="theme-btn"><div class="dot" style="background:#8b5cf6;"></div>Royal Violet</div>
+            <div class="theme-btn"><div class="dot" style="background:#10b981;"></div>Obsidian</div>
+            <div class="theme-btn"><div class="dot" style="background:#ef4444;"></div>Rose Quartz</div>
+        </div>
+        <button class="primary-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 10px; margin: 0;" onclick="alert('Session secured.')">Logout</button>
+    </div>
+
+    <!-- Main Content -->
+    <div class="container">
+        
+        <button class="primary-btn" onclick="openTaskModal()">➕ CREATE NEW TASK</button>
+
+        <div class="section-title">System Overview</div>
         <div class="grid">
             <div class="card">
-                <div class="icon-box" style="color: #3b82f6;">🕒</div>
                 <div>
-                    <div class="info-label">Uptime</div>
-                    <div class="info-value" id="uptime">Loading...</div>
+                    <div class="card-label">Server Uptime</div>
+                    <div class="card-stat" id="uptime">Loading...</div>
                 </div>
             </div>
             <div class="card">
-                <div class="icon-box" style="color: #a855f7;">🤖</div>
                 <div>
-                    <div class="info-label">Active Downloads</div>
-                    <div class="info-value" id="active-tasks">Loading...</div>
+                    <div class="card-label">Active Downloads</div>
+                    <div class="card-stat" id="active-tasks">Loading...</div>
                 </div>
             </div>
             <div class="card">
-                <div class="icon-box" style="color: #ec4899;">📡</div>
                 <div>
-                    <div class="info-label">Live Watchers</div>
-                    <div class="info-value"><span id="watchers">Loading...</span> <span class="pulse" style="color: #ef4444; font-size: 14px;">●</span></div>
+                    <div class="card-label">Hardware (RAM/CPU)</div>
+                    <div class="card-stat" id="hardware">Loading...</div>
                 </div>
             </div>
             <div class="card">
-                <div class="icon-box" style="color: #10b981;">🧠</div>
                 <div>
-                    <div class="info-label">Server Load (RAM / CPU)</div>
-                    <div class="info-value" id="server-load">Loading...</div>
+                    <div class="card-label">Storage Nodes</div>
+                    <div class="card-stat" id="storage">Loading...</div>
                 </div>
             </div>
-            <div class="card">
-                <div class="icon-box" style="color: #f59e0b;">💾</div>
-                <div>
-                    <div class="info-label">Free Storage</div>
-                    <div class="info-value" id="disk-free">Loading...</div>
-                </div>
+        </div>
+
+        <div class="section-title">Active Processes</div>
+        <div id="task-list">
+            <div style="color: #64748b; font-size: 14px;">Loading running tasks...</div>
+        </div>
+    </div>
+
+    <!-- Add Task Modal -->
+    <div class="modal" id="taskModal">
+        <div class="modal-content">
+            <h3 style="margin-top: 0;">Add Download Task</h3>
+            <div class="input-group">
+                <label>Telegram Source Link</label>
+                <input type="text" id="t-link" placeholder="https://t.me/channel/123">
             </div>
-            <div class="card">
-                <div class="icon-box" style="color: #06b6d4;">⚡</div>
-                <div>
-                    <div class="info-label">Network Ping</div>
-                    <div class="info-value"><span id="ping">Loading...</span></div>
-                </div>
+            <div class="input-group">
+                <label>Destination Chat ID</label>
+                <input type="text" id="t-dest" placeholder="-100123456789 (Must be admin)">
+            </div>
+            <div class="input-group">
+                <label>Forward Delay (Seconds)</label>
+                <input type="number" id="t-delay" value="3" min="0">
+            </div>
+            <div class="input-group">
+                <label>User ID Executor (Leave blank for Bot)</label>
+                <input type="text" id="t-user" placeholder="123456789">
+            </div>
+            <div class="modal-actions">
+                <button class="btn-cancel" onclick="closeTaskModal()">Cancel</button>
+                <button class="btn-submit" onclick="submitTask()">Start Task</button>
             </div>
         </div>
     </div>
 
     <script>
+        function toggleSidebar() {
+            document.getElementById('sidebar').classList.toggle('open');
+            document.querySelector('.sidebar-overlay').classList.toggle('open');
+        }
+        function toggleProfile() {
+            document.getElementById('profile-menu').classList.toggle('show');
+        }
+        function openTaskModal() { document.getElementById('taskModal').classList.add('show'); }
+        function closeTaskModal() { document.getElementById('taskModal').classList.remove('show'); }
+
         async function fetchStats() {
-            const btn = document.querySelector('.btn-refresh');
-            btn.innerHTML = "🔄 REFRESHING...";
-            const startTime = performance.now();
-            
             try {
                 const response = await fetch('/api/stats');
                 const data = await response.json();
-                const ping = Math.round(performance.now() - startTime);
 
                 document.getElementById('uptime').innerText = data.uptime;
-                document.getElementById('active-tasks').innerText = data.active_tasks + " Tasks";
-                document.getElementById('watchers').innerText = data.watchers + " Active";
-                document.getElementById('server-load').innerText = data.ram + "% / " + data.cpu + "%";
-                document.getElementById('disk-free').innerText = data.disk_free + " GB";
-                document.getElementById('ping').innerText = ping + " ms";
-            } catch (e) {
-                console.error("Failed to fetch stats", e);
-            } finally {
-                btn.innerHTML = "🔄 REFRESH DATA";
-            }
+                document.getElementById('active-tasks').innerText = data.active_tasks;
+                document.getElementById('hardware').innerText = data.ram + "% / " + data.cpu + "%";
+                document.getElementById('storage').innerText = data.disk_free + " GB Free";
+                
+                const taskList = document.getElementById('task-list');
+                taskList.innerHTML = "";
+                
+                if (data.task_details.length === 0) {
+                    taskList.innerHTML = "<div style='color: #64748b;'>😴 No tasks running on the server.</div>";
+                } else {
+                    data.task_details.forEach(task => {
+                        taskList.innerHTML += `
+                            <div class="task-row">
+                                <div>
+                                    <div style="font-size: 14px; font-weight: 600; color: #fff; word-break: break-all;">${task.name}</div>
+                                    <div style="font-size: 12px; color: #64748b; margin-top: 4px;">Target: ${task.dest}</div>
+                                </div>
+                                <button class="task-kill" onclick="killTask('${task.id}')">KILL</button>
+                            </div>
+                        `;
+                    });
+                }
+            } catch (e) { console.error(e); }
         }
 
-        // Fetch on load and auto-refresh every 5 seconds!
+        async function submitTask() {
+            const link = document.getElementById('t-link').value;
+            const dest = document.getElementById('t-dest').value;
+            const delay = document.getElementById('t-delay').value;
+            const user = document.getElementById('t-user').value;
+
+            if (!link) return alert("Link is required!");
+
+            const btn = document.querySelector('.btn-submit');
+            btn.innerText = "Processing...";
+            
+            try {
+                const res = await fetch('/api/task/add', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ link, dest, delay, user })
+                });
+                const result = await res.json();
+                if(result.status === "success") {
+                    alert("Task successfully injected into Telegram Bot!");
+                    closeTaskModal();
+                    fetchStats();
+                } else {
+                    alert("Error: " + result.message);
+                }
+            } catch(e) { alert("Failed to communicate with bot."); }
+            btn.innerText = "Start Task";
+        }
+
+        async function killTask(taskId) {
+            if (!confirm("Kill this process?")) return;
+            await fetch('/api/task/cancel', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ task_id: taskId })
+            });
+            fetchStats();
+        }
+
         fetchStats();
         setInterval(fetchStats, 5000);
     </script>
@@ -4054,41 +4207,111 @@ HTML_DASHBOARD = """
 """
 
 async def _dashboard_ui_handler(request):
-    """Serves the beautiful HTML Dashboard"""
+    """Serves the frontend HTML Web Application"""
     return web.Response(text=HTML_DASHBOARD, content_type='text/html', status=200)
 
 async def _api_stats_handler(request):
-    """Serves raw JSON data to the Dashboard for live updating"""
+    """Feeds live server data to the Dashboard"""
     uptime_seconds = int(time.time() - BOT_START_TIME)
-    
-    # Calculate beautiful uptime format (X days, Xh: Xm: Xs)
     days, rem = divmod(uptime_seconds, 86400)
     hours, rem = divmod(rem, 3600)
     minutes, seconds = divmod(rem, 60)
+    uptime_str = f"{days}d, {hours:02d}h: {minutes:02d}m" if days > 0 else f"{hours:02d}h: {minutes:02d}m"
     
-    if days > 0:
-        uptime_str = f"{days} days, {hours:02d}h: {minutes:02d}m: {seconds:02d}s"
-    else:
-        uptime_str = f"{hours:02d}h: {minutes:02d}m: {seconds:02d}s"
-    
-    # Get Server Stats
-    mem = psutil.virtual_memory().percent
-    cpu = psutil.cpu_percent()
-    total, used, free = shutil.disk_usage(".")
-    disk_free = round(free / (1024**3), 1)
-    
-    # Get Bot Stats
     active_count = sum(len(tasks) for tasks in ACTIVE_PROCESSES.values())
-    watcher_count = await db.db.watchers.count_documents({})
     
+    task_details = []
+    for uid, tasks in ACTIVE_PROCESSES.items():
+        for t_id, info in tasks.items():
+            task_details.append({
+                "id": t_id,
+                "name": info.get("item", "Task")[:60] + ("..." if len(info.get("item", "")) > 60 else ""),
+                "dest": info.get("dest_title_name", str(uid))
+            })
+            
+    total, used, free = shutil.disk_usage(".")
+            
     return web.json_response({
         "uptime": uptime_str,
-        "ram": mem,
-        "cpu": cpu,
-        "disk_free": disk_free,
+        "ram": psutil.virtual_memory().percent,
+        "cpu": psutil.cpu_percent(),
+        "disk_free": round(free / (1024**3), 1),
         "active_tasks": active_count,
-        "watchers": watcher_count
+        "task_details": task_details
     })
+
+async def _api_cancel_task(request):
+    """Two-way sync: Web UI -> Telegram Task Cancellation"""
+    try:
+        data = await request.json()
+        task_id = data.get("task_id")
+        if task_id:
+            CANCEL_FLAGS[task_id] = True
+            try: await db.remove_active_task(task_id)
+            except Exception: pass
+            return web.json_response({"status": "success"})
+    except Exception: pass
+    return web.json_response({"status": "error"}, status=400)
+
+async def _api_add_task(request):
+    """Two-way sync: Web UI -> Telegram Task Injection"""
+    try:
+        data = await request.json()
+        link = data.get("link")
+        dest_str = data.get("dest", "")
+        delay = int(data.get("delay", 3))
+        user_input = data.get("user", "")
+        
+        if not link: return web.json_response({"status": "error", "message": "No link provided"})
+        
+        # 1. Determine which User Session to use
+        user_id = None
+        if user_input and str(user_input).isdigit():
+            user_id = int(user_input)
+        elif ADMINS:
+            user_id = ADMINS[0] # Default to the main Admin's session
+        else:
+            return web.json_response({"status": "error", "message": "No Admin ID configured to execute task."})
+
+        # 2. Parse destination
+        dest_chat_id = user_id # Default to DM
+        dest_thread_id = None
+        if dest_str:
+            dest_chat_id, dest_thread_id = _parse_chat_target(dest_str)
+            
+        # 3. Quick restriction check
+        is_restricted, _ = await check_link_restriction(user_id, link)
+        if is_restricted is None: is_restricted = False # Failsafe
+
+        # 4. Inject straight into the Bot's task queue!
+        task_uuid = uuid.uuid4().hex
+        if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
+        ACTIVE_PROCESSES[user_id][task_uuid] = {
+            "user": f"WebUI({user_id})", 
+            "dest_title_name": str(dest_chat_id),
+            "item": link, 
+            "started": time.time()
+        }
+        
+        asyncio.create_task(
+            process_links_logic(
+                client=app,
+                message=None, # Headless execution!
+                text=link,
+                dest_chat_id=dest_chat_id,
+                dest_thread_id=dest_thread_id,
+                dest_title=str(dest_chat_id),
+                delay=delay,
+                acc_user_id=user_id,
+                task_uuid=task_uuid,
+                is_restricted=is_restricted,
+                allowed_types=["Video", "Document", "Audio", "Photo", "Text"]
+            )
+        )
+        return web.json_response({"status": "success"})
+    except Exception as e:
+        logger.error(f"Web Injection Error: {e}")
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
 
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None:
@@ -4098,17 +4321,20 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     global PORT 
     
     app_web = web.Application()
-    # Route the main pages to the HTML Dashboard
+    # Frontend Routes
     app_web.router.add_get("/", _dashboard_ui_handler)
     app_web.router.add_get("/health", _dashboard_ui_handler)
-    # Route the hidden API that the Javascript talks to
+    
+    # API Routes for the Two-Way Sync
     app_web.router.add_get("/api/stats", _api_stats_handler)
+    app_web.router.add_post("/api/task/cancel", _api_cancel_task)
+    app_web.router.add_post("/api/task/add", _api_add_task)
     
     runner = web.AppRunner(app_web)
     await runner.setup()
     site = web.TCPSite(runner, host, PORT)
     await site.start()
-    logger.info(f"🌐 Interactive Web Dashboard started on port {PORT}...")
+    logger.info(f"🌐 Full-Stack Web Engine started on port {PORT}...")
 
 # ==============================================================================
 # --- MEDIAINFO HANDLER (Admin Only) ---
