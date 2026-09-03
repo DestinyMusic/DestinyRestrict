@@ -1120,7 +1120,7 @@ async def send_start(client: Client, message: Message):
     
     buttons = [
         [InlineKeyboardButton("🌐 Open Web Dashboard", url=web_url)],
-        [InlineKeyboardButton("❣️ Developer", url="https://t.me/telegram"), InlineKeyboardButton('🔍 Support', url='https://t.me/telegram')]
+        [InlineKeyboardButton("❣️ Developer", url="https://t.me/DestinyM66"), InlineKeyboardButton('🔍 Support', url='https://t.me/DestinyM66')]
     ]
 
     try:
@@ -4104,7 +4104,7 @@ HTML_DASHBOARD = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TG Forward Portal</title>
+    <title>Destiny TG Forwarder</title>
 
     <!-- PWA Web App Meta Tags -->
     <link rel="manifest" href="/manifest.json">
@@ -4270,7 +4270,7 @@ HTML_DASHBOARD = """
     <div id="login-view">
         <div class="login-card">
             <div class="login-logo">▶</div>
-            <div class="login-title">TG Forward Portal</div>
+            <div class="login-title">Destiny TG Forwarder</div>
             <div class="login-subtitle">Enter your Telegram ID & Web Password</div>
             <form onsubmit="handleLogin(event)">
                 <div class="input-group">
@@ -5655,7 +5655,7 @@ async def _api_sos_handler(request):
     })
 
 PWA_MANIFEST = {
-    "name": "TG Forward Portal",
+    "name": "Destiny TG Forwarder",
     "short_name": "TG Portal",
     "start_url": "/",
     "display": "standalone",
@@ -5713,7 +5713,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     await runner.setup()
     site = web.TCPSite(runner, host, PORT)
     await site.start()
-    logger.info(f"🌐 Full-Stack TG Forward Portal started on port {PORT}...")
+    logger.info(f"🌐 Full-Stack Destiny TG Forwarder started on port {PORT}...")
 
 # ==============================================================================
 # --- MEDIAINFO HANDLER (Admin Only) ---
