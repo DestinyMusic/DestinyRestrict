@@ -2388,12 +2388,51 @@ async def save(client: Client, message: Message):
 @app.on_message(filters.command(["chats"]) & filters.private)
 async def chats_cmd(client: Client, message: Message):
     user_id = message.from_user.id
+    args = message.command[1:] if len(message.command) > 1 else []
+    
+    if not args:
+        help_text = (
+            "**Chats Help Menu**\n"
+            "Use it for getting all chats ID for use with other commands. You can use a filter to tell the bot what type of chats to show.\n\n"
+            "**Command Arguments**\n"
+            "`/chats all`\n"
+            "`/chats FILTER`\n\n"
+            "**Get all chats**\n"
+            "`/chats all`\n\n"
+            "**Get specific chats**\n"
+            "`/chats user`\n"
+            "`/chats bot`\n"
+            "`/chats group`\n"
+            "`/chats channel`\n"
+        )
+        return await message.reply(help_text)
+
+    filter_type = args[0].lower()
+    if filter_type not in ["all", "user", "bot", "group", "channel"]:
+        return await message.reply("❌ **Invalid filter.** Use `all`, `user`, `bot`, `group`, or `channel`.")
+    
     uclient = USER_CLIENTS.get(user_id)
     
+    # 🟢 DYNAMIC WAKE-UP: If session exists in DB but isn't running, start it now!
     if not uclient or not uclient.is_connected:
-        return await message.reply("❌ **Not Connected:** You must `/login` to your Telegram session first to fetch your chats.")
+        session_str = await db.get_session(user_id)
+        if not session_str:
+            return await message.reply("❌ **Not Connected:** You must `/login` to your Telegram session first.")
+        
+        status = await message.reply("🔄 **Waking up your Telegram Session...**")
+        try:
+            api_id = await db.get_api_id(user_id) or API_ID
+            api_hash = await db.get_api_hash(user_id) or API_HASH
+            uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+            await uclient.start()
+            USER_CLIENTS[user_id] = uclient
+            await status.edit("🔄 **Session Active! Fetching your chats now...**")
+        except Exception as e:
+            return await status.edit(f"❌ **Session Error:** `{e}`\nPlease `/logout` and `/login` again.")
+    else:
+        status = await message.reply("🔄 **Fetching your chat list. Please wait...**")
     
-    status = await message.reply("🔄 **Fetching your chat list. Please wait...**")
     users, groups, channels, bots = [], [], [], []
     
     try:
@@ -2417,23 +2456,26 @@ async def chats_cmd(client: Client, message: Message):
     def chunk_list(items, chunk_size=50):
         return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
         
-    categories = [
-        ("👥 Groups", groups), 
-        ("📢 Channels", channels), 
-        ("🤖 Bots", bots), 
-        ("👤 Users", users)
-    ]
+    categories = []
+    if filter_type in ["all", "group"]: categories.append(("👥 Groups", groups))
+    if filter_type in ["all", "channel"]: categories.append(("📢 Channels", channels))
+    if filter_type in ["all", "bot"]: categories.append(("🤖 Bots", bots))
+    if filter_type in ["all", "user"]: categories.append(("👤 Users", users))
     
+    found_any = False
     for cat_name, cat_list in categories:
         if not cat_list: 
             continue
-            
+        found_any = True
         chunks = chunk_list(cat_list, 50)
         for i, chunk in enumerate(chunks, 1):
             text = f"<b>{cat_name} - Page {i}</b>\n<blockquote expandable>\n" + "\n".join(chunk) + "\n</blockquote>"
             await message.reply(text, parse_mode=enums.ParseMode.HTML)
             await asyncio.sleep(6) # 🟢 6-second delay to strictly prevent FloodWait
-                
+            
+    if not found_any:
+        await message.reply(f"⚠️ No chats found for filter: **{filter_type}**")
+
 @app.on_message(filters.command(["dl"]) & (filters.private | filters.group))
 async def dl_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -4922,16 +4964,34 @@ async def _api_tg_logout(request):
 async def _api_chats_handler(request):
     uid = int(request.query.get("user_id", 0))
     uclient = USER_CLIENTS.get(uid)
+    
+    # 🟢 DYNAMIC WAKE-UP FOR WEB DASHBOARD
     if not uclient or not uclient.is_connected:
-        return web.json_response({"status": "error", "message": "Not connected"})
+        session_str = await db.get_session(uid)
+        if not session_str:
+            return web.json_response({"status": "error", "message": "Not connected to Telegram. Please login."})
         
+        try:
+            api_id = await db.get_api_id(uid) or API_ID
+            api_hash = await db.get_api_hash(uid) or API_HASH
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+            await uclient.start()
+            USER_CLIENTS[uid] = uclient
+        except Exception as e:
+            return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
+
     chat_list = []
     try:
         async for d in uclient.get_dialogs():
             name = d.chat.title or d.chat.first_name or "Unknown"
-            cat = "👤 User" if d.chat.type == enums.ChatType.PRIVATE else ("📢 Channel" if d.chat.type == enums.ChatType.CHANNEL else ("🤖 Bot" if d.chat.type == enums.ChatType.BOT else "👥 Group"))
+            c_type = d.chat.type
+            
+            cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
             chat_list.append({"id": str(d.chat.id), "name": f"[{cat}] {name}"})
-    except: pass
+    except Exception as e: 
+        return web.json_response({"status": "error", "message": str(e)})
+        
     return web.json_response({"status": "success", "chats": chat_list})
 
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
