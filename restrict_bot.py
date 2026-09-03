@@ -4282,6 +4282,9 @@ HTML_DASHBOARD = """
                     <input type="password" id="login-pwd" placeholder="••••••••" required>
                 </div>
                 <button type="submit" class="primary-btn" style="margin-top: 10px;">Sign In / Register</button>
+                <div style="margin-top: 15px; font-size: 12px; font-weight: 700;">
+                    <a href="#" onclick="forgotPassword(event)" style="color: var(--accent); text-decoration: none; transition: 0.2s;">Forgot Password?</a>
+                </div>
             </form>
         </div>
     </div>
@@ -4683,21 +4686,54 @@ HTML_DASHBOARD = """
             const uid = document.getElementById('login-uid').value;
             const pwd = document.getElementById('login-pwd').value;
             
-            const res = await fetch('/api/auth/login', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({user_id: uid, password: pwd})
-            });
-            const data = await res.json();
-            if (data.status === 'success') {
-                localStorage.setItem('tg_uid', uid);
-                currentUser = uid;
-                document.getElementById('login-view').style.display = 'none';
-                document.getElementById('app-view').style.display = 'block';
-                document.getElementById('profile-id').innerText = "ID: " + uid;
-                fetchStats();
-            } else {
-                alert("Login Failed: " + data.message);
+            const btn = e.target.querySelector('button');
+            const originalText = btn.innerText;
+            btn.innerText = "Authenticating...";
+            btn.style.opacity = "0.7";
+            
+            try {
+                const res = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: uid, password: pwd})
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    localStorage.setItem('tg_uid', uid);
+                    currentUser = uid;
+                    document.getElementById('login-view').style.display = 'none';
+                    document.getElementById('app-view').style.display = 'block';
+                    document.getElementById('profile-id').innerText = "ID: " + uid;
+                    fetchStats();
+                } else {
+                    alert("Login Failed: " + data.message);
+                }
+            } finally {
+                btn.innerText = originalText;
+                btn.style.opacity = "1";
+            }
+        }
+
+        async function forgotPassword(e) {
+            e.preventDefault();
+            const uid = document.getElementById('login-uid').value;
+            if (!uid) return alert("Please enter your Telegram User ID first!");
+            
+            const link = e.target;
+            link.innerText = "Sending to Telegram PM...";
+            
+            try {
+                const res = await fetch('/api/auth/forgot', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: uid})
+                });
+                const data = await res.json();
+                alert(data.message);
+            } catch(err) {
+                alert("Error connecting to server.");
+            } finally {
+                link.innerText = "Forgot Password?";
             }
         }
 
@@ -4939,6 +4975,7 @@ HTML_DASHBOARD = """
                 const res = await fetch(`/api/stats?user_id=${currentUser}`);
                 const data = await res.json();
                 
+                if (data.user_name) document.getElementById('profile-name').innerText = data.user_name;
                 document.getElementById('uptime').innerText = data.uptime;
                 document.getElementById('active-tasks').innerText = data.active_tasks;
                 document.getElementById('active-watchers').innerText = data.active_watchers;
@@ -5114,20 +5151,43 @@ async def _api_login_handler(request):
         
         user = await db.col.find_one({"id": user_id})
         if not user:
-            # Auto-register user if not exist in DB
-            await db.add_user(user_id, f"User {user_id}")
-            user = await db.col.find_one({"id": user_id})
+            return web.json_response({"status": "error", "message": "Account not found! Please go to Telegram and send /start to the bot first."})
 
         stored_pwd = user.get("web_password")
         if not stored_pwd:
-            # First time signup
+            # First time web signup for an existing bot user
             await db.col.update_one({"id": user_id}, {"$set": {"web_password": password}})
             return web.json_response({"status": "success"})
         
         if stored_pwd == password:
             return web.json_response({"status": "success"})
         else:
-            return web.json_response({"status": "error", "message": "Incorrect password"})
+            return web.json_response({"status": "error", "message": "Incorrect password!"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=400)
+
+async def _api_forgot_password_handler(request):
+    try:
+        data = await request.json()
+        user_id = int(data.get("user_id"))
+        
+        user = await db.col.find_one({"id": user_id})
+        if not user:
+            return web.json_response({"status": "error", "message": "Account not found! Please send /start to the bot in Telegram."})
+            
+        stored_pwd = user.get("web_password")
+        if not stored_pwd:
+            return web.json_response({"status": "error", "message": "You haven't set a web password yet. Just enter a new password to register!"})
+            
+        try:
+            await app.send_message(
+                chat_id=user_id,
+                text=f"🔐 **Web Portal Password Recovery**\n\nYour current web dashboard password is: `{stored_pwd}`\n\n_If you did not request this, please change your password in the dashboard settings._"
+            )
+            return web.json_response({"status": "success", "message": "Your password has been sent to your Telegram PM!"})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": "Failed to send PM. Please ensure you have started the bot in Telegram and haven't blocked it!"})
+            
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=400)
 
@@ -5193,9 +5253,11 @@ async def _api_stats_handler(request):
     # Check if user session exists in DB
     user_doc = await db.col.find_one({"id": user_id})
     tg_session_active = bool(user_doc and user_doc.get("session"))
+    user_name = user_doc.get("name", "User") if user_doc else "User"
 
     return web.json_response({
         "uptime": uptime_str,
+        "user_name": user_name,
         "ram": psutil.virtual_memory().percent,
         "cpu": psutil.cpu_percent(),
         "active_tasks": len(user_tasks),
@@ -5636,6 +5698,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/sos", _api_sos_handler)
     app_web.router.add_get("/api/logs/download", _api_download_log_handler)
     app_web.router.add_post("/api/auth/login", _api_login_handler)
+    app_web.router.add_post("/api/auth/forgot", _api_forgot_password_handler)
     app_web.router.add_post("/api/auth/password", _api_password_handler)
     app_web.router.add_post("/api/tg/send_code", _api_tg_send_code)
     app_web.router.add_post("/api/tg/verify", _api_tg_verify_code)
