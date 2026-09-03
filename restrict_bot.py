@@ -4147,8 +4147,8 @@ HTML_DASHBOARD = """
         .view-section { display: none; padding-bottom: 40px; }
         .view-section.active { display: block; }
 
-        #login-view { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; background: radial-gradient(circle at center, #111827 0%, var(--bg) 100%); }
-        .login-card { background: var(--card); border: 1px solid var(--card-border); border-radius: 28px; width: 100%; max-width: 420px; padding: 36px 28px; box-shadow: 0 20px 50px rgba(0,0,0,0.8); text-align: center; }
+        #login-view { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; background: transparent; }
+        .login-card { background: color-mix(in srgb, var(--card) var(--glass-bg, 100%), transparent); backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px)); border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); border-radius: 28px; width: 100%; max-width: 420px; padding: 36px 28px; box-shadow: 0 20px 50px rgba(0,0,0,0.8), 0 8px 32px rgba(0, 0, 0, var(--glass-shadow, 0)); text-align: center; transition: 0.3s; }
         .login-logo { width: 56px; height: 56px; background: var(--accent); border-radius: 50%; margin: 0 auto 20px auto; display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: 0 0 25px var(--glow); color: #fff; }
         .login-title { font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 6px; }
         .login-subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 28px; }
@@ -4161,7 +4161,7 @@ HTML_DASHBOARD = """
         .icon-btn:hover { border-color: var(--accent); }
 
         .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 200; opacity: 0; pointer-events: none; transition: 0.3s; }
-        .sidebar { position: fixed; top: 0; left: -300px; width: 280px; height: 100%; background: var(--sidebar); z-index: 201; border-right: 1px solid var(--card-border); transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); padding: 20px 0; overflow-y: auto; }
+        .sidebar { position: fixed; top: 0; left: -300px; width: 280px; height: 100%; background: color-mix(in srgb, var(--sidebar) var(--glass-bg, 100%), transparent); backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px)); z-index: 201; border-right: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); box-shadow: 5px 0 30px rgba(0, 0, 0, var(--glass-shadow, 0)); transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1), background 0.3s, backdrop-filter 0.3s; padding: 20px 0; overflow-y: auto; }
         .sidebar.open { left: 0; }
         .sidebar-overlay.open { opacity: 1; pointer-events: auto; }
         .menu-item { padding: 16px 24px; display: flex; align-items: center; gap: 16px; color: #cbd5e1; font-weight: 600; cursor: pointer; transition: 0.2s; }
@@ -4204,7 +4204,7 @@ HTML_DASHBOARD = """
         .input-group input, .input-group select { width: 100%; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); font-size: 14px; outline: none; transition: 0.2s; }
         .input-group input:focus { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
 
-        .task-row { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 15px; }
+        .task-row { background: color-mix(in srgb, var(--card) var(--glass-bg, 100%), transparent); border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 15px; transition: 0.3s; }
         .task-kill { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.2); padding: 8px 16px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer; transition: 0.2s; }
         .task-kill:hover { background: var(--danger); color: #fff; box-shadow: 0 0 15px rgba(239, 68, 68, 0.4); }
 
@@ -4214,7 +4214,7 @@ HTML_DASHBOARD = """
 
         .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 300; display: none; align-items: center; justify-content: center; backdrop-filter: blur(6px); padding: 20px; }
         .modal.show { display: flex; }
-        .modal-content { background: var(--card); width: 100%; max-width: 460px; border-radius: 24px; padding: 28px; border: 1px solid var(--card-border); box-shadow: 0 25px 60px rgba(0,0,0,0.8); max-height: 90vh; overflow-y: auto; }
+        .modal-content { background: color-mix(in srgb, var(--card) var(--glass-bg, 100%), transparent); backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px)); width: 100%; max-width: 460px; border-radius: 24px; padding: 28px; border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); box-shadow: 0 25px 60px rgba(0,0,0,0.8), 0 8px 32px rgba(0, 0, 0, var(--glass-shadow, 0)); max-height: 90vh; overflow-y: auto; transition: 0.3s; }
         .modal-actions { display: flex; gap: 12px; margin-top: 24px; }
         .btn-cancel { flex: 1; padding: 14px; border-radius: 12px; font-weight: 700; cursor: pointer; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); }
 
