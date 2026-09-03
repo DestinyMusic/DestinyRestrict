@@ -4105,16 +4105,38 @@ HTML_DASHBOARD = """
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>TG Forward Portal</title>
+
+    <!-- PWA Web App Meta Tags -->
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#000000">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="TG Portal">
+    <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2111/2111646.png">
     <style>
         :root { 
-            --bg: #000000; --card: #0a0a0a; --card-border: #1f2937; --text: #f1f5f9; 
-            --accent: #3b82f6; --glow: rgba(59, 130, 246, 0.4); --danger: #ef4444; --sidebar: #050505; 
+            --liquid-width: 50%;
+            --bg: #000000; --card: #0a0a0a; --card-border: #1f2937; --text: #f1f5f9; --subtext: #94a3b8;
+            --accent: #38bdf8; --glow: rgba(56, 189, 248, 0.4); --danger: #ef4444; --sidebar: #050505; 
         }
-        [data-theme="royal"] { --bg: #0b0914; --card: #151124; --card-border: #2d244a; --accent: #8b5cf6; --glow: rgba(139, 92, 246, 0.4); --sidebar: #07050d; }
-        [data-theme="obsidian"] { --bg: #090e17; --card: #111827; --card-border: #1e293b; --accent: #10b981; --glow: rgba(16, 185, 129, 0.4); --sidebar: #070a12; }
-        [data-theme="rose"] { --bg: #14090c; --card: #241115; --card-border: #3d1b22; --accent: #f43f5e; --glow: rgba(244, 63, 94, 0.4); --sidebar: #0d0608; }
-        [data-theme="slate"] { --bg: #0f172a; --card: #1e293b; --card-border: #334155; --accent: #0ea5e9; --glow: rgba(14, 165, 233, 0.4); --sidebar: #090d16; }
-        [data-theme="gold"] { --bg: #120e09; --card: #211910; --card-border: #382c1b; --accent: #f59e0b; --glow: rgba(245, 158, 11, 0.4); --sidebar: #0a0805; }
+
+        /* --- 🌑 DARK THEMES --- */
+        [data-theme="amoled"] { --bg: #000000; --card: #0a0a0a; --card-border: #1f2937; --text: #f1f5f9; --subtext: #94a3b8; --accent: #38bdf8; --glow: rgba(56, 189, 248, 0.4); --sidebar: #050505; }
+        [data-theme="graphite"] { --bg: #141416; --card: #1c1c20; --card-border: #2e2e36; --text: #f3f4f6; --subtext: #9ca3af; --accent: #f59e0b; --glow: rgba(245, 158, 11, 0.4); --sidebar: #0e0e10; }
+        [data-theme="obsidian"] { --bg: #090e17; --card: #111827; --card-border: #1e293b; --text: #f1f5f9; --subtext: #94a3b8; --accent: #10b981; --glow: rgba(16, 185, 129, 0.4); --sidebar: #070a12; }
+        [data-theme="royal"] { --bg: #0b0914; --card: #151124; --card-border: #2d244a; --text: #f5f3ff; --subtext: #a78bfa; --accent: #8b5cf6; --glow: rgba(139, 92, 246, 0.4); --sidebar: #07050d; }
+        [data-theme="slate"] { --bg: #0f172a; --card: #1e293b; --card-border: #334155; --text: #f8fafc; --subtext: #94a3b8; --accent: #0ea5e9; --glow: rgba(14, 165, 233, 0.4); --sidebar: #090d16; }
+        [data-theme="charcoal"] { --bg: #12140e; --card: #1b1e15; --card-border: #2c3322; --text: #f7fee7; --subtext: #bef264; --accent: #a3e635; --glow: rgba(163, 230, 53, 0.4); --sidebar: #0c0e09; }
+        [data-theme="fresh-canopy"] { --bg: #0c1410; --card: #14201a; --card-border: #20352b; --text: #ecfdf5; --subtext: #6ee7b7; --accent: #bef264; --glow: rgba(190, 242, 100, 0.4); --sidebar: #080d0a; }
+        [data-theme="tiffany-noir"] { --bg: #071415; --card: #0f2022; --card-border: #19383b; --text: #f0fdfa; --subtext: #5eead4; --accent: #2dd4bf; --glow: rgba(45, 212, 191, 0.4); --sidebar: #040d0e; }
+        [data-theme="bridal-blush"] { --bg: #170d12; --card: #24141d; --card-border: #3d1e2e; --text: #fff1f2; --subtext: #fda4af; --accent: #fb7185; --glow: rgba(251, 113, 133, 0.4); --sidebar: #0f080c; }
+
+        /* --- ☀️ LIGHT / WHITE THEMES --- */
+        [data-theme="rose-quartz"] { --bg: #fff1f3; --card: #ffffff; --card-border: #fecdd3; --text: #4c0519; --subtext: #9f1239; --accent: #f43f5e; --glow: rgba(244, 63, 94, 0.25); --sidebar: #ffe4e6; }
+        [data-theme="daylight-sky"] { --bg: #f0f7ff; --card: #ffffff; --card-border: #bfdbfe; --text: #0f172a; --subtext: #1e40af; --accent: #2563eb; --glow: rgba(37, 99, 235, 0.25); --sidebar: #e0f2fe; }
+        [data-theme="sage-linen"] { --bg: #f4f7f4; --card: #ffffff; --card-border: #ccfbf1; --text: #134e4a; --subtext: #0f766e; --accent: #0d9488; --glow: rgba(13, 148, 136, 0.25); --sidebar: #e6f4f1; }
+        [data-theme="golden-hour"] { --bg: #fffbeb; --card: #ffffff; --card-border: #fde68a; --text: #451a03; --subtext: #92400e; --accent: #d97706; --glow: rgba(217, 119, 6, 0.25); --sidebar: #fef3c7; }
 
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; transition: background 0.3s; position: relative; z-index: 0; }
@@ -4162,17 +4184,17 @@ HTML_DASHBOARD = """
             padding: 20px; 
             transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1); 
         }
-        .section-title { font-size: 20px; font-weight: 800; margin: 25px 0 15px 0; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+        .section-title { font-size: 20px; font-weight: 800; margin: 25px 0 15px 0; color: var(--text); display: flex; justify-content: space-between; align-items: center; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 20px; }
         .card { background: color-mix(in srgb, var(--card) var(--glass-bg, 100%), transparent); backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px)); border-radius: 20px; padding: 20px; border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); box-shadow: 0 8px 32px rgba(0, 0, 0, var(--glass-shadow, 0)); transition: 0.3s; }
-        .card-stat { font-size: 24px; font-weight: 800; color: #fff; margin-top: 5px; }
-        .card-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
+        .card-stat { font-size: 24px; font-weight: 800; color: var(--text); margin-top: 5px; }
+        .card-label { font-size: 11px; color: var(--subtext); text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
 
         .primary-btn { width: 100%; padding: 15px; background: var(--accent); border: none; border-radius: 14px; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; transition: 0.3s; box-shadow: 0 4px 20px var(--glow); text-transform: uppercase; letter-spacing: 0.5px; }
         .primary-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 25px var(--glow); }
         .input-group { margin-bottom: 18px; text-align: left; }
-        .input-group label { display: block; font-size: 11px; color: #94a3b8; margin-bottom: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-        .input-group input, .input-group select { width: 100%; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 14px; outline: none; transition: 0.2s; }
+        .input-group label { display: block; font-size: 11px; color: var(--subtext); margin-bottom: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+        .input-group input, .input-group select { width: 100%; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); font-size: 14px; outline: none; transition: 0.2s; }
         .input-group input:focus { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
 
         .task-row { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 15px; }
@@ -4180,14 +4202,27 @@ HTML_DASHBOARD = """
         .task-kill:hover { background: var(--danger); color: #fff; box-shadow: 0 0 15px rgba(239, 68, 68, 0.4); }
 
         .filter-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 18px; }
-        .filter-checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #cbd5e1; background: var(--bg); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--card-border); cursor: pointer; }
+        .filter-checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); background: var(--bg); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--card-border); cursor: pointer; }
         .filter-checkbox input { accent-color: var(--accent); width: 16px; height: 16px; }
 
         .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 300; display: none; align-items: center; justify-content: center; backdrop-filter: blur(6px); padding: 20px; }
         .modal.show { display: flex; }
         .modal-content { background: var(--card); width: 100%; max-width: 460px; border-radius: 24px; padding: 28px; border: 1px solid var(--card-border); box-shadow: 0 25px 60px rgba(0,0,0,0.8); max-height: 90vh; overflow-y: auto; }
         .modal-actions { display: flex; gap: 12px; margin-top: 24px; }
-        .btn-cancel { flex: 1; padding: 14px; border-radius: 12px; font-weight: 700; cursor: pointer; border: 1px solid var(--card-border); background: var(--bg); color: #fff; }
+        .btn-cancel { flex: 1; padding: 14px; border-radius: 12px; font-weight: 700; cursor: pointer; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); }
+
+        /* Pill theme button layout */
+        .theme-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; margin-bottom: 15px; }
+        .theme-pill { 
+            padding: 10px 14px; border-radius: 999px; font-size: 12px; font-weight: 700; cursor: pointer; 
+            display: flex; align-items: center; gap: 8px; transition: 0.2s; border: 1.5px solid transparent; 
+            text-decoration: none; user-select: none;
+        }
+        .theme-pill.active { border-color: var(--accent); box-shadow: 0 0 12px var(--glow); }
+        .theme-pill .dots-group { display: flex; align-items: center; gap: 4px; }
+        .theme-pill .dot { width: 8px; height: 8px; border-radius: 50%; box-shadow: 0 0 6px currentColor; }
+        .theme-pill .pill-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .theme-pill .check { font-size: 11px; margin-left: 2px; }
     </style>
 </head>
 <body>
@@ -4241,14 +4276,66 @@ HTML_DASHBOARD = """
                 <span id="profile-id" style="color: #64748b; font-size: 11px;">ID: ...</span>
                 <span style="color: #10b981; font-size: 12px; margin-top: 4px;">● ONLINE</span>
             </div>
-            <div style="font-size: 11px; color: #64748b; margin-bottom: 10px; text-transform: uppercase; font-weight: 700;">App Theme</div>
+            <!-- PWA Install Button -->
+            <button id="pwa-install-btn" class="primary-btn" style="display: none; background: linear-gradient(135deg, var(--accent), #6366f1); margin-bottom: 15px; padding: 12px;" onclick="triggerPwaInstall()">📲 Install as App</button>
+
+            <div style="font-size: 11px; color: var(--subtext); margin-bottom: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">App Theme</div>
             <div class="theme-grid">
-                <div class="theme-btn active" onclick="setTheme('amoled', this)"><div class="dot" style="background:#000;"></div>AMOLED</div>
-                <div class="theme-btn" onclick="setTheme('royal', this)"><div class="dot" style="background:#8b5cf6;"></div>Royal Violet</div>
-                <div class="theme-btn" onclick="setTheme('obsidian', this)"><div class="dot" style="background:#10b981;"></div>Obsidian</div>
-                <div class="theme-btn" onclick="setTheme('rose', this)"><div class="dot" style="background:#f43f5e;"></div>Rose Quartz</div>
-                <div class="theme-btn" onclick="setTheme('slate', this)"><div class="dot" style="background:#0ea5e9;"></div>Slate Ocean</div>
-                <div class="theme-btn" onclick="setTheme('gold', this)"><div class="dot" style="background:#f59e0b;"></div>Golden Hour</div>
+                <!-- DARK THEMES -->
+                <div class="theme-pill active" style="background: #09090b; color: #fff;" onclick="setTheme('amoled', this)">
+                    <div class="dots-group"><span class="dot" style="background:#38bdf8; color:#38bdf8;"></span><span class="dot" style="background:#818cf8; color:#818cf8;"></span></div>
+                    <span class="pill-label">AMOLED</span><span class="check">✓</span>
+                </div>
+                <div class="theme-pill" style="background: #18181b; color: #fff;" onclick="setTheme('graphite', this)">
+                    <div class="dots-group"><span class="dot" style="background:#f59e0b; color:#f59e0b;"></span><span class="dot" style="background:#fbbf24; color:#fbbf24;"></span></div>
+                    <span class="pill-label">Graphite</span>
+                </div>
+                <div class="theme-pill" style="background: #0b131f; color: #fff;" onclick="setTheme('obsidian', this)">
+                    <div class="dots-group"><span class="dot" style="background:#10b981; color:#10b981;"></span><span class="dot" style="background:#34d399; color:#34d399;"></span></div>
+                    <span class="pill-label">Obsidian</span>
+                </div>
+                <div class="theme-pill" style="background: #130e22; color: #fff;" onclick="setTheme('royal', this)">
+                    <div class="dots-group"><span class="dot" style="background:#8b5cf6; color:#8b5cf6;"></span><span class="dot" style="background:#a78bfa; color:#a78bfa;"></span></div>
+                    <span class="pill-label">Royal Violet</span>
+                </div>
+                <div class="theme-pill" style="background: #0d1a2d; color: #fff;" onclick="setTheme('slate', this)">
+                    <div class="dots-group"><span class="dot" style="background:#0ea5e9; color:#0ea5e9;"></span><span class="dot" style="background:#38bdf8; color:#38bdf8;"></span></div>
+                    <span class="pill-label">Slate Ocean</span>
+                </div>
+                <div class="theme-pill" style="background: #14170e; color: #fff;" onclick="setTheme('charcoal', this)">
+                    <div class="dots-group"><span class="dot" style="background:#a3e635; color:#a3e635;"></span><span class="dot" style="background:#bef264; color:#bef264;"></span></div>
+                    <span class="pill-label">Charcoal</span>
+                </div>
+                <div class="theme-pill" style="background: #0f1c16; color: #fff;" onclick="setTheme('fresh-canopy', this)">
+                    <div class="dots-group"><span class="dot" style="background:#bef264; color:#bef264;"></span><span class="dot" style="background:#a7f3d0; color:#a7f3d0;"></span></div>
+                    <span class="pill-label">Fresh Canopy</span>
+                </div>
+                <div class="theme-pill" style="background: #0a1b1d; color: #fff;" onclick="setTheme('tiffany-noir', this)">
+                    <div class="dots-group"><span class="dot" style="background:#2dd4bf; color:#2dd4bf;"></span><span class="dot" style="background:#5eead4; color:#5eead4;"></span></div>
+                    <span class="pill-label">Tiffany Noir</span>
+                </div>
+                <div class="theme-pill" style="background: #1c0e15; color: #fff;" onclick="setTheme('bridal-blush', this)">
+                    <div class="dots-group"><span class="dot" style="background:#fda4af; color:#fda4af;"></span><span class="dot" style="background:#fb7185; color:#fb7185;"></span></div>
+                    <span class="pill-label">Bridal Blush</span>
+                </div>
+
+                <!-- WHITE / LIGHT THEMES -->
+                <div class="theme-pill" style="background: #fff0f3; color: #881337; border-color: #fecdd3;" onclick="setTheme('rose-quartz', this)">
+                    <div class="dots-group"><span class="dot" style="background:#f43f5e; color:#f43f5e;"></span><span class="dot" style="background:#fb7185; color:#fb7185;"></span></div>
+                    <span class="pill-label">Rose Quartz</span>
+                </div>
+                <div class="theme-pill" style="background: #eff6ff; color: #1e3a8a; border-color: #bfdbfe;" onclick="setTheme('daylight-sky', this)">
+                    <div class="dots-group"><span class="dot" style="background:#2563eb; color:#2563eb;"></span><span class="dot" style="background:#60a5fa; color:#60a5fa;"></span></div>
+                    <span class="pill-label">Daylight Sky</span>
+                </div>
+                <div class="theme-pill" style="background: #f0fdfa; color: #134e4a; border-color: #99f6e4;" onclick="setTheme('sage-linen', this)">
+                    <div class="dots-group"><span class="dot" style="background:#0d9488; color:#0d9488;"></span><span class="dot" style="background:#2dd4bf; color:#2dd4bf;"></span></div>
+                    <span class="pill-label">Sage Linen</span>
+                </div>
+                <div class="theme-pill" style="background: #fffbeb; color: #78350f; border-color: #fde68a;" onclick="setTheme('golden-hour', this)">
+                    <div class="dots-group"><span class="dot" style="background:#ea580c; color:#ea580c;"></span><span class="dot" style="background:#f59e0b; color:#f59e0b;"></span></div>
+                    <span class="pill-label">Golden Hour</span>
+                </div>
             </div>
             <button class="primary-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 12px; margin-top: 5px;" onclick="logout()">Logout</button>
         </div>
@@ -4648,16 +4735,53 @@ HTML_DASHBOARD = """
 
         function setTheme(themeName, el) {
             document.documentElement.setAttribute('data-theme', themeName);
-            document.querySelectorAll('.theme-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.theme-pill').forEach(b => {
+                b.classList.remove('active');
+                const chk = b.querySelector('.check');
+                if (chk) chk.remove();
+            });
             el.classList.add('active');
+            el.insertAdjacentHTML('beforeend', '<span class="check">✓</span>');
             localStorage.setItem('app_theme', themeName);
         }
-        const savedTheme = localStorage.getItem('app_theme');
-        if (savedTheme) {
-            document.documentElement.setAttribute('data-theme', savedTheme);
-            document.querySelectorAll('.theme-btn').forEach(b => {
-                if(b.innerText.toLowerCase().includes(savedTheme)) b.click();
-            });
+
+        const savedTheme = localStorage.getItem('app_theme') || 'amoled';
+        document.documentElement.setAttribute('data-theme', savedTheme);
+        document.querySelectorAll('.theme-pill').forEach(b => {
+            const oc = b.getAttribute('onclick') || '';
+            if (oc.includes(`'${savedTheme}'`)) {
+                b.classList.add('active');
+                if (!b.querySelector('.check')) b.insertAdjacentHTML('beforeend', '<span class="check">✓</span>');
+            } else {
+                b.classList.remove('active');
+            }
+        });
+
+        /* --- 📲 PWA INSTALLATION ENGINE --- */
+        let deferredPwaPrompt = null;
+        window.addEventListener('beforeinstallprompt', (e) => {
+            e.preventDefault();
+            deferredPwaPrompt = e;
+            const btn = document.getElementById('pwa-install-btn');
+            if (btn) btn.style.display = 'block';
+        });
+
+        async function triggerPwaInstall() {
+            if (deferredPwaPrompt) {
+                deferredPwaPrompt.prompt();
+                const choice = await deferredPwaPrompt.userChoice;
+                if (choice.outcome === 'accepted') {
+                    document.getElementById('pwa-install-btn').style.display = 'none';
+                }
+                deferredPwaPrompt = null;
+            } else {
+                alert("To install, tap your browser's menu (⋮ on Chrome, or Share on Safari) and select 'Install app' or 'Add to Home Screen'.");
+            }
+        }
+
+        // Register Service Worker for PWA
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(() => {});
         }
 
         function openTaskModal() { document.getElementById('taskModal').classList.add('show'); }
@@ -5398,10 +5522,41 @@ async def _api_sos_handler(request):
         "month_total": _pretty_bytes(m_total)
     })
 
+PWA_MANIFEST = {
+    "name": "TG Forward Portal",
+    "short_name": "TG Portal",
+    "start_url": "/",
+    "display": "standalone",
+    "background_color": "#000000",
+    "theme_color": "#000000",
+    "orientation": "portrait-primary",
+    "icons": [
+        {
+            "src": "https://cdn-icons-png.flaticon.com/512/2111/2111646.png",
+            "sizes": "192x192",
+            "type": "image/png"
+        },
+        {
+            "src": "https://cdn-icons-png.flaticon.com/512/2111/2111646.png",
+            "sizes": "512x512",
+            "type": "image/png"
+        }
+    ]
+}
+
+async def _manifest_handler(request):
+    return web.json_response(PWA_MANIFEST)
+
+async def _sw_handler(request):
+    sw_code = "self.addEventListener('fetch', function(e) {});"
+    return web.Response(text=sw_code, content_type='application/javascript')
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
     app_web = web.Application()
+    app_web.router.add_get("/manifest.json", _manifest_handler)
+    app_web.router.add_get("/sw.js", _sw_handler)
     app_web.router.add_get("/", _dashboard_ui_handler)
     app_web.router.add_get("/health", _dashboard_ui_handler)
     app_web.router.add_get("/api/stats", _api_stats_handler)
