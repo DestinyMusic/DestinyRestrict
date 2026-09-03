@@ -3579,11 +3579,12 @@ async def build_rich_caption(file_path, msg_type, msg):
                 stdout, _ = await proc.communicate()
                 out = stdout.decode().strip().split('|')
                 if len(out) == 2:
-                    a_list, s_list = out[0], out[1]
-                    if a_list: audio_lng = a_list.split()[0]
-                    if s_list: sub_lng = s_list.split()[0]
-                elif len(out) == 1 and out[0]:
-                    audio_lng = out[0].split()[0]
+                    a_list, s_list = out[0].strip(), out[1].strip()
+                    # 🟢 FIX: Replace MediaInfo's ' / ' separator with a clean comma
+                    if a_list: audio_lng = a_list.replace(" / ", ", ")
+                    if s_list: sub_lng = s_list.replace(" / ", ", ")
+                elif len(out) == 1 and out[0].strip():
+                    audio_lng = out[0].strip().replace(" / ", ", ")
             except: pass
             
             return f"<b>{html.escape(file_name)}</b>\n\n🗂 <code>{size_str}</code> 💎 <code>{w}x{h}</code>\n⏳ <code>{dur_str}</code> 💬 <code>{sub_lng}</code>\n🔊 <code>{audio_lng}</code>"
