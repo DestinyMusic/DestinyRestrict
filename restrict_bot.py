@@ -4427,7 +4427,7 @@ HTML_DASHBOARD = """
             <div id="view-chats" class="view-section">
                 <div class="section-title">
                     <span>Your Telegram Dialogs</span>
-                    <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="loadWebChats(true)">🔄 Refresh</button>
+                    <button id="refresh-chats-btn" class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="loadWebChats(true)">🔄 Refresh</button>
                 </div>
                 
                 <div id="web-chats-warning" class="card" style="display:none; border-color: var(--danger); margin-bottom: 20px;">
@@ -4836,8 +4836,12 @@ HTML_DASHBOARD = """
             if (!currentUser) return;
             const container = document.getElementById('web-chats-list');
             const warnBox = document.getElementById('web-chats-warning');
+            const refreshBtn = document.getElementById('refresh-chats-btn');
             
-            if (force) container.innerHTML = '<div style="color: #64748b;">Refreshing dialogs from Telegram...</div>';
+            if (force) {
+                container.innerHTML = '<div style="color: var(--subtext);">⏳ Refreshing dialogs from Telegram... (Please wait)</div>';
+                if (refreshBtn) { refreshBtn.innerText = "⏳ Loading..."; refreshBtn.style.opacity = "0.5"; refreshBtn.style.pointerEvents = "none"; }
+            }
 
             try {
                 const res = await fetch(`/api/chats?user_id=${currentUser}`);
@@ -4847,25 +4851,30 @@ HTML_DASHBOARD = """
                     warnBox.style.display = 'none';
                     allLoadedChats = data.chats || [];
                     
-                    // Update Modal Datalist as well
+                    // High-Performance datalist building
                     const dl = document.getElementById('tg-chats-list');
                     if (dl) {
                         dl.innerHTML = '';
+                        const frag = document.createDocumentFragment();
                         allLoadedChats.forEach(c => {
                             const opt = document.createElement('option');
                             opt.value = c.id;
                             opt.text = c.name;
-                            dl.appendChild(opt);
+                            frag.appendChild(opt);
                         });
+                        dl.appendChild(frag);
                     }
 
                     renderFilteredChats();
                 } else {
                     warnBox.style.display = 'block';
-                    container.innerHTML = '<div style="color: #64748b;">No chats available. Connect session first.</div>';
+                    container.innerHTML = '<div style="color: var(--subtext);">No chats available. Connect session first.</div>';
                 }
             } catch(e) {
                 container.innerHTML = '<div style="color: var(--danger);">Failed to load dialogs.</div>';
+            } finally {
+                // Restore button instantly
+                if (refreshBtn) { refreshBtn.innerText = "🔄 Refresh"; refreshBtn.style.opacity = "1"; refreshBtn.style.pointerEvents = "auto"; }
             }
         }
 
@@ -4893,22 +4902,26 @@ HTML_DASHBOARD = """
             });
 
             if (!filtered.length) {
-                listEl.innerHTML = '<div style="color: #64748b; padding: 12px 0;">No matching dialogs found.</div>';
+                listEl.innerHTML = '<div style="color: var(--subtext); padding: 12px 0;">No matching dialogs found.</div>';
                 return;
             }
 
-            listEl.innerHTML = '';
+            // High-Performance DOM Rendering (NO innerHTML += in a loop!)
+            let htmlBuffer = "";
             filtered.forEach(c => {
-                listEl.innerHTML += `
+                htmlBuffer += `
                     <div class="task-row" style="margin-bottom: 8px;">
                         <div>
-                            <div style="font-weight: 700; color: #fff; font-size: 13px;">${c.name}</div>
+                            <div style="font-weight: 700; color: var(--text); font-size: 13px;">${c.name}</div>
                             <div style="font-size: 11px; color: var(--accent); margin-top: 2px;">ID: <code>${c.id}</code></div>
                         </div>
                         <button class="task-kill" style="color: var(--accent); border-color: var(--card-border); background: var(--bg);" onclick="copyChatId('${c.id}')">📋 COPY ID</button>
                     </div>
                 `;
             });
+            
+            // Assign the massive string exactly once. Browser renders instantly.
+            listEl.innerHTML = htmlBuffer;
         }
 
         function copyChatId(id) {
@@ -5065,14 +5078,20 @@ HTML_DASHBOARD = """
         }
 
         let liveLogInterval = null;
+        let isFetchingLogs = false; // Lock variable to prevent overlapping request freezes
+        
         async function fetchLogs() {
+            if (isFetchingLogs) return; // Prevent freeze if you click refresh 10 times fast
+            isFetchingLogs = true;
             try {
                 const res = await fetch('/api/logs');
                 const data = await res.json();
                 const term = document.getElementById('log-terminal');
                 term.innerText = data.logs || "No logs generated yet.";
                 term.scrollTop = term.scrollHeight;
-            } catch(e) {}
+            } catch(e) {} finally {
+                isFetchingLogs = false;
+            }
         }
 
         function toggleLiveLogs(isChecked) {
@@ -5344,13 +5363,17 @@ async def _api_cancel_watcher(request):
     except: pass
     return web.json_response({"status": "error"}, status=400)
 
+def _read_logs_sync():
+    """Reads logs safely in a background thread so the server doesn't freeze."""
+    if not os.path.exists("bot.log"): return "Log file not created yet."
+    with open("bot.log", "r", encoding="utf-8", errors="ignore") as f:
+        lines = f.readlines()
+    return "".join(lines[-150:])
+
 async def _api_logs_handler(request):
     try:
-        if os.path.exists("bot.log"):
-            with open("bot.log", "r", encoding="utf-8") as f:
-                lines = f.readlines()
-            return web.json_response({"logs": "".join(lines[-150:])}) # Return last 150 lines
-        return web.json_response({"logs": "Log file not created yet."})
+        logs = await asyncio.to_thread(_read_logs_sync)
+        return web.json_response({"logs": logs})
     except Exception as e:
         return web.json_response({"logs": f"Error reading logs: {e}"})
 
@@ -5470,13 +5493,19 @@ async def _api_chats_handler(request):
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     chat_list = []
+    count = 0
     try:
-        async for d in uclient.get_dialogs():
+        # Limited to 500 so the API doesn't crash, and yields to the server every 25 chats so nothing freezes.
+        async for d in uclient.get_dialogs(limit=500):
             name = d.chat.title or d.chat.first_name or "Unknown"
             c_type = d.chat.type
             
             cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
             chat_list.append({"id": str(d.chat.id), "name": f"[{cat}] {name}"})
+            
+            count += 1
+            if count % 25 == 0:
+                await asyncio.sleep(0) # This tells the server to breathe!
     except Exception as e: 
         return web.json_response({"status": "error", "message": str(e)})
         
@@ -5520,6 +5549,16 @@ async def _api_speedtest_handler(request):
         "share_image": result.get("share", "")
     })
 
+def _get_sos_sync():
+    """Fetches system OS and IO stats safely in a background thread."""
+    try:
+        with open("/etc/os-release") as f:
+            os_info = dict(line.strip().split("=", 1) for line in f if "=" in line)
+        os_name = os_info.get("PRETTY_NAME", f'"{platform.system()} {platform.release()}"').strip('"')
+    except Exception:
+        os_name = f"{platform.system()} {platform.release()}"
+    return os_name, psutil.virtual_memory(), psutil.disk_usage('/'), psutil.net_io_counters()
+
 async def _api_sos_handler(request):
     try:
         uid = int(request.query.get("user_id", 0))
@@ -5531,17 +5570,7 @@ async def _api_sos_handler(request):
         return web.json_response({"status": "error", "message": "Unauthorized"})
 
     m_down, m_up, m_total, month_name = await db.get_monthly_bandwidth()
-    
-    try:
-        with open("/etc/os-release") as f:
-            os_info = dict(line.strip().split("=", 1) for line in f if "=" in line)
-        os_name = os_info.get("PRETTY_NAME", f'"{platform.system()} {platform.release()}"').strip('"')
-    except Exception:
-        os_name = f"{platform.system()} {platform.release()}"
-
-    mem = psutil.virtual_memory()
-    disk = psutil.disk_usage('/')
-    net = psutil.net_io_counters()
+    os_name, mem, disk, net = await asyncio.to_thread(_get_sos_sync)
 
     return web.json_response({
         "status": "success",
