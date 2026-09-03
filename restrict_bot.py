@@ -4629,8 +4629,37 @@ async def _api_add_watcher(request):
         if is_restricted is None: is_restricted = False
 
         parsed = _parse_source_link(link)
-        source_id = parsed["chat_id"]
-        source_title = "Watched Source"
+        
+        # 🟢 FIX 1: Safely resolve source_id integer using connected client
+        user_client = USER_CLIENTS.get(user_id, app)
+        try:
+            if parsed["kind"] == "public":
+                chat = await user_client.get_chat(parsed["join_target"])
+            else:
+                chat = await user_client.get_chat(parsed["chat_id"])
+            source_id = chat.id
+            source_title = chat.title or str(source_id)
+        except Exception:
+            source_id = parsed.get("chat_id")
+            source_title = "Watched Source"
+
+        # 🟢 FIX 2: Dynamically start the background listener if it's inactive
+        if user_id not in USER_CLIENTS:
+            user_session = await db.get_session(user_id)
+            if user_session:
+                u_api = await db.get_api_id(user_id) or API_ID
+                u_hash = await db.get_api_hash(user_id) or API_HASH
+                new_client = Client(f"User_{user_id}", session_string=user_session, api_id=u_api, api_hash=u_hash, workers=4, ipv6=False)
+                new_client.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+                await new_client.start()
+                USER_CLIENTS[user_id] = new_client
+
+        # 🟢 FIX 3: Fetch the accurate last_msg_id to prevent catch-up floods
+        last_msg_id = 0
+        try:
+            async for m in USER_CLIENTS.get(user_id, app).get_chat_history(source_id, limit=1):
+                last_msg_id = m.id
+        except: pass
 
         await db.add_watcher(
             user_id=user_id,
@@ -4642,7 +4671,8 @@ async def _api_add_watcher(request):
             is_restricted=is_restricted,
             source_title=source_title,
             dest_title=str(dest_chat_id),
-            allowed_types=allowed_types
+            allowed_types=allowed_types,
+            last_msg_id=last_msg_id
         )
         return web.json_response({"status": "success"})
     except Exception as e:
@@ -5071,6 +5101,14 @@ async def watcher_worker_loop(wid_str):
                 except FloodWait as e:
                     USER_FLOOD_LOCKS[owner_id].set_lock(e.value + 5)
                     await asyncio.sleep(e.value + 5)
+                    # 🟢 FIX: Retry fast copy after sleep instead of instantly falling back to heavy download
+                    try:
+                        if getattr(msg, "media_group_id", None):
+                            if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                        else:
+                            if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_message, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                        if copy_res: processed_successfully = True
+                    except: pass
                 except Exception as e:
                     logger.warning(f"Watcher fast copy failed: {e}. Falling back to download.")
 
@@ -5126,9 +5164,11 @@ async def process_watcher_message(client, message):
     cursor = await db.get_watchers_for_source(chat_id, topic_id)
     watchers = await cursor.to_list(length=100)
 
-    if not watchers and topic_id is not None:
-        cursor = await db.get_watchers_for_source(chat_id, None)
-        watchers = await cursor.to_list(length=100)
+    # 🟢 FIX: Always check if there's a global watcher for the entire chat (source_thread = None)
+    # Even if topic_id is present, a user might be monitoring the whole group!
+    if topic_id is not None:
+        cursor_global = await db.get_watchers_for_source(chat_id, None)
+        watchers.extend(await cursor_global.to_list(length=100))
 
     # 🟢 Live Listener ONLY pushes IDs to the queue now!
     for w in watchers:
