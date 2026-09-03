@@ -452,7 +452,7 @@ REACTIONS = [
 ALL_COMMANDS = [
     "start", "help", "login", "logout", "dl", "watch", "unwatch", 
     "watchers", "cancel", "broadcast", "botstats", "status", 
-    "log", "pixel", "sos", "mediainfo", "mi", "speedtest"
+    "log", "pixel", "sos", "mediainfo", "mi", "chats", "speedtest"
 ]
 
 @app.on_message(filters.command(ALL_COMMANDS), group=-1)
@@ -2384,7 +2384,56 @@ async def save(client: Client, message: Message):
         reply_markup=InlineKeyboardMarkup(buttons),
         quote=True
     )
+
+@app.on_message(filters.command(["chats"]) & filters.private)
+async def chats_cmd(client: Client, message: Message):
+    user_id = message.from_user.id
+    uclient = USER_CLIENTS.get(user_id)
     
+    if not uclient or not uclient.is_connected:
+        return await message.reply("❌ **Not Connected:** You must `/login` to your Telegram session first to fetch your chats.")
+    
+    status = await message.reply("🔄 **Fetching your chat list. Please wait...**")
+    users, groups, channels, bots = [], [], [], []
+    
+    try:
+        async for d in uclient.get_dialogs():
+            name = html.escape(d.chat.title or d.chat.first_name or "Unknown")
+            line = f"{name} | <code>{d.chat.id}</code>"
+            
+            if d.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
+                groups.append(line)
+            elif d.chat.type == enums.ChatType.CHANNEL:
+                channels.append(line)
+            elif d.chat.type == enums.ChatType.BOT:
+                bots.append(line)
+            elif d.chat.type == enums.ChatType.PRIVATE:
+                users.append(line)
+    except Exception as e:
+        return await status.edit(f"❌ **Error fetching chats:** {e}")
+        
+    await status.delete()
+    
+    def chunk_list(items, chunk_size=50):
+        return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
+        
+    categories = [
+        ("👥 Groups", groups), 
+        ("📢 Channels", channels), 
+        ("🤖 Bots", bots), 
+        ("👤 Users", users)
+    ]
+    
+    for cat_name, cat_list in categories:
+        if not cat_list: 
+            continue
+            
+        chunks = chunk_list(cat_list, 50)
+        for i, chunk in enumerate(chunks, 1):
+            text = f"<b>{cat_name} - Page {i}</b>\n<blockquote expandable>\n" + "\n".join(chunk) + "\n</blockquote>"
+            await message.reply(text, parse_mode=enums.ParseMode.HTML)
+            await asyncio.sleep(6) # 🟢 6-second delay to strictly prevent FloodWait
+                
 @app.on_message(filters.command(["dl"]) & (filters.private | filters.group))
 async def dl_handler(client: Client, message: Message):
     user_id = message.from_user.id
@@ -4001,18 +4050,15 @@ HTML_DASHBOARD = """
         * { box-sizing: border-box; }
         body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; transition: background 0.3s; }
         
-        /* Views */
         .view-section { display: none; padding-bottom: 40px; }
         .view-section.active { display: block; }
 
-        /* Login Screen (Matching 60343.jpg) */
         #login-view { display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; background: radial-gradient(circle at center, #111827 0%, var(--bg) 100%); }
         .login-card { background: var(--card); border: 1px solid var(--card-border); border-radius: 28px; width: 100%; max-width: 420px; padding: 36px 28px; box-shadow: 0 20px 50px rgba(0,0,0,0.8); text-align: center; }
         .login-logo { width: 56px; height: 56px; background: var(--accent); border-radius: 50%; margin: 0 auto 20px auto; display: flex; align-items: center; justify-content: center; font-size: 24px; box-shadow: 0 0 25px var(--glow); color: #fff; }
         .login-title { font-size: 22px; font-weight: 800; color: #fff; margin-bottom: 6px; }
         .login-subtitle { font-size: 13px; color: #94a3b8; margin-bottom: 28px; }
 
-        /* Navbar */
         .navbar { display: flex; justify-content: space-between; align-items: center; padding: 15px 20px; background: rgba(10, 10, 10, 0.85); backdrop-filter: blur(12px); border-bottom: 1px solid var(--card-border); position: sticky; top: 0; z-index: 100; }
         .nav-brand { display: flex; align-items: center; gap: 12px; font-size: 18px; font-weight: 800; }
         .nav-brand-icon { width: 34px; height: 34px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 15px var(--glow); color: white; font-size: 14px; }
@@ -4020,7 +4066,6 @@ HTML_DASHBOARD = """
         .icon-btn { background: var(--card); border: 1px solid var(--card-border); color: #fff; width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; cursor: pointer; transition: 0.2s; }
         .icon-btn:hover { border-color: var(--accent); }
 
-        /* Sidebar */
         .sidebar-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(4px); z-index: 200; opacity: 0; pointer-events: none; transition: 0.3s; }
         .sidebar { position: fixed; top: 0; left: -300px; width: 280px; height: 100%; background: var(--sidebar); z-index: 201; border-right: 1px solid var(--card-border); transition: 0.3s cubic-bezier(0.4, 0, 0.2, 1); padding: 20px 0; overflow-y: auto; }
         .sidebar.open { left: 0; }
@@ -4028,7 +4073,6 @@ HTML_DASHBOARD = """
         .menu-item { padding: 16px 24px; display: flex; align-items: center; gap: 16px; color: #cbd5e1; font-weight: 600; cursor: pointer; transition: 0.2s; }
         .menu-item:hover, .menu-item.active { background: rgba(59, 130, 246, 0.1); color: #fff; border-left: 4px solid var(--accent); }
         
-        /* Profile Dropdown (Matching 60338.jpg) */
         .profile-menu { position: absolute; top: 70px; right: 20px; background: var(--card); border: 1px solid var(--card-border); border-radius: 20px; padding: 20px; width: 280px; display: none; z-index: 105; box-shadow: 0 15px 40px rgba(0,0,0,0.6); }
         .profile-menu.show { display: block; }
         .user-info { display: flex; flex-direction: column; gap: 4px; padding-bottom: 15px; border-bottom: 1px solid var(--card-border); margin-bottom: 15px; }
@@ -4037,7 +4081,6 @@ HTML_DASHBOARD = """
         .theme-btn.active { border-color: var(--accent); background: rgba(59,130,246,0.1); }
         .dot { width: 10px; height: 10px; border-radius: 50%; }
 
-        /* Container & Grid */
         .container { max-width: 850px; margin: 0 auto; padding: 20px; }
         .section-title { font-size: 20px; font-weight: 800; margin: 25px 0 15px 0; color: #fff; display: flex; justify-content: space-between; align-items: center; }
         .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 16px; margin-bottom: 20px; }
@@ -4045,7 +4088,6 @@ HTML_DASHBOARD = """
         .card-stat { font-size: 24px; font-weight: 800; color: #fff; margin-top: 5px; }
         .card-label { font-size: 11px; color: #64748b; text-transform: uppercase; font-weight: 700; letter-spacing: 1px; }
 
-        /* Inputs & Buttons */
         .primary-btn { width: 100%; padding: 15px; background: var(--accent); border: none; border-radius: 14px; color: #fff; font-size: 14px; font-weight: 700; cursor: pointer; transition: 0.3s; box-shadow: 0 4px 20px var(--glow); text-transform: uppercase; letter-spacing: 0.5px; }
         .primary-btn:hover { transform: translateY(-2px); box-shadow: 0 6px 25px var(--glow); }
         .input-group { margin-bottom: 18px; text-align: left; }
@@ -4053,17 +4095,14 @@ HTML_DASHBOARD = """
         .input-group input, .input-group select { width: 100%; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 14px; outline: none; transition: 0.2s; }
         .input-group input:focus { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
 
-        /* Task Cards & Rows */
         .task-row { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 15px; }
         .task-kill { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.2); padding: 8px 16px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer; transition: 0.2s; }
         .task-kill:hover { background: var(--danger); color: #fff; box-shadow: 0 0 15px rgba(239, 68, 68, 0.4); }
 
-        /* Filter Checkboxes */
         .filter-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 18px; }
         .filter-checkbox { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #cbd5e1; background: var(--bg); padding: 10px 12px; border-radius: 10px; border: 1px solid var(--card-border); cursor: pointer; }
         .filter-checkbox input { accent-color: var(--accent); width: 16px; height: 16px; }
 
-        /* Modal */
         .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.8); z-index: 300; display: none; align-items: center; justify-content: center; backdrop-filter: blur(6px); padding: 20px; }
         .modal.show { display: flex; }
         .modal-content { background: var(--card); width: 100%; max-width: 460px; border-radius: 24px; padding: 28px; border: 1px solid var(--card-border); box-shadow: 0 25px 60px rgba(0,0,0,0.8); max-height: 90vh; overflow-y: auto; }
@@ -4073,7 +4112,6 @@ HTML_DASHBOARD = """
 </head>
 <body>
 
-    <!-- LOGIN VIEW -->
     <div id="login-view">
         <div class="login-card">
             <div class="login-logo">▶</div>
@@ -4093,9 +4131,7 @@ HTML_DASHBOARD = """
         </div>
     </div>
 
-    <!-- MAIN APP WRAPPER -->
     <div id="app-view" style="display: none;">
-        <!-- Navbar -->
         <div class="navbar">
             <div class="nav-brand">
                 <div class="icon-btn" onclick="toggleSidebar()" style="border:none;">☰</div>
@@ -4107,7 +4143,6 @@ HTML_DASHBOARD = """
             </div>
         </div>
 
-        <!-- Sidebar -->
         <div class="sidebar-overlay" onclick="toggleSidebar()"></div>
         <div class="sidebar" id="sidebar">
             <div class="menu-item active" onclick="switchView('home', 'Home')">🏠 Home</div>
@@ -4117,7 +4152,6 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
 
-        <!-- Profile Menu (Themes & Logout) -->
         <div class="profile-menu" id="profile-menu">
             <div class="user-info">
                 <strong id="profile-name">User</strong>
@@ -4136,10 +4170,7 @@ HTML_DASHBOARD = """
             <button class="primary-btn" style="background: rgba(239, 68, 68, 0.1); color: var(--danger); padding: 12px; margin-top: 5px;" onclick="logout()">Logout</button>
         </div>
 
-        <!-- Container Views -->
         <div class="container">
-            
-            <!-- HOME VIEW -->
             <div id="view-home" class="view-section active">
                 <button class="primary-btn" onclick="openTaskModal()" style="margin-bottom: 25px;">➕ CREATE NEW TASK / WATCHER</button>
                 <div class="section-title">System Overview</div>
@@ -4167,7 +4198,6 @@ HTML_DASHBOARD = """
                 </div>
             </div>
 
-            <!-- DOWNLOADS VIEW -->
             <div id="view-downloads" class="view-section">
                 <div class="section-title">
                     <span>Downloads & Forwarding Tasks</span>
@@ -4176,7 +4206,6 @@ HTML_DASHBOARD = """
                 <div id="downloads-list"><div style="color: #64748b;">Loading downloads...</div></div>
             </div>
 
-            <!-- WATCHERS VIEW -->
             <div id="view-watchers" class="view-section">
                 <div class="section-title">
                     <span>Live Auto-Watchers</span>
@@ -4185,7 +4214,6 @@ HTML_DASHBOARD = """
                 <div id="watchers-list"><div style="color: #64748b;">Loading watchers...</div></div>
             </div>
 
-            <!-- LOGS VIEW -->
             <div id="view-logs" class="view-section">
                 <div class="section-title">
                     <span>System & Maintenance Logs</span>
@@ -4201,8 +4229,40 @@ HTML_DASHBOARD = """
                 <div style="background: #000; border: 1px solid var(--card-border); border-radius: 16px; padding: 16px; font-family: monospace; font-size: 11px; color: #38bdf8; height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;" id="log-terminal">Loading logs...</div>
             </div>
 
-            <!-- SETTINGS VIEW -->
             <div id="view-settings" class="view-section">
+                
+                <div class="section-title">Telegram Session Management</div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Connect Telegram via Web</h3>
+                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Link your account directly from your browser to enable downloading and fetch your chat list.</p>
+                    
+                    <div id="tg-login-step1">
+                        <div class="input-group">
+                            <label>Phone Number (with country code)</label>
+                            <input type="text" id="tg-phone" placeholder="e.g. +1234567890">
+                        </div>
+                        <button class="primary-btn" style="padding: 12px; background: #10b981;" onclick="tgSendCode()">Send OTP Code</button>
+                    </div>
+
+                    <div id="tg-login-step2" style="display: none;">
+                        <div class="input-group">
+                            <label>Telegram OTP Code (Check your app)</label>
+                            <input type="text" id="tg-code" placeholder="12345">
+                        </div>
+                        <button class="primary-btn" style="padding: 12px; background: #10b981;" onclick="tgVerifyCode()">Verify Code</button>
+                    </div>
+
+                    <div id="tg-login-step3" style="display: none;">
+                        <div class="input-group">
+                            <label>Two-Step Verification Password</label>
+                            <input type="password" id="tg-2fa" placeholder="••••••••">
+                        </div>
+                        <button class="primary-btn" style="padding: 12px; background: #10b981;" onclick="tgVerify2FA()">Submit Password</button>
+                    </div>
+                    
+                    <button id="tg-logout-btn" class="primary-btn" style="padding: 12px; background: rgba(239, 68, 68, 0.1); color: var(--danger); margin-top: 15px; display: none;" onclick="tgLogout()">Disconnect Telegram Session</button>
+                </div>
+
                 <div class="section-title">Security & Credentials</div>
                 <div class="card" style="margin-bottom: 20px;">
                     <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Change Web Password</h3>
@@ -4219,7 +4279,6 @@ HTML_DASHBOARD = """
         </div>
     </div>
 
-    <!-- TASK CREATION MODAL -->
     <div class="modal" id="taskModal">
         <div class="modal-content">
             <h3 style="margin-top: 0; color: #fff; font-size: 18px; margin-bottom: 20px;">Create Task or Watcher</h3>
@@ -4235,9 +4294,11 @@ HTML_DASHBOARD = """
                     <label>Telegram Source Link</label>
                     <input type="text" id="t-link" placeholder="https://t.me/channel/100 or 101-120" required>
                 </div>
+                <!-- 🟢 UPDATED: Destination now uses Datalist for Web Dropdown Search -->
                 <div class="input-group">
                     <label>Destination Chat ID / Topic</label>
-                    <input type="text" id="t-dest" placeholder="-100123456789 or leave blank for DM">
+                    <input type="text" id="t-dest" list="tg-chats-list" placeholder="Select your chat or enter ID (-100...)">
+                    <datalist id="tg-chats-list"></datalist>
                 </div>
                 <div class="input-group" id="delay-group">
                     <label>Forward Delay (Seconds)</label>
@@ -4266,6 +4327,7 @@ HTML_DASHBOARD = """
 
     <script>
         let currentUser = localStorage.getItem('tg_uid') || null;
+        let chatsLoaded = false;
 
         if (currentUser) {
             document.getElementById('login-view').style.display = 'none';
@@ -4307,9 +4369,7 @@ HTML_DASHBOARD = """
             document.getElementById('sidebar').classList.toggle('open');
             document.querySelector('.sidebar-overlay').classList.toggle('open');
         }
-        function toggleProfile() {
-            document.getElementById('profile-menu').classList.toggle('show');
-        }
+        function toggleProfile() { document.getElementById('profile-menu').classList.toggle('show'); }
         function switchView(viewId, title) {
             document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
             document.getElementById('view-' + viewId).classList.add('active');
@@ -4335,8 +4395,24 @@ HTML_DASHBOARD = """
 
         function openTaskModal() { document.getElementById('taskModal').classList.add('show'); }
         function closeTaskModal() { document.getElementById('taskModal').classList.remove('show'); }
-        function toggleMode(val) {
-            document.getElementById('delay-group').style.display = val === 'watch' ? 'block' : 'block';
+        function toggleMode(val) { document.getElementById('delay-group').style.display = 'block'; }
+
+        async function fetchChatsList() {
+            if (!currentUser) return;
+            try {
+                const res = await fetch(`/api/chats?user_id=${currentUser}`);
+                const data = await res.json();
+                if (data.status === 'success') {
+                    const dl = document.getElementById('tg-chats-list');
+                    dl.innerHTML = '';
+                    data.chats.forEach(c => {
+                        const opt = document.createElement('option');
+                        opt.value = c.id;
+                        opt.text = c.name;
+                        dl.appendChild(opt);
+                    });
+                }
+            } catch(e) {}
         }
 
         async function fetchStats() {
@@ -4353,15 +4429,24 @@ HTML_DASHBOARD = """
                 const tgStatusEl = document.getElementById('tg-status');
                 if (data.tg_session_active) {
                     tgStatusEl.innerHTML = '<span style="color: #10b981;">✅ Active (Ready for Restricted Files)</span>';
+                    document.getElementById('tg-login-step1').style.display = 'none';
+                    document.getElementById('tg-login-step2').style.display = 'none';
+                    document.getElementById('tg-login-step3').style.display = 'none';
+                    document.getElementById('tg-logout-btn').style.display = 'block';
+                    
+                    if (!chatsLoaded) {
+                        fetchChatsList();
+                        chatsLoaded = true;
+                    }
                 } else {
-                    tgStatusEl.innerHTML = '<span style="color: #ef4444;">❌ Not Connected — Run <code>/login</code> in Telegram Bot!</span>';
+                    tgStatusEl.innerHTML = '<span style="color: #ef4444;">❌ Not Connected — Login below!</span>';
+                    document.getElementById('tg-login-step1').style.display = 'block';
+                    document.getElementById('tg-logout-btn').style.display = 'none';
+                    chatsLoaded = false;
                 }
 
-                if (document.getElementById('view-logs').classList.contains('active')) {
-                    fetchLogs();
-                }
+                if (document.getElementById('view-logs').classList.contains('active')) fetchLogs();
                 
-                // Downloads list
                 const dlList = document.getElementById('downloads-list');
                 dlList.innerHTML = data.tasks.length ? '' : '<div style="color: #64748b;">No active downloads.</div>';
                 data.tasks.forEach(t => {
@@ -4376,7 +4461,6 @@ HTML_DASHBOARD = """
                     `;
                 });
 
-                // Watchers list
                 const wList = document.getElementById('watchers-list');
                 wList.innerHTML = data.watchers.length ? '' : '<div style="color: #64748b;">No active watchers.</div>';
                 data.watchers.forEach(w => {
@@ -4393,6 +4477,45 @@ HTML_DASHBOARD = """
             } catch(e) {}
         }
 
+        async function tgSendCode() {
+            const phone = document.getElementById('tg-phone').value;
+            const res = await fetch('/api/tg/send_code', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, phone: phone}) });
+            const data = await res.json();
+            if (data.status === 'success') {
+                document.getElementById('tg-login-step1').style.display = 'none';
+                document.getElementById('tg-login-step2').style.display = 'block';
+            } else alert("Error: " + data.message);
+        }
+
+        async function tgVerifyCode() {
+            const code = document.getElementById('tg-code').value;
+            const res = await fetch('/api/tg/verify', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, code: code}) });
+            const data = await res.json();
+            if (data.status === 'success') {
+                alert("Telegram Logged In Successfully!");
+                fetchStats();
+            } else if (data.status === '2fa_required') {
+                document.getElementById('tg-login-step2').style.display = 'none';
+                document.getElementById('tg-login-step3').style.display = 'block';
+            } else alert("Error: " + data.message);
+        }
+
+        async function tgVerify2FA() {
+            const pwd = document.getElementById('tg-2fa').value;
+            const res = await fetch('/api/tg/verify_2fa', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, password: pwd}) });
+            const data = await res.json();
+            if (data.status === 'success') {
+                alert("Telegram Logged In Successfully!");
+                fetchStats();
+            } else alert("Error: " + data.message);
+        }
+
+        async function tgLogout() {
+            if (!confirm("Are you sure you want to disconnect Telegram? Active watchers will be stopped.")) return;
+            await fetch('/api/tg/logout', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser}) });
+            fetchStats();
+        }
+
         async function submitTask(e) {
             e.preventDefault();
             const mode = document.getElementById('m-type').value;
@@ -4404,56 +4527,36 @@ HTML_DASHBOARD = """
             document.querySelectorAll('input[name="ftype"]:checked').forEach(cb => filtersArr.push(cb.value));
 
             const endpoint = mode === 'watch' ? '/api/watcher/add' : '/api/task/add';
-            const res = await fetch(endpoint, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({user_id: currentUser, link, dest, delay, filters: filtersArr})
-            });
+            const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, link, dest, delay, filters: filtersArr}) });
             const data = await res.json();
             if (data.status === 'success') {
                 alert("Task started successfully!");
                 closeTaskModal();
                 fetchStats();
-            } else {
-                alert("Error: " + data.message);
-            }
+            } else alert("Error: " + data.message);
         }
 
         async function cancelTask(taskId) {
             if (!confirm("Cancel this task?")) return;
-            await fetch('/api/task/cancel', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({task_id: taskId, user_id: currentUser})
-            });
+            await fetch('/api/task/cancel', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({task_id: taskId, user_id: currentUser}) });
             fetchStats();
         }
 
         async function cancelWatcher(watcherId) {
             if (!confirm("Remove this watcher?")) return;
-            await fetch('/api/watcher/cancel', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({watcher_id: watcherId, user_id: currentUser})
-            });
+            await fetch('/api/watcher/cancel', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({watcher_id: watcherId, user_id: currentUser}) });
             fetchStats();
         }
 
         async function changePassword(e) {
             e.preventDefault();
             const pwd = document.getElementById('new-pwd').value;
-            const res = await fetch('/api/auth/password', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({user_id: currentUser, password: pwd})
-            });
+            const res = await fetch('/api/auth/password', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, password: pwd}) });
             const data = await res.json();
             if (data.status === 'success') {
                 alert("Password updated successfully!");
                 document.getElementById('new-pwd').value = '';
-            } else {
-                alert("Failed to update password.");
-            }
+            } else alert("Failed to update password.");
         }
 
         let liveLogInterval = null;
@@ -4468,12 +4571,8 @@ HTML_DASHBOARD = """
         }
 
         function toggleLiveLogs(isChecked) {
-            if (isChecked) {
-                fetchLogs();
-                liveLogInterval = setInterval(fetchLogs, 3000);
-            } else {
-                clearInterval(liveLogInterval);
-            }
+            if (isChecked) { fetchLogs(); liveLogInterval = setInterval(fetchLogs, 3000); } 
+            else clearInterval(liveLogInterval);
         }
     </script>
 </body>
@@ -4733,6 +4832,108 @@ async def _api_download_log_handler(request):
     except Exception:
         return web.Response(text="Error downloading logs.", status=500)
 
+WEB_AUTH_CACHE = {}
+
+async def _api_tg_send_code(request):
+    data = await request.json()
+    uid = int(data.get("user_id"))
+    phone = data.get("phone")
+    
+    client = Client(f":memory:", api_id=API_ID, api_hash=API_HASH, in_memory=True)
+    await client.connect()
+    try:
+        code = await client.send_code(phone)
+        WEB_AUTH_CACHE[uid] = {"client": client, "phone": phone, "hash": code.phone_code_hash}
+        return web.json_response({"status": "success"})
+    except Exception as e:
+        await client.disconnect()
+        return web.json_response({"status": "error", "message": str(e)})
+
+async def _api_tg_verify_code(request):
+    data = await request.json()
+    uid = int(data.get("user_id"))
+    code = data.get("code")
+    
+    cache = WEB_AUTH_CACHE.get(uid)
+    if not cache: return web.json_response({"status": "error", "message": "Session expired. Try again."})
+    
+    client = cache["client"]
+    try:
+        await client.sign_in(cache["phone"], cache["hash"], code)
+        session_str = await client.export_session_string()
+        await client.disconnect()
+        del WEB_AUTH_CACHE[uid]
+        
+        await db.set_session(uid, session_str)
+        await db.set_api_id(uid, API_ID)
+        await db.set_api_hash(uid, API_HASH)
+        return web.json_response({"status": "success"})
+        
+    except SessionPasswordNeeded:
+        return web.json_response({"status": "2fa_required"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
+
+async def _api_tg_verify_2fa(request):
+    data = await request.json()
+    uid = int(data.get("user_id"))
+    pwd = data.get("password")
+    
+    cache = WEB_AUTH_CACHE.get(uid)
+    if not cache: return web.json_response({"status": "error", "message": "Session expired."})
+    
+    client = cache["client"]
+    try:
+        await client.check_password(pwd)
+        session_str = await client.export_session_string()
+        await client.disconnect()
+        del WEB_AUTH_CACHE[uid]
+        
+        await db.set_session(uid, session_str)
+        await db.set_api_id(uid, API_ID)
+        await db.set_api_hash(uid, API_HASH)
+        return web.json_response({"status": "success"})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
+
+async def _api_tg_logout(request):
+    data = await request.json()
+    uid = int(data.get("user_id", 0))
+    
+    uclient = USER_CLIENTS.pop(uid, None)
+    if uclient:
+        try: await uclient.log_out()
+        except: pass
+        try: await uclient.stop()
+        except: pass
+        
+    await db.set_session(uid, None)
+    await db.set_api_id(uid, None)
+    await db.set_api_hash(uid, None)
+    
+    user_tasks = list(ACTIVE_PROCESSES.get(uid, {}).keys())
+    for tid in user_tasks: CANCEL_FLAGS[tid] = True
+    batch_temp.IS_BATCH[uid] = True
+    try: await db.db.active_tasks.delete_many({"user_id": uid})
+    except: pass
+    
+    return web.json_response({"status": "success"})
+
+async def _api_chats_handler(request):
+    uid = int(request.query.get("user_id", 0))
+    uclient = USER_CLIENTS.get(uid)
+    if not uclient or not uclient.is_connected:
+        return web.json_response({"status": "error", "message": "Not connected"})
+        
+    chat_list = []
+    try:
+        async for d in uclient.get_dialogs():
+            name = d.chat.title or d.chat.first_name or "Unknown"
+            cat = "👤 User" if d.chat.type == enums.ChatType.PRIVATE else ("📢 Channel" if d.chat.type == enums.ChatType.CHANNEL else ("🤖 Bot" if d.chat.type == enums.ChatType.BOT else "👥 Group"))
+            chat_list.append({"id": str(d.chat.id), "name": f"[{cat}] {name}"})
+    except: pass
+    return web.json_response({"status": "success", "chats": chat_list})
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -4741,9 +4942,14 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/health", _dashboard_ui_handler)
     app_web.router.add_get("/api/stats", _api_stats_handler)
     app_web.router.add_get("/api/logs", _api_logs_handler)
+    app_web.router.add_get("/api/chats", _api_chats_handler)
     app_web.router.add_get("/api/logs/download", _api_download_log_handler)
     app_web.router.add_post("/api/auth/login", _api_login_handler)
     app_web.router.add_post("/api/auth/password", _api_password_handler)
+    app_web.router.add_post("/api/tg/send_code", _api_tg_send_code)
+    app_web.router.add_post("/api/tg/verify", _api_tg_verify_code)
+    app_web.router.add_post("/api/tg/verify_2fa", _api_tg_verify_2fa)
+    app_web.router.add_post("/api/tg/logout", _api_tg_logout)
     app_web.router.add_post("/api/task/add", _api_add_task)
     app_web.router.add_post("/api/task/cancel", _api_cancel_task)
     app_web.router.add_post("/api/watcher/add", _api_add_watcher)
@@ -5297,7 +5503,8 @@ async def main():
             BotCommand("unwatch", "🗑 Stop watching a source"),
             BotCommand("cancel", "🚫 Cancel an ongoing task"),
             BotCommand("login", "🔑 Login to your Telegram session"),
-            BotCommand("logout", "🚪 Logout from your session")
+            BotCommand("logout", "🚪 Logout from your session"),
+            BotCommand("chats", "📝 Get chat id's")
         ]
 
         admin_commands = public_commands + [
