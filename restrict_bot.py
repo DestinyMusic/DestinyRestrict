@@ -2214,7 +2214,22 @@ async def list_watchers(client, message):
     for w in user_watchers:
         src_id = w['source_id']
         src_display = w.get('source_title') or str(src_id)
-        dst_display = w.get('dest_title') or str(w['dest_id'])
+        
+        dest_id = w['dest_id']
+        dst_display = w.get('dest_title') or str(dest_id)
+        
+        # 🟢 AUTO-RESOLVE DESTINATION NAME IF IT'S JUST A NUMERIC ID
+        if dst_display == str(dest_id) or str(dst_display).lstrip("-").isdigit():
+            if dest_id == user_id:
+                dst_display = "Saved Messages"
+            else:
+                try:
+                    chat_info = await client.get_chat(dest_id)
+                    dst_display = chat_info.title or chat_info.first_name or "Target Chat"
+                    # Silently update DB so the name stays cached
+                    await db.db.watchers.update_one({"_id": w["_id"]}, {"$set": {"dest_title": dst_display}})
+                except:
+                    pass
         
         if len(src_display) > 15: src_display = src_display[:12] + "..."
         if len(dst_display) > 15: dst_display = dst_display[:12] + "..."
@@ -2452,6 +2467,7 @@ async def destination_callback(client: Client, query):
     if choice == "dest_dm":
         PENDING_TASKS[user_id]["dest_chat_id"] = user_id
         PENDING_TASKS[user_id]["dest_thread_id"] = None
+        PENDING_TASKS[user_id]["dest_title"] = "Saved Messages"
         PENDING_TASKS[user_id]["status"] = "waiting_speed_choice" # <<< FIX
         await ask_for_speed(query)
     elif choice == "dest_custom":
@@ -5021,151 +5037,145 @@ async def watcher_worker_loop(wid_str):
         try:
             msg_id = await queue.get()
             
-            watcher = await db.db.watchers.find_one({"_id": ObjectId(wid_str)})
-            if not watcher:
-                queue.task_done()
-                continue
+            try: # 🟢 NESTED TRY-FINALLY: Guarantees task_done() is called exactly once
+                watcher = await db.db.watchers.find_one({"_id": ObjectId(wid_str)})
+                if not watcher:
+                    continue
 
-            owner_id = watcher["user_id"]
-            watcher_db_id = watcher["_id"]
-            source_id = watcher["source_id"]
-            dest_id = watcher["dest_id"]
-            dest_thread = watcher.get("dest_thread")
-            delay = watcher.get("delay", 0)
-            is_restricted = watcher.get("is_restricted", False)
-            allowed_types = watcher.get("allowed_types", ["Video", "Document"])
-            
-            # Fetch fresh message object
-            owner_client = USER_CLIENTS.get(owner_id)
-            fetcher = owner_client if (owner_client and owner_client.is_connected) else app
-            
-            try:
-                msg = await fetcher.get_messages(source_id, msg_id)
-            except Exception:
-                msg = None
-
-            # 🟢 [CRUCIAL] Always advance the database pointer so it doesn't get stuck in an endless loop on reboot!
-            await db.db.watchers.update_one({"_id": watcher_db_id}, {"$set": {"last_msg_id": msg_id}})
-
-            if not msg or msg.empty:
-                queue.task_done()
-                continue
-
-            msg_type = get_message_type(msg)
-            if not msg_type:
-                queue.task_done()
-                continue
-
-            is_content_protected = getattr(msg, "has_protected_content", False) or getattr(msg.chat, "has_protected_content", False)
-
-            # 1. Increment Detected
-            await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.detected": 1}})
-
-            if msg_type not in allowed_types:
-                # 2. Increment Skipped (Filtered)
-                await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
-                queue.task_done()
-                continue
-
-            # 🟢 Apply the standard delay IN the queue so chronological order is maintained perfectly!
-            if delay > 0:
-                await asyncio.sleep(delay)
-
-            processed_successfully = False
-
-            if not is_restricted and not is_content_protected:
-                # --- ALBUM LOGIC ---
-                if getattr(msg, "media_group_id", None):
-                    group_cache_key = f"{owner_id}_{msg.media_group_id}_{dest_id}"
-                    if group_cache_key in WATCHER_MEDIA_GROUPS:
-                        queue.task_done()
-                        continue 
-                    WATCHER_MEDIA_GROUPS[group_cache_key] = True
-
+                owner_id = watcher["user_id"]
+                watcher_db_id = watcher["_id"]
+                source_id = watcher["source_id"]
+                dest_id = watcher["dest_id"]
+                dest_thread = watcher.get("dest_thread")
+                delay = watcher.get("delay", 0)
+                is_restricted = watcher.get("is_restricted", False)
+                allowed_types = watcher.get("allowed_types", ["Video", "Document"])
+                
+                # Fetch fresh message object
+                owner_client = USER_CLIENTS.get(owner_id)
+                fetcher = owner_client if (owner_client and owner_client.is_connected) else app
+                
                 try:
-                    await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
-                    
+                    msg = await fetcher.get_messages(source_id, msg_id)
+                except Exception:
+                    msg = None
+
+                # 🟢 [CRUCIAL] Always advance the DB pointer
+                await db.db.watchers.update_one({"_id": watcher_db_id}, {"$set": {"last_msg_id": msg_id}})
+
+                if not msg or msg.empty:
+                    continue
+
+                msg_type = get_message_type(msg)
+                if not msg_type:
+                    continue
+
+                is_content_protected = getattr(msg, "has_protected_content", False) or getattr(msg.chat, "has_protected_content", False)
+
+                await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.detected": 1}})
+
+                # 🟢 FILTER ENFORCEMENT
+                if msg_type not in allowed_types:
+                    await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
+                    continue
+
+                # 🟢 DELAY ENFORCEMENT (Maintains exact chronological order)
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+                processed_successfully = False
+
+                if not is_restricted and not is_content_protected:
+                    # --- UNRESTRICTED FAST FORWARDING ---
                     if getattr(msg, "media_group_id", None):
-                        try: m_group = await fetcher.get_media_group(source_id, msg.id)
-                        except: m_group = [msg]
-                        group_size = len(m_group)
+                        group_cache_key = f"{owner_id}_{msg.media_group_id}_{dest_id}"
+                        if group_cache_key in WATCHER_MEDIA_GROUPS:
+                            continue 
+                        WATCHER_MEDIA_GROUPS[group_cache_key] = True
 
-                        try:
-                            copy_res = await safe_send(app, owner_id, dest_id, None, True, app.copy_media_group, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
-                        except Exception:
-                            if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
-                            else: copy_res = False
-                        
-                        if copy_res:
-                            processed_successfully = True
-                            if delay > 0 and group_size > 1: await asyncio.sleep(delay * (group_size - 1))
-                            
-                    else:
-                        try:
-                            copy_res = await safe_send(app, owner_id, dest_id, None, True, app.copy_message, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
-                        except Exception:
-                            if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_message, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
-                            else: copy_res = False
-                        if copy_res: processed_successfully = True
-
-                except FloodWait as e:
-                    USER_FLOOD_LOCKS[owner_id].set_lock(e.value + 5)
-                    await asyncio.sleep(e.value + 5)
-                    # 🟢 FIX: Retry fast copy after sleep instead of instantly falling back to heavy download
                     try:
+                        await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
+                        
                         if getattr(msg, "media_group_id", None):
-                            if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                            try: m_group = await fetcher.get_media_group(source_id, msg.id)
+                            except: m_group = [msg]
+                            group_size = len(m_group)
+
+                            try:
+                                copy_res = await safe_send(app, owner_id, dest_id, None, True, app.copy_media_group, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                            except Exception:
+                                if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                                else: copy_res = False
+                            
+                            if copy_res:
+                                processed_successfully = True
+                                if delay > 0 and group_size > 1: await asyncio.sleep(delay * (group_size - 1))
+                                
                         else:
-                            if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_message, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
-                        if copy_res: processed_successfully = True
+                            try:
+                                copy_res = await safe_send(app, owner_id, dest_id, None, True, app.copy_message, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                            except Exception:
+                                if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_message, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                                else: copy_res = False
+                            if copy_res: processed_successfully = True
+
+                    except FloodWait as e:
+                        USER_FLOOD_LOCKS[owner_id].set_lock(e.value + 5)
+                        await asyncio.sleep(e.value + 5)
+                        # 🟢 RETRY COPY AFTER SLEEP (Prevents instant fail to download mode)
+                        try:
+                            if getattr(msg, "media_group_id", None):
+                                if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_media_group, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                            else:
+                                if owner_client: copy_res = await safe_send(owner_client, owner_id, dest_id, None, False, owner_client.copy_message, chat_id=dest_id, from_chat_id=source_id, message_id=msg.id, message_thread_id=dest_thread)
+                            if copy_res: processed_successfully = True
+                        except: pass
+                    except Exception as e:
+                        logger.warning(f"Watcher fast copy failed: {e}. Falling back to download.")
+
+                if processed_successfully:
+                    await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.success": 1}})
+                    continue
+
+                # --- FALLBACK TO HEAVY DOWNLOAD/UPLOAD MODE ---
+                try:
+                    log_chat_id, log_topic_id = await get_fallback_log_chat(app, "BOT")
+                    kwargs_status = {"chat_id": log_chat_id, "text": f"⬇️ **Watcher:** Processing ID `{msg.id}`..."}
+                    if log_topic_id: kwargs_status["message_thread_id"] = log_topic_id
+                    dummy_status = await app.send_message(**kwargs_status)
+
+                    task_uuid = uuid.uuid4().hex
+                    if owner_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[owner_id] = {}
+                    ACTIVE_PROCESSES[owner_id][task_uuid] = {
+                        "user": "Watcher", "dest_title_name": watcher.get("dest_title", "Destination"),
+                        "source_title": watcher.get("source_title", "Source"), "item": f"Live Watcher ID: {msg.id}", 
+                        "started": time.time(), "is_watcher": True, "source_id": source_id
+                    }
+
+                    result = await handle_private(
+                        client=app, acc=owner_client, message=msg, chatid=source_id, msgid=msg.id, index=1, total_count=1,
+                        status_message=dummy_status, dest_chat_id=dest_id, dest_thread_id=dest_thread, delay=0,
+                        user_id=owner_id, task_uuid=task_uuid, is_restricted=True, allowed_types=allowed_types
+                    )
+                    
+                    if result == "SUCCESS" or result is True: await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.success": 1}})
+                    elif result == "SKIPPED": await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
+                    else: await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.failed": 1}})
+
+                    cleanup_task_memory(owner_id, task_uuid)
+                    try: await dummy_status.delete()
                     except: pass
                 except Exception as e:
-                    logger.warning(f"Watcher fast copy failed: {e}. Falling back to download.")
+                    logger.error(f"Watcher Fail for {owner_id}: {e}")
+                    await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.failed": 1}})
 
-            if processed_successfully:
-                await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.success": 1}})
+            except Exception as outer_e:
+                logger.error(f"Fatal error in worker loop for {wid_str}: {outer_e}")
+            finally:
+                # 🟢 CRITICAL: This is now the ONLY place task_done() is called
                 queue.task_done()
-                continue
-
-            # --- FALLBACK TO DOWNLOAD MODE ---
-            try:
-                # 🟢 [FIX] Use Smart Fallback for the Bot's Watcher Status
-                log_chat_id, log_topic_id = await get_fallback_log_chat(app, "BOT")
-                
-                kwargs_status = {"chat_id": log_chat_id, "text": f"⬇️ **Watcher:** Processing ID `{msg.id}`..."}
-                if log_topic_id: kwargs_status["message_thread_id"] = log_topic_id
-                
-                dummy_status = await app.send_message(**kwargs_status)
-
-                task_uuid = uuid.uuid4().hex
-                if owner_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[owner_id] = {}
-                ACTIVE_PROCESSES[owner_id][task_uuid] = {
-                    "user": "Watcher", "dest_title_name": watcher.get("dest_title", "Destination"),
-                    "source_title": watcher.get("source_title", "Source"), "item": f"Live Watcher ID: {msg.id}", 
-                    "started": time.time(), "is_watcher": True, "source_id": source_id
-                }
-
-                result = await handle_private(
-                    client=app, acc=owner_client, message=msg, chatid=source_id, msgid=msg.id, index=1, total_count=1,
-                    status_message=dummy_status, dest_chat_id=dest_id, dest_thread_id=dest_thread, delay=0,
-                    user_id=owner_id, task_uuid=task_uuid, is_restricted=True, allowed_types=allowed_types
-                )
-                
-                if result == "SUCCESS" or result is True: await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.success": 1}})
-                elif result == "SKIPPED": await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.skipped": 1}})
-                else: await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.failed": 1}})
-
-                cleanup_task_memory(owner_id, task_uuid)
-                try: await dummy_status.delete()
-                except: pass
-            except Exception as e:
-                logger.error(f"Watcher Fail for {owner_id}: {e}")
-                await db.db.watchers.update_one({"_id": watcher_db_id}, {"$inc": {"stats.failed": 1}})
-
-        except Exception as outer_e:
-            logger.error(f"Fatal error in worker loop for {wid_str}: {outer_e}")
-        finally:
-            queue.task_done()
+        except Exception as loop_e:
+            logger.error(f"Queue get error: {loop_e}")
 
 async def process_watcher_message(client, message):
     chat_id = message.chat.id
@@ -5174,8 +5184,8 @@ async def process_watcher_message(client, message):
     cursor = await db.get_watchers_for_source(chat_id, topic_id)
     watchers = await cursor.to_list(length=100)
 
-    # 🟢 FIX: Always check if there's a global watcher for the entire chat (source_thread = None)
-    # Even if topic_id is present, a user might be monitoring the whole group!
+    # 🟢 FIX: Always merge global chat watchers (source_thread = None)
+    # This prevents the bot from ignoring messages inside topics when the whole group is watched.
     if topic_id is not None:
         cursor_global = await db.get_watchers_for_source(chat_id, None)
         watchers.extend(await cursor_global.to_list(length=100))
