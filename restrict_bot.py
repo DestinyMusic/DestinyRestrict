@@ -1263,30 +1263,37 @@ async def close_menu(client, query):
 
 @app.on_message(filters.command(["log"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def send_log_handler(client: Client, message: Message):
-    if os.path.exists("bot.log"):
-        await message.reply_document("bot.log", caption="📄 **Bot Logs**\n(Updates automatically)")
-    else:
-        await message.reply("⚠️ Log file not found yet.")
+    try:
+        if os.path.exists("bot.log"):
+            await message.reply_document("bot.log", caption="📄 **Bot Logs**\n(Updates automatically)")
+        else:
+            await message.reply("⚠️ Log file not found yet.")
+    except FloodWait as e:
+        logger.warning(f"Blocked /log due to FloodWait: {e.value}s")
 
 @app.on_message(filters.command(["pixel"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def pixel_bypass_handler(client: Client, message: Message):
     if len(message.command) < 2:
-        return await message.reply(
-            "❌ **How to bypass Pixeldrain links:**\n\n"
-            "Send a valid Pixeldrain link to get a high-speed direct download link that bypasses limits.\n\n"
-            "**Examples:**\n"
-            "• Single Link: `/pixel https://pixeldrain.com/u/xxxx`\n"
-            "• Multiple Links: `/pixel link1, link2, link3`"
-        )
+        try:
+            return await message.reply(
+                "❌ **How to bypass Pixeldrain links:**\n\n"
+                "Send a valid Pixeldrain link to get a high-speed direct download link that bypasses limits.\n\n"
+                "**Examples:**\n"
+                "• Single Link: `/pixel https://pixeldrain.com/u/xxxx`\n"
+                "• Multiple Links: `/pixel link1, link2, link3`"
+            )
+        except FloodWait: return
 
     input_text = message.text.split(None, 1)[1]
     matches = re.findall(r"pixeldrain\.com/u/([a-zA-Z0-9_-]+)", input_text)
     
     if not matches:
-        return await message.reply(
-            "❌ **No valid Pixeldrain links found.**\n"
-            "Please ensure the links follow the format: `https://pixeldrain.com/u/XXXX`"
-        )
+        try:
+            return await message.reply(
+                "❌ **No valid Pixeldrain links found.**\n"
+                "Please ensure the links follow the format: `https://pixeldrain.com/u/XXXX`"
+            )
+        except FloodWait: return
 
     lines = []
     for match in matches:
@@ -1304,7 +1311,8 @@ async def pixel_bypass_handler(client: Client, message: Message):
         "🌐 **Original Bypass Website:** [Click Here](https://pixeldrain-bypass.gamedrive.org/)\n"
         "📜 **Userscript:** [Install Script](https://pixeldrain-bypass.gamedrive.org/pixeldrain-bypass.user.js)"
     )
-    await message.reply(reply_text, disable_web_page_preview=True)
+    try: await message.reply(reply_text, disable_web_page_preview=True)
+    except FloodWait: pass
 
 # ==============================================================================
 # --- SPEEDTEST HANDLER ---
@@ -1976,13 +1984,19 @@ async def broadcast(bot, message):
     users = await db.get_all_users()
     b_msg = message.reply_to_message
     if not b_msg:
-        return await message.reply_text(
-            "❌ **How to Broadcast:**\n\n"
-            "1. Send the message you want to broadcast (text, photo, or video).\n"
-            "2. **Reply** to that specific message with `/broadcast`.\n\n"
-            "The bot will then copy that message and send it to every user in the database."
-        )
-    sts = await message.reply_text(text='Broadcasting your messages...')
+        try:
+            return await message.reply_text(
+                "❌ **How to Broadcast:**\n\n"
+                "1. Send the message you want to broadcast (text, photo, or video).\n"
+                "2. **Reply** to that specific message with `/broadcast`.\n\n"
+                "The bot will then copy that message and send it to every user in the database."
+            )
+        except FloodWait: return
+        
+    try:
+        sts = await message.reply_text(text='Broadcasting your messages...')
+    except FloodWait as e:
+        return logger.warning(f"Silently blocked broadcast init due to FloodWait: {e.value}s")
     start_time = time.time()
     total_users = await db.total_users_count()
     done = 0
@@ -2022,20 +2036,28 @@ async def broadcast(bot, message):
 async def watch_setup(client: Client, message: Message):
     user_id = message.from_user.id
     if len(message.command) < 2:
-        return await message.reply(
-            "❌ **How to set up a Watcher:**\n\n"
-            "This command tells the bot to monitor a channel, group, or PM and auto-forward new messages instantly.\n\n"
-            "**Examples:**\n"
-            "• Public Channel: `/watch https://t.me/channelname`\n"
-            "• Private Chat: `/watch https://t.me/c/1234567890/1`\n"
-            "• Bot/User PM: `/watch https://t.me/username/123` *(No @ symbol!)*\n"
-            "• Specific Topic: `/watch https://t.me/channelname/5`"
-        )
+        try:
+            return await message.reply(
+                "❌ **How to set up a Watcher:**\n\n"
+                "This command tells the bot to monitor a channel, group, or PM and auto-forward new messages instantly.\n\n"
+                "**Examples:**\n"
+                "• Public Channel: `/watch https://t.me/channelname`\n"
+                "• Private Chat: `/watch https://t.me/c/1234567890/1`\n"
+                "• Bot/User PM: `/watch https://t.me/username/123` *(No @ symbol!)*\n"
+                "• Specific Topic: `/watch https://t.me/channelname/5`"
+            )
+        except FloodWait: return
     
     link_text = message.command[1]
-    wait_msg = await message.reply("🔎 **Analyzing Source...**", quote=True)
+    try:
+        wait_msg = await message.reply("🔎 **Analyzing Source...**", quote=True)
+    except FloodWait as e:
+        logger.warning(f"Silently blocked /watch init due to FloodWait: {e.value}s")
+        return
+        
     is_restricted, status_text = await check_link_restriction(user_id, link_text)
-    await wait_msg.delete()
+    try: await wait_msg.delete()
+    except Exception: pass
 
     if is_restricted is None:
         return await message.reply(status_text, quote=True)
@@ -2072,20 +2094,21 @@ async def watch_setup(client: Client, message: Message):
 @app.on_message(filters.command(["unwatch"]) & filters.private)
 async def unwatch_handler(client, message):
     if len(message.command) not in (2, 3):
-        return await message.reply(
-            "❌ **How to stop a Live Watcher:**\n\n"
-            "You need to provide the **Source ID** (the chat the bot is copying *from*).\n"
-            "*(You can easily find this ID by sending the `/watchers` command!)*\n\n"
-            "**Examples:**\n"
-            "• Stop a channel/group: `/unwatch -100123456789`\n"
-            "• Stop a specific topic: `/unwatch -100123456789 5`"
-        )
+        try:
+            return await message.reply(
+                "❌ **How to stop a Live Watcher:**\n\n"
+                "You need to provide the **Source ID** (the chat the bot is copying *from*).\n"
+                "*(You can easily find this ID by sending the `/watchers` command!)*\n\n"
+                "**Examples:**\n"
+                "• Stop a channel/group: `/unwatch -100123456789`\n"
+                "• Stop a specific topic: `/unwatch -100123456789 5`"
+            )
+        except FloodWait: return
     try:
         source_id = int(message.command[1])
         source_thread = int(message.command[2]) if len(message.command) == 3 else None
         user_id = message.from_user.id
 
-        # Fetch the watcher BEFORE deleting it so we can grab the final stats
         query = {"user_id": user_id, "source_id": source_id}
         if source_thread is not None:
             query["source_thread"] = source_thread
@@ -2095,10 +2118,7 @@ async def unwatch_handler(client, message):
         watcher = await db.db.watchers.find_one(query)
 
         if watcher and await db.remove_watcher(user_id, source_id, source_thread):
-            
             stats = watcher.get("stats", {})
-            
-            # Intercept and Cancel Active Downloads
             cancelled_tasks = 0
             if user_id in ACTIVE_PROCESSES:
                 for tid, info in list(ACTIVE_PROCESSES[user_id].items()):
@@ -2116,13 +2136,15 @@ async def unwatch_handler(client, message):
             )
             if cancelled_tasks > 0:
                 msg += f"\n\n🛑 Also intercepted and cancelled `{cancelled_tasks}` ongoing downloads from this watcher."
-            await message.reply(msg)
-            
+            try: await message.reply(msg)
+            except FloodWait: pass
         else:
-            await message.reply("⚠️ **Watcher not found.**\nMake sure you are providing the **Source ID** (where messages come *from*), not the Destination ID!")
+            try: await message.reply("⚠️ **Watcher not found.**\nMake sure you are providing the **Source ID** (where messages come *from*), not the Destination ID!")
+            except FloodWait: pass
     except Exception as e:
         logger.error(f"Unwatch failed with input {message.command}: {e}", exc_info=True)
-        await message.reply("❌ Invalid ID or Database Error.")
+        try: await message.reply("❌ Invalid ID or Database Error.")
+        except FloodWait: pass
 
 @app.on_message(filters.command(["watchers"]) & filters.private)
 async def list_watchers(client, message):
@@ -2135,7 +2157,8 @@ async def list_watchers(client, message):
         
     user_watchers = await cursor.to_list(length=100)
     if not user_watchers:
-        return await message.reply("💤 **No active watchers found.**")
+        try: return await message.reply("💤 **No active watchers found.**")
+        except FloodWait: return
     
     text = "**👀 Active Watchers Manager**\n\nSelect a watcher to remove:"
     buttons = []
@@ -2158,7 +2181,8 @@ async def list_watchers(client, message):
     buttons.append([InlineKeyboardButton("🧨 Cancel All Watchers", callback_data="unwatch_all")])
     buttons.append([InlineKeyboardButton("❌ Close", callback_data="close_menu")])
     
-    await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+    try: await message.reply(text, reply_markup=InlineKeyboardMarkup(buttons))
+    except FloodWait as e: logger.warning(f"Blocked /watchers list due to FloodWait: {e.value}s")
     
 @app.on_callback_query(filters.regex("^unwatch_"))
 async def unwatch_callback(client, query):
@@ -2261,9 +2285,15 @@ async def save(client: Client, message: Message):
     if not link_text or "https://t.me/" not in link_text:
         return
 
-    wait_msg = await message.reply("🔎 **Analyzing Link...**", quote=True)
+    try:
+        wait_msg = await message.reply("🔎 **Analyzing Link...**", quote=True)
+    except FloodWait as e:
+        logger.warning(f"Silently blocked link analysis due to FloodWait: {e.value}s")
+        return
+
     is_restricted, status_text = await check_link_restriction(user_id, link_text)
-    await wait_msg.delete()
+    try: await wait_msg.delete()
+    except Exception: pass
 
     if is_restricted is None:
         return await message.reply(status_text, quote=True)
@@ -2300,20 +2330,28 @@ async def dl_handler(client: Client, message: Message):
         link_text = message.text.split(None, 1)[1]
         
     if not link_text or "https://t.me/" not in link_text:
-        await message.reply_text(
-            "❌ **How to use the Downloader:**\n\n"
-            "Use this command to download or forward files from any Telegram link.\n\n"
-            "**Examples:**\n"
-            "• Channel File: `/dl https://t.me/channel/100`\n"
-            "• Batch Files: `/dl https://t.me/channel/101 - 120`\n"
-            "• Bot/User PM: `/dl https://t.me/username/123` *(No @ symbol!)*\n"
-            "• Quick Reply: Just **reply** to any message containing a link with `/dl`"
-        )
+        try:
+            await message.reply_text(
+                "❌ **How to use the Downloader:**\n\n"
+                "Use this command to download or forward files from any Telegram link.\n\n"
+                "**Examples:**\n"
+                "• Channel File: `/dl https://t.me/channel/100`\n"
+                "• Batch Files: `/dl https://t.me/channel/101 - 120`\n"
+                "• Bot/User PM: `/dl https://t.me/username/123` *(No @ symbol!)*\n"
+                "• Quick Reply: Just **reply** to any message containing a link with `/dl`"
+            )
+        except FloodWait: pass
         return
 
-    wait_msg = await message.reply("🔎 **Analyzing Link...**", quote=True)
+    try:
+        wait_msg = await message.reply("🔎 **Analyzing Link...**", quote=True)
+    except FloodWait as e:
+        logger.warning(f"Silently blocked /dl init due to FloodWait: {e.value}s")
+        return
+
     is_restricted, status_text = await check_link_restriction(user_id, link_text)
-    await wait_msg.delete()
+    try: await wait_msg.delete()
+    except Exception: pass
 
     if is_restricted is None:
         return await message.reply(status_text, quote=True)
@@ -3864,15 +3902,20 @@ async def mediainfo_handler(client: Client, message: Message):
             media_msg = replied
 
     if not url and not media_msg:
-        return await message.reply(
-            "❌ **How to use MediaInfo:**\n\n"
-            "This command analyzes a media file and gives you a technical breakdown (resolution, codec, bitrate, etc.) published to Telegraph.\n\n"
-            "**Examples:**\n"
-            "• Quick Reply: Reply to any video or document with `/mi`\n"
-            "• Direct Link: `/mi https://example.com/video.mp4`"
-        )
+        try:
+            return await message.reply(
+                "❌ **How to use MediaInfo:**\n\n"
+                "This command analyzes a media file and gives you a technical breakdown (resolution, codec, bitrate, etc.) published to Telegraph.\n\n"
+                "**Examples:**\n"
+                "• Quick Reply: Reply to any video or document with `/mi`\n"
+                "• Direct Link: `/mi https://example.com/video.mp4`"
+            )
+        except FloodWait: return
 
-    status_msg = await message.reply(f"<i>Generating MediaInfo...</i>", parse_mode=enums.ParseMode.HTML)
+    try:
+        status_msg = await message.reply(f"<i>Generating MediaInfo...</i>", parse_mode=enums.ParseMode.HTML)
+    except FloodWait as e:
+        return logger.warning(f"Silently blocked /mi init due to FloodWait: {e.value}s")
     
     temp_filename = f"partial_{message.id}_{int(time.time())}.dat"
     file_path = Path(os.getcwd()) / temp_filename
