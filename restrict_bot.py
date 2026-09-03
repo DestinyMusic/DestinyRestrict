@@ -996,14 +996,16 @@ async def downstatus(client: Client, status_message: Message, chat, index: int, 
             try:
                 await client.edit_message_text(chat, msg_id, status)
                 last_text = status
+            except FloodWait as e:
+                logger.warning(f"UI Rate Limit ({e.value}s). Silently downloading in background without UI updates.")
+                # If hit with a massive ban, sleep the UI updater out, but the download keeps going!
+                await asyncio.sleep(min(e.value, 600)) 
+                continue
             except Exception as e:
                 logger.debug(f"Progress bar edit skipped: {e}")
         
-        total_size = rec.get("total", 0)
-        if total_size > 0 and total_size < 50 * 1024 * 1024:
-            await asyncio.sleep(9) 
-        else:
-            await asyncio.sleep(20)
+        # 🟢 Strict 30-Second UI Update Cycle to prevent Telegram Bans
+        await asyncio.sleep(30)
             
 async def upstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = ""):
     msg_id = status_message.id
@@ -1033,14 +1035,16 @@ async def upstatus(client: Client, status_message: Message, chat, index: int, to
             try:
                 await client.edit_message_text(chat, msg_id, status)
                 last_text = status
+            except FloodWait as e:
+                logger.warning(f"UI Rate Limit ({e.value}s). Silently uploading in background without UI updates.")
+                # If hit with a massive ban, sleep the UI updater out, but the upload keeps going!
+                await asyncio.sleep(min(e.value, 600))
+                continue
             except Exception as e:
                 logger.debug(f"Progress bar edit skipped: {e}")
         
-        total_size = rec.get("total", 0)
-        if total_size > 0 and total_size < 50 * 1024 * 1024:
-            await asyncio.sleep(9) 
-        else:
-            await asyncio.sleep(20)
+        # 🟢 Strict 30-Second UI Update Cycle to prevent Telegram Bans
+        await asyncio.sleep(30)
             
 def get_message_type(msg: Message):
     if msg.document: return "Document"
@@ -1096,14 +1100,18 @@ async def send_start(client: Client, message: Message):
             reply_to_message_id=message.id,
             parse_mode=enums.ParseMode.HTML
         )
+    except FloodWait as e:
+        logger.warning(f"Blocked /start video due to FloodWait: {e.value}s")
     except Exception as e:
-        await client.send_message(
-            chat_id=message.chat.id,
-            text=welcome_text,
-            reply_markup=InlineKeyboardMarkup(buttons),
-            reply_to_message_id=message.id,
-            parse_mode=enums.ParseMode.HTML
-        )
+        try:
+            await client.send_message(
+                chat_id=message.chat.id,
+                text=welcome_text,
+                reply_markup=InlineKeyboardMarkup(buttons),
+                reply_to_message_id=message.id,
+                parse_mode=enums.ParseMode.HTML
+            )
+        except FloodWait: pass
 
 @app.on_message(filters.command(["help"]) & (filters.private | filters.group))
 async def send_help(client: Client, message: Message):
@@ -1112,54 +1120,60 @@ async def send_help(client: Client, message: Message):
     # 1. The bot checks if the user is an Admin
     is_admin = user_id in ADMINS or user_id in SUDOS
 
-    # 2. It sends the normal help guide to everyone
-    await client.send_message(
-        message.chat.id, 
-        text=HELP_TXT,
-        parse_mode=enums.ParseMode.HTML,
-        disable_web_page_preview=True
-    )
-    
-    # 3. IF the user is an admin, it sends this secret menu too!
-    if is_admin:
+    try:
+        # 2. It sends the normal help guide to everyone
         await client.send_message(
             message.chat.id, 
-            text=ADMIN_HELP_TXT,  # <--- Here is where your text gets used!
+            text=HELP_TXT,
             parse_mode=enums.ParseMode.HTML,
             disable_web_page_preview=True
         )
+        
+        # 3. IF the user is an admin, it sends this secret menu too!
+        if is_admin:
+            await client.send_message(
+                message.chat.id, 
+                text=ADMIN_HELP_TXT,  # <--- Here is where your text gets used!
+                parse_mode=enums.ParseMode.HTML,
+                disable_web_page_preview=True
+            )
+    except FloodWait as e:
+        logger.warning(f"Blocked /help due to FloodWait: {e.value}s")
 
 @app.on_message(filters.command(["cancel"]) & (filters.private | filters.group))
 async def send_cancel(client: Client, message: Message):
     user_id = message.from_user.id
 
-    if user_id in PENDING_TASKS:
-        del PENDING_TASKS[user_id]
-        await message.reply("✅ **Setup process cancelled.** You can send a new link now.")
-        return
+    try:
+        if user_id in PENDING_TASKS:
+            del PENDING_TASKS[user_id]
+            await message.reply("✅ **Setup process cancelled.** You can send a new link now.")
+            return
 
-    user_tasks = ACTIVE_PROCESSES.get(user_id, {})
-    if not user_tasks:
+        user_tasks = ACTIVE_PROCESSES.get(user_id, {})
+        if not user_tasks:
+            await message.reply(
+                "✅ **Nothing to cancel!**\n\n"
+                "You currently have no active downloads, setups, or background tasks running.\n\n"
+                "💡 **Tip:** If you want to start a new download, just send `/dl <link>`."
+            )
+            return
+
+        buttons = []
+        for tid, info in list(user_tasks.items()):
+            label = info.get("item", "Task")
+            label_short = (label[:26] + "...") if len(label) > 29 else label
+            buttons.append([InlineKeyboardButton(f"🛑 {label_short}", callback_data=f"cancel_task:{tid}")])
+        buttons.append([InlineKeyboardButton("🛑 Cancel ALL My Tasks", callback_data="cancel_all")])
+        buttons.append([InlineKeyboardButton("❌ Close Menu", callback_data="close_menu")])
+
         await message.reply(
-            "✅ **Nothing to cancel!**\n\n"
-            "You currently have no active downloads, setups, or background tasks running.\n\n"
-            "💡 **Tip:** If you want to start a new download, just send `/dl <link>`."
+            "**🚫 Cancel Tasks**\n\nSelect the task you want to cancel:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            quote=True
         )
-        return
-
-    buttons = []
-    for tid, info in list(user_tasks.items()):
-        label = info.get("item", "Task")
-        label_short = (label[:26] + "...") if len(label) > 29 else label
-        buttons.append([InlineKeyboardButton(f"🛑 {label_short}", callback_data=f"cancel_task:{tid}")])
-    buttons.append([InlineKeyboardButton("🛑 Cancel ALL My Tasks", callback_data="cancel_all")])
-    buttons.append([InlineKeyboardButton("❌ Close Menu", callback_data="close_menu")])
-
-    await message.reply(
-        "**🚫 Cancel Tasks**\n\nSelect the task you want to cancel:",
-        reply_markup=InlineKeyboardMarkup(buttons),
-        quote=True
-    )
+    except FloodWait as e:
+        logger.warning(f"Blocked /cancel menu due to FloodWait: {e.value}s")
     
 @app.on_callback_query(filters.regex(r"^cancel_") | filters.regex(r"^cancel_task:"))
 async def cancel_callback(client: Client, query):
@@ -1298,7 +1312,10 @@ async def pixel_bypass_handler(client: Client, message: Message):
 
 @app.on_message(filters.command(["speedtest"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def speedtest_handler(client: Client, message: Message):
-    status_msg = await message.reply("<i>Initiating Speedtest...</i>", parse_mode=enums.ParseMode.HTML)
+    try:
+        status_msg = await message.reply("<i>Initiating Speedtest...</i>", parse_mode=enums.ParseMode.HTML)
+    except FloodWait as e:
+        return logger.warning(f"Silently blocked /speedtest init due to FloodWait: {e.value}s")
     
     def run_speedtest_sync():
         try:
@@ -1336,15 +1353,18 @@ async def speedtest_handler(client: Client, message: Message):
             f"┖ <b>Sponsor:</b> <code>{result['server']['sponsor']}</code>"
         )
 
-        if result.get("share"):
-            await message.reply_photo(photo=result["share"], caption=string_speed, parse_mode=enums.ParseMode.HTML)
-            await status_msg.delete()
-        else:
-            await status_msg.edit_text(string_speed, parse_mode=enums.ParseMode.HTML)
+        try:
+            if result.get("share"):
+                await message.reply_photo(photo=result["share"], caption=string_speed, parse_mode=enums.ParseMode.HTML)
+                await status_msg.delete()
+            else:
+                await status_msg.edit_text(string_speed, parse_mode=enums.ParseMode.HTML)
+        except FloodWait: pass
 
     except Exception as e:
         logger.error(f"Speedtest error: {e}")
-        await status_msg.edit_text(f"❌ An error occurred: {e}")
+        try: await status_message.edit_text(f"❌ An error occurred: {e}")
+        except: pass
         
 @app.on_message(filters.command(["status"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def status_style_handler(client, message):
@@ -1380,11 +1400,19 @@ async def status_style_handler(client, message):
         f"{queue_text}"
         f"</blockquote>"
     )
-    await message.reply(msg, quote=True, parse_mode=enums.ParseMode.HTML)
+    try:
+        await message.reply(msg, quote=True, parse_mode=enums.ParseMode.HTML)
+    except FloodWait as e:
+        logger.warning(f"Silently blocked /status reply due to FloodWait: {e.value}s")
     
 @app.on_message(filters.command(["botstats"]) & filters.user(ADMINS))
 async def bot_stats_handler(client: Client, message: Message):
-    wait = await message.reply("<b>📊 Generating detailed stats...</b>", parse_mode=enums.ParseMode.HTML)
+    try:
+        wait = await message.reply("<b>📊 Generating detailed stats...</b>", parse_mode=enums.ParseMode.HTML)
+    except FloodWait as e:
+        logger.warning(f"Silently blocked /botstats init due to FloodWait: {e.value}s")
+        return
+
     total_users = await db.total_users_count()
     all_users_cursor = await db.get_all_users()
     
@@ -1430,7 +1458,10 @@ async def bot_stats_handler(client: Client, message: Message):
         f"📝 <b>User & Task Breakdown:</b>\n\n{logged_in_text}\n"
         "</blockquote>"
     )
-    await wait.edit(stats_msg, parse_mode=enums.ParseMode.HTML)
+    try:
+        await wait.edit(stats_msg, parse_mode=enums.ParseMode.HTML)
+    except FloodWait:
+        pass # UI rate-limited, safely ignore
 
 # ==============================================================================
 # --- SOS SYSTEM STATS COMMAND ---
@@ -1546,7 +1577,11 @@ def generate_sos_text(m_down=0, m_up=0, m_total=0, month_name=""):
 
 @app.on_message(filters.command(["sos"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def sos_handler(client: Client, message: Message):
-    status_msg = await message.reply("<i>Fetching System Stats...</i>", parse_mode=enums.ParseMode.HTML)
+    try:
+        status_msg = await message.reply("<i>Fetching System Stats...</i>", parse_mode=enums.ParseMode.HTML)
+    except FloodWait as e:
+        return logger.warning(f"Silently blocked /sos init due to FloodWait: {e.value}s")
+        
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🔄 Refresh", callback_data="refresh_sos"),
@@ -1557,8 +1592,10 @@ async def sos_handler(client: Client, message: Message):
         m_down, m_up, m_total, month_name = await db.get_monthly_bandwidth()
         text = await asyncio.to_thread(generate_sos_text, m_down, m_up, m_total, month_name)
         await status_msg.edit_text(text, parse_mode=enums.ParseMode.HTML, reply_markup=keyboard)
+    except FloodWait: pass
     except Exception as e:
-        await status_msg.edit_text(f"❌ Error fetching system stats: {e}")
+        try: await status_msg.edit_text(f"❌ Error fetching system stats: {e}")
+        except: pass
 
 @app.on_callback_query(filters.regex("^refresh_sos$"))
 async def refresh_sos_callback(client: Client, callback_query: CallbackQuery):
@@ -3098,14 +3135,14 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 except FloodWait as e:
                     if e.value > 300:
                         print(f"FloodWait too long ({e.value}s). Stopping task.")
-                        await status_message.edit_text(f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
+                        try: await status_message.edit_text(f"❌ **Task Cancelled automatically**\nReason: FloodWait too long ({e.value}s).")
+                        except Exception: pass # Ignore UI crash if it's already rate limited
                         was_cancelled = True
                         break
 
-                    wait_msg = f"⏳ **Rate Limiting Detected**\nSleeping for {e.value} seconds..."
                     try: 
-                        if not is_restricted: await status_message.edit_text(wait_msg)
-                    except: pass
+                        if not is_restricted: await status_message.edit_text(f"⏳ **Rate Limiting Detected**\nSleeping for {e.value} seconds...")
+                    except Exception: pass
                     
                     USER_FLOOD_LOCKS[user_id].set_lock(e.value + 5) 
                     await asyncio.sleep(e.value + 5)
@@ -3149,6 +3186,10 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                                 f"**Failed:** {failed_count}\n**ETA:** {eta_str}"
                             )
                             last_update_time = current_now
+                        except FloodWait as e:
+                            logger.warning(f"Dashboard UI rate-limited. Silently skipping update to protect transfer.")
+                            # Push the next UI update check far into the future so it stops spamming
+                            last_update_time = current_now + min(e.value, 600)
                         except Exception as e: 
                             logger.debug(f"Failed to edit master dashboard: {e}")
                     
