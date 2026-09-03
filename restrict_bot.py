@@ -3694,6 +3694,20 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         a_perf = getattr(msg_fresh.audio, "performer", None) if getattr(msg_fresh, "audio", None) else None
                         a_tit = getattr(msg_fresh.audio, "title", None) if getattr(msg_fresh, "audio", None) else None
 
+                        # 🟢 SMART AUDIO TAG EXTRACTOR: Fixes <unknown> artists!
+                        if msg_type == "Audio":
+                            if not a_perf or a_perf.lower() in ["unknown", "<unknown>"]:
+                                clean_name = os.path.splitext(safe_filename)[0]
+                                if " - " in clean_name:
+                                    parts = clean_name.split(" - ", 1)
+                                    a_perf = parts[0].strip() # Artist is before the dash
+                                    if not a_tit or a_tit.lower() in ["unknown", "<unknown>", clean_name.lower()]:
+                                        a_tit = parts[1].strip() # Title is after the dash
+                                else:
+                                    a_perf = "Unknown Artist"
+                            if not a_tit or a_tit.lower() in ["unknown", "<unknown>"]:
+                                a_tit = os.path.splitext(safe_filename)[0]
+
                         v_dur = getattr(msg_fresh.video, "duration", 0) if getattr(msg_fresh, "video", None) else 0
                         v_w = getattr(msg_fresh.video, "width", 0) if getattr(msg_fresh, "video", None) else 0
                         v_h = getattr(msg_fresh.video, "height", 0) if getattr(msg_fresh, "video", None) else 0
@@ -3860,6 +3874,20 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         a_dur = getattr(msg_fresh.audio, "duration", 0) if getattr(msg_fresh, "audio", None) else 0
                         a_perf = getattr(msg_fresh.audio, "performer", None) if getattr(msg_fresh, "audio", None) else None
                         a_tit = getattr(msg_fresh.audio, "title", None) if getattr(msg_fresh, "audio", None) else None
+
+                        # 🟢 SMART AUDIO TAG EXTRACTOR: Fixes <unknown> artists!
+                        if msg_type == "Audio":
+                            if not a_perf or a_perf.lower() in ["unknown", "<unknown>"]:
+                                clean_name = os.path.splitext(safe_filename)[0]
+                                if " - " in clean_name:
+                                    parts = clean_name.split(" - ", 1)
+                                    a_perf = parts[0].strip() # Artist is before the dash
+                                    if not a_tit or a_tit.lower() in ["unknown", "<unknown>", clean_name.lower()]:
+                                        a_tit = parts[1].strip() # Title is after the dash
+                                else:
+                                    a_perf = "Unknown Artist"
+                            if not a_tit or a_tit.lower() in ["unknown", "<unknown>"]:
+                                a_tit = os.path.splitext(safe_filename)[0]
 
                         v_dur = getattr(msg_fresh.video, "duration", 0) if getattr(msg_fresh, "video", None) else 0
                         v_w = getattr(msg_fresh.video, "width", 0) if getattr(msg_fresh, "video", None) else 0
