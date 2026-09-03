@@ -1081,6 +1081,8 @@ async def send_start(client: Client, message: Message):
         logger.error(f"Failed to save user {user_id}: {e}", exc_info=True)
 
     welcome_video_url = "https://files.catbox.moe/o9azww.mp4"
+    web_url = os.environ.get("WEB_URL", "https://sagara686-stremio.hf.space")
+    
     welcome_text = (
         f"<b>👋 Hi {message.from_user.mention}, I am the Restricted Content Bot.</b>\n\n"
         "<blockquote expandable>"
@@ -1090,12 +1092,15 @@ async def send_start(client: Client, message: Message):
         "• Fast, Multi-Threaded Processing\n\n"
         "<b>🔑 Note:</b> For downloading private restricted content, you need to <code>/login</code> first.\n\n"
         "<b>📚 Know how to use the bot by sending /help</b>\n"
-        "</blockquote>"
+        "</blockquote>\n\n"
+        f"<b>🌐 Web Dashboard:</b>\n"
+        f"Control the bot, add tasks, and monitor active downloads directly from your browser:\n"
+        f"🔗 {web_url}"
     )
     
     buttons = [
-        [InlineKeyboardButton("❣️ Developer", url = "https://t.me/telegram")],
-        [InlineKeyboardButton('🔍 sᴜᴘᴘᴏʀᴛ ɢʀᴏᴜᴘ', url='https://t.me/telegram'), InlineKeyboardButton('🤖 ᴜᴘᴅᴀᴛᴇ ᴄʜᴀɴɴᴇʟ', url='https://t.me/telegram')]
+        [InlineKeyboardButton("🌐 Open Web Dashboard", url=web_url)],
+        [InlineKeyboardButton("❣️ Developer", url="https://t.me/telegram"), InlineKeyboardButton('🔍 Support', url='https://t.me/telegram')]
     ]
 
     try:
@@ -1109,14 +1114,15 @@ async def send_start(client: Client, message: Message):
         )
     except FloodWait as e:
         logger.warning(f"Blocked /start video due to FloodWait: {e.value}s")
-    except Exception as e:
+    except Exception:
         try:
             await client.send_message(
                 chat_id=message.chat.id,
                 text=welcome_text,
                 reply_markup=InlineKeyboardMarkup(buttons),
                 reply_to_message_id=message.id,
-                parse_mode=enums.ParseMode.HTML
+                parse_mode=enums.ParseMode.HTML,
+                disable_web_page_preview=True
             )
         except FloodWait: pass
 
@@ -3945,7 +3951,7 @@ HTML_DASHBOARD = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>TG Stremio Portal</title>
+    <title>TG Forward Portal</title>
     <style>
         :root { 
             --bg: #000000; --card: #0a0a0a; --card-border: #1f2937; --text: #f1f5f9; 
@@ -4036,7 +4042,7 @@ HTML_DASHBOARD = """
     <div id="login-view">
         <div class="login-card">
             <div class="login-logo">▶</div>
-            <div class="login-title">TG Stremio Portal</div>
+            <div class="login-title">TG Forward Portal</div>
             <div class="login-subtitle">Enter your Telegram ID & Web Password</div>
             <form onsubmit="handleLogin(event)">
                 <div class="input-group">
@@ -4072,6 +4078,7 @@ HTML_DASHBOARD = """
             <div class="menu-item active" onclick="switchView('home', 'Home')">🏠 Home</div>
             <div class="menu-item" onclick="switchView('downloads', 'Downloads')">📥 Downloads</div>
             <div class="menu-item" onclick="switchView('watchers', 'Watchers')">📡 Watchers</div>
+            <div class="menu-item" onclick="switchView('logs', 'Logs')">📋 System Logs</div>
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
 
@@ -4118,6 +4125,10 @@ HTML_DASHBOARD = """
                         <div class="card-label">Hardware (RAM / CPU)</div>
                         <div class="card-stat" id="hardware">Loading...</div>
                     </div>
+                    <div class="card" style="grid-column: span 2;">
+                        <div class="card-label">Telegram Session Status</div>
+                        <div class="card-stat" id="tg-status" style="font-size: 15px; margin-top: 6px;">Checking...</div>
+                    </div>
                 </div>
             </div>
 
@@ -4137,6 +4148,22 @@ HTML_DASHBOARD = """
                     <button class="primary-btn" style="width: auto; padding: 8px 16px; font-size: 12px;" onclick="openTaskModal()">+ Add Watcher</button>
                 </div>
                 <div id="watchers-list"><div style="color: #64748b;">Loading watchers...</div></div>
+            </div>
+
+            <!-- LOGS VIEW -->
+            <div id="view-logs" class="view-section">
+                <div class="section-title">
+                    <span>System & Maintenance Logs</span>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="fetchLogs()">🔄 Refresh</button>
+                        <a id="download-log-btn" href="/api/logs/download" class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px; text-decoration: none; text-align: center; background: #10b981;" download="bot.log">📥 Download</a>
+                    </div>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                    <input type="checkbox" id="live-logs-toggle" style="width: 16px; height: 16px; accent-color: var(--accent);" onchange="toggleLiveLogs(this.checked)">
+                    <label for="live-logs-toggle" style="font-size: 12px; color: #94a3b8; font-weight: 700; cursor: pointer;">LIVE TAIL (Auto-refresh every 3s)</label>
+                </div>
+                <div style="background: #000; border: 1px solid var(--card-border); border-radius: 16px; padding: 16px; font-family: monospace; font-size: 11px; color: #38bdf8; height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;" id="log-terminal">Loading logs...</div>
             </div>
 
             <!-- SETTINGS VIEW -->
@@ -4190,6 +4217,8 @@ HTML_DASHBOARD = """
                         <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Photo"> Photo</label>
                         <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Voice"> Voice</label>
                         <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Text"> Text</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Animation"> Animation</label>
+                        <label class="filter-checkbox"><input type="checkbox" name="ftype" value="Sticker"> Sticker</label>
                     </div>
                 </div>
                 <div class="modal-actions">
@@ -4286,6 +4315,17 @@ HTML_DASHBOARD = """
                 document.getElementById('active-watchers').innerText = data.active_watchers;
                 document.getElementById('hardware').innerText = data.ram + "% / " + data.cpu + "%";
                 
+                const tgStatusEl = document.getElementById('tg-status');
+                if (data.tg_session_active) {
+                    tgStatusEl.innerHTML = '<span style="color: #10b981;">✅ Active (Ready for Restricted Files)</span>';
+                } else {
+                    tgStatusEl.innerHTML = '<span style="color: #ef4444;">❌ Not Connected — Run <code>/login</code> in Telegram Bot!</span>';
+                }
+
+                if (document.getElementById('view-logs').classList.contains('active')) {
+                    fetchLogs();
+                }
+                
                 // Downloads list
                 const dlList = document.getElementById('downloads-list');
                 dlList.innerHTML = data.tasks.length ? '' : '<div style="color: #64748b;">No active downloads.</div>';
@@ -4380,6 +4420,26 @@ HTML_DASHBOARD = """
                 alert("Failed to update password.");
             }
         }
+
+        let liveLogInterval = null;
+        async function fetchLogs() {
+            try {
+                const res = await fetch('/api/logs');
+                const data = await res.json();
+                const term = document.getElementById('log-terminal');
+                term.innerText = data.logs || "No logs generated yet.";
+                term.scrollTop = term.scrollHeight;
+            } catch(e) {}
+        }
+
+        function toggleLiveLogs(isChecked) {
+            if (isChecked) {
+                fetchLogs();
+                liveLogInterval = setInterval(fetchLogs, 3000);
+            } else {
+                clearInterval(liveLogInterval);
+            }
+        }
     </script>
 </body>
 </html>
@@ -4465,6 +4525,10 @@ async def _api_stats_handler(request):
         })
 
     total_watchers = await db.db.watchers.count_documents({"user_id": user_id})
+    
+    # Check if user session exists in DB
+    user_doc = await db.col.find_one({"id": user_id})
+    tg_session_active = bool(user_doc and user_doc.get("session"))
 
     return web.json_response({
         "uptime": uptime_str,
@@ -4472,6 +4536,7 @@ async def _api_stats_handler(request):
         "cpu": psutil.cpu_percent(),
         "active_tasks": len(user_tasks),
         "active_watchers": total_watchers,
+        "tg_session_active": tg_session_active,
         "tasks": task_details,
         "watchers": watcher_details
     })
@@ -4585,6 +4650,24 @@ async def _api_cancel_watcher(request):
     except: pass
     return web.json_response({"status": "error"}, status=400)
 
+async def _api_logs_handler(request):
+    try:
+        if os.path.exists("bot.log"):
+            with open("bot.log", "r", encoding="utf-8") as f:
+                lines = f.readlines()
+            return web.json_response({"logs": "".join(lines[-150:])}) # Return last 150 lines
+        return web.json_response({"logs": "Log file not created yet."})
+    except Exception as e:
+        return web.json_response({"logs": f"Error reading logs: {e}"})
+
+async def _api_download_log_handler(request):
+    try:
+        if os.path.exists("bot.log"):
+            return web.FileResponse("bot.log", headers={"Content-Disposition": "attachment; filename=bot.log"})
+        return web.Response(text="Log file not found.", status=404)
+    except Exception:
+        return web.Response(text="Error downloading logs.", status=500)
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -4592,6 +4675,8 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/", _dashboard_ui_handler)
     app_web.router.add_get("/health", _dashboard_ui_handler)
     app_web.router.add_get("/api/stats", _api_stats_handler)
+    app_web.router.add_get("/api/logs", _api_logs_handler)
+    app_web.router.add_get("/api/logs/download", _api_download_log_handler)
     app_web.router.add_post("/api/auth/login", _api_login_handler)
     app_web.router.add_post("/api/auth/password", _api_password_handler)
     app_web.router.add_post("/api/task/add", _api_add_task)
@@ -4603,7 +4688,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     await runner.setup()
     site = web.TCPSite(runner, host, PORT)
     await site.start()
-    logger.info(f"🌐 Full-Stack Stremio Web Portal started on port {PORT}...")
+    logger.info(f"🌐 Full-Stack TG Forward Portal started on port {PORT}...")
 
 # ==============================================================================
 # --- MEDIAINFO HANDLER (Admin Only) ---
