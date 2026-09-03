@@ -4139,10 +4139,40 @@ HTML_DASHBOARD = """
         [data-theme="golden-hour"] { --bg: #fffbeb; --card: #ffffff; --card-border: #fde68a; --text: #451a03; --subtext: #92400e; --accent: #d97706; --glow: rgba(217, 119, 6, 0.25); --sidebar: #fef3c7; }
 
         * { box-sizing: border-box; }
-        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; transition: background 0.3s; position: relative; z-index: 0; }
-        body::before, body::after { content: ''; position: fixed; border-radius: 50%; filter: blur(90px); z-index: -1; opacity: var(--blob-opacity, 0); transition: opacity 0.5s, background 0.3s; pointer-events: none; }
-        body::before { width: 50vw; height: 50vw; background: var(--accent); top: -20vw; left: -10vw; }
-        body::after { width: 40vw; height: 40vw; background: var(--glow); bottom: -10vw; right: -5vw; }
+        /* 🌊 Apple Music Liquid Flow Animations */
+        @keyframes liquidFlow1 {
+            0% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(15vw, 15vh) scale(1.1); }
+            66% { transform: translate(-10vw, 20vh) scale(0.9); }
+            100% { transform: translate(0, 0) scale(1); }
+        }
+        @keyframes liquidFlow2 {
+            0% { transform: translate(0, 0) scale(1); }
+            33% { transform: translate(-15vw, -15vh) scale(1.15); }
+            66% { transform: translate(15vw, -5vh) scale(1.05); }
+            100% { transform: translate(0, 0) scale(1); }
+        }
+
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; transition: background 0.5s ease; position: relative; z-index: 0; }
+        
+        /* The extreme 140px blur melts the colors together to create the Mesh Gradient effect */
+        body::before, body::after { 
+            content: ''; position: fixed; border-radius: 50%; filter: blur(140px); -webkit-filter: blur(140px); z-index: -1; 
+            opacity: calc(0.4 + var(--blob-opacity, 0)); /* Always subtly visible, but gets stronger with the glass slider! */
+            transition: opacity 0.5s, background 0.5s; pointer-events: none; 
+            will-change: transform; /* Forces GPU acceleration for smooth mobile performance */
+        }
+        
+        body::before { 
+            width: 80vw; height: 80vw; background: var(--accent); 
+            top: -20vh; left: -10vw; 
+            animation: liquidFlow1 25s infinite ease-in-out; 
+        }
+        body::after { 
+            width: 80vw; height: 80vw; background: var(--glow); 
+            bottom: -20vh; right: -10vw; 
+            animation: liquidFlow2 28s infinite ease-in-out reverse; 
+        }
         
         .view-section { display: none; padding-bottom: 40px; }
         .view-section.active { display: block; }
