@@ -5431,10 +5431,19 @@ async def _api_add_task(request):
             except:
                 dest_title = str(dest_chat_id)
 
+        if not await check_disk_space():
+            return web.json_response({"status": "error", "message": "Server disk is almost full (<500MB). Please wait."})
+
+        if user_id not in ADMINS and batch_temp.ACTIVE_TASKS[user_id] >= MAX_CONCURRENT_TASKS_PER_USER:
+            return web.json_response({"status": "error", "message": f"Task limit reached ({MAX_CONCURRENT_TASKS_PER_USER} max). Wait for existing tasks to finish."})
+
         is_restricted, _ = await check_link_restriction(user_id, link)
         if is_restricted is None: is_restricted = False
 
         task_uuid = uuid.uuid4().hex
+        batch_temp.ACTIVE_TASKS[user_id] += 1
+        batch_temp.IS_BATCH[user_id] = False
+
         if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
         ACTIVE_PROCESSES[user_id][task_uuid] = {
             "user": f"WebUI({user_id})",
@@ -5483,6 +5492,7 @@ async def _api_add_watcher(request):
         user_id = int(data.get("user_id"))
         link = data.get("link")
         dest_str = data.get("dest", "")
+        delay = int(data.get("delay", 0))
         allowed_types = data.get("filters", ["Video", "Document"])
 
         dest_chat_id = user_id
@@ -5494,6 +5504,10 @@ async def _api_add_watcher(request):
         if is_restricted is None: is_restricted = False
 
         parsed = _parse_source_link(link)
+
+        web_clean = link.replace("https://", "").replace("http://", "").replace("t.me/s/", "t.me/").replace("t.me/", "").replace("c/", "").split("?")[0]
+        web_parts = web_clean.strip("/").split("/")
+        source_thread = int(web_parts[1]) if (len(web_parts) == 2 and web_parts[1].isdigit()) else parsed.get("topic_id")
         
         # 🟢 FIX 1: Safely resolve Source & Destination Names (WITH TOPICS)
         user_client = USER_CLIENTS.get(user_id, app)
@@ -5541,9 +5555,9 @@ async def _api_add_watcher(request):
             user_id=user_id,
             source_id=source_id,
             dest_id=dest_chat_id,
-            source_thread=parsed.get("topic_id"),
+            source_thread=source_thread,
             dest_thread=dest_thread_id,
-            delay=0,
+            delay=delay,
             is_restricted=is_restricted,
             source_title=source_title,
             dest_title=dest_title,
@@ -5594,7 +5608,7 @@ async def _api_tg_send_code(request):
     uid = int(data.get("user_id"))
     phone = data.get("phone")
     
-    client = Client(f":memory:", api_id=API_ID, api_hash=API_HASH, in_memory=True)
+    client = Client(f":memory:", api_id=API_ID, api_hash=API_HASH)
     await client.connect()
     try:
         code = await client.send_code(phone)
