@@ -2472,10 +2472,10 @@ async def chats_cmd(client: Client, message: Message):
         return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
         
     categories = []
-    if filter_type in ["all", "group"]: categories.append(("👥 Groups & Supergroups", "👥", groups))
-    if filter_type in ["all", "channel"]: categories.append(("📢 Broadcast Channels", "📢", channels))
-    if filter_type in ["all", "bot"]: categories.append(("🤖 Telegram Bots", "🤖", bots))
-    if filter_type in ["all", "user"]: categories.append(("👤 User Direct Messages", "👤", users))
+    if filter_type in ["all", "group"]: categories.append(("👥 Groups & Supergroups List", "👥", groups))
+    if filter_type in ["all", "channel"]: categories.append(("📢 Channels List", "📢", channels))
+    if filter_type in ["all", "bot"]: categories.append(("🤖 Telegram Bots List", "🤖", bots))
+    if filter_type in ["all", "user"]: categories.append(("👤 Users List", "👤", users))
 
     found_any = False
     for title, emoji, items in categories:
@@ -2700,6 +2700,7 @@ async def process_custom_destination(client: Client, message: Message):
         try:
             chat = await client.get_chat(dest_chat_id)
             title = chat.title or chat.first_name or "Target Chat"
+            if dest_thread_id: title += f" (Topic {dest_thread_id})" # 🟢 Append Topic
 
             bot_member = await client.get_chat_member(chat.id, "me")
             if bot_member.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
@@ -3248,6 +3249,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                         else:
                             raise
                     source_title = source_chat.title or source_chat.first_name or "Source Chat"
+                    if filter_thread_id: source_title += f" (Topic {filter_thread_id})" # 🟢 Append Topic
                     ACTUAL_CHAT_ID = source_chat.id
                     IS_PUBLIC_LINK = False
                 
@@ -4811,9 +4813,15 @@ async def _api_stats_handler(request):
         tot = info.get("total", 0)
         curr = info.get("current", 0)
         pct = round((curr / tot * 100), 1) if tot > 0 else 0
+        
+        # 🟢 Use Real Source Name instead of Raw Link
+        src_name = info.get("source_title")
+        if not src_name or src_name == "Unknown Source":
+            src_name = info.get("item", "Task")
+            
         task_details.append({
             "id": t_id,
-            "name": info.get("item", "Task"),
+            "name": src_name,
             "dest": info.get("dest_title_name", "DM"),
             "current": curr,
             "total": tot,
@@ -4863,8 +4871,18 @@ async def _api_add_task(request):
 
         dest_chat_id = user_id
         dest_thread_id = None
+        dest_title = "Saved Messages"
+        
         if dest_str:
             dest_chat_id, dest_thread_id = _parse_chat_target(dest_str)
+            # 🟢 Auto-Resolve Destination & Topic for Web Tasks
+            uclient = USER_CLIENTS.get(user_id, app)
+            try:
+                d_chat = await uclient.get_chat(dest_chat_id)
+                dest_title = d_chat.title or d_chat.first_name or str(dest_chat_id)
+                if dest_thread_id: dest_title += f" (Topic {dest_thread_id})"
+            except:
+                dest_title = str(dest_chat_id)
 
         is_restricted, _ = await check_link_restriction(user_id, link)
         if is_restricted is None: is_restricted = False
@@ -4873,7 +4891,7 @@ async def _api_add_task(request):
         if user_id not in ACTIVE_PROCESSES: ACTIVE_PROCESSES[user_id] = {}
         ACTIVE_PROCESSES[user_id][task_uuid] = {
             "user": f"WebUI({user_id})",
-            "dest_title_name": str(dest_chat_id),
+            "dest_title_name": dest_title,
             "item": link,
             "started": time.time(),
             "total": 0,
@@ -4887,7 +4905,7 @@ async def _api_add_task(request):
                 text=link,
                 dest_chat_id=dest_chat_id,
                 dest_thread_id=dest_thread_id,
-                dest_title=str(dest_chat_id),
+                dest_title=dest_title,
                 delay=delay,
                 acc_user_id=user_id,
                 task_uuid=task_uuid,
@@ -4930,7 +4948,7 @@ async def _api_add_watcher(request):
 
         parsed = _parse_source_link(link)
         
-        # 🟢 FIX 1: Safely resolve source_id integer using connected client
+        # 🟢 FIX 1: Safely resolve Source & Destination Names (WITH TOPICS)
         user_client = USER_CLIENTS.get(user_id, app)
         try:
             if parsed["kind"] == "public":
@@ -4939,9 +4957,18 @@ async def _api_add_watcher(request):
                 chat = await user_client.get_chat(parsed["chat_id"])
             source_id = chat.id
             source_title = chat.title or str(source_id)
+            if parsed.get("topic_id"): source_title += f" (Topic {parsed['topic_id']})"
         except Exception:
             source_id = parsed.get("chat_id")
             source_title = "Watched Source"
+            
+        dest_title = "Saved Messages" if dest_chat_id == user_id else str(dest_chat_id)
+        if dest_chat_id != user_id:
+            try:
+                d_chat = await user_client.get_chat(dest_chat_id)
+                dest_title = d_chat.title or d_chat.first_name or str(dest_chat_id)
+                if dest_thread_id: dest_title += f" (Topic {dest_thread_id})"
+            except: pass
 
         # 🟢 FIX 2: Dynamically start the background listener if it's inactive
         if user_id not in USER_CLIENTS:
@@ -4970,7 +4997,7 @@ async def _api_add_watcher(request):
             delay=0,
             is_restricted=is_restricted,
             source_title=source_title,
-            dest_title=str(dest_chat_id),
+            dest_title=dest_title,
             allowed_types=allowed_types,
             last_msg_id=last_msg_id
         )
