@@ -6086,43 +6086,7 @@ async def _api_mediainfo_web_handler(request):
         if 'file_path' in locals() and file_path.exists():
             try: os.remove(file_path)
             except: pass
-            if msg.empty: return web.json_response({"status": "error", "message": "Message not found or inaccessible"})
-            
-            media_obj = msg.document or msg.video or msg.audio or msg.photo
-            if not media_obj: return web.json_response({"status": "error", "message": "No media found in the provided link"})
-            
-            file_name_display = getattr(media_obj, 'file_name', 'Telegram_Media')
-            file_size_display = getattr(media_obj, 'file_size', 0)
-            
-            await partial_download_tg(uclient, msg, file_path, limit_mb=15)
-        else:
-            return web.json_response({"status": "error", "message": "Invalid link format"})
-            
-        real_ext = Path(file_name_display).suffix
-        if real_ext:
-            new_path = file_path.with_suffix(real_ext)
-            file_path.rename(new_path)
-            file_path = new_path
-            
-        cmd = ["mediainfo", str(file_path)]
-        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await process.communicate()
-        raw_output = stdout.decode('utf-8', errors='ignore').strip()
-        
-        if not raw_output:
-            return web.json_response({"status": "error", "message": "Could not read media metadata"})
-            
-        raw_output = raw_output.replace(str(file_path), file_name_display).replace(str(file_path.absolute()), file_name_display)
-        html_formatted = f"<div style='color:var(--accent); font-weight:bold; font-size:15px;'>📌 {html.escape(file_name_display)}</div><br>" + parseinfo(raw_output, file_size_display)
-        
-        return web.json_response({"status": "success", "html": html_formatted})
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)})
-    finally:
-        if file_path.exists():
-            try: os.remove(file_path)
-            except: pass
-            
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -6202,19 +6166,31 @@ async def partial_download_tg(client, message, file_path, limit_mb=15):
     file_size = getattr(media_obj, 'file_size', 0)
     
     if file_size <= limit_mb * 1024 * 1024:
-        await message.download(file_name=str(file_path))
+        # File is small enough, download natively
+        await client.download_media(message, file_name=str(file_path))
     else:
+        # File is huge, only fetch First 5MB & Last 5MB (Sparse File technique)
         chunk_size = 1048576
         total_chunks = math.ceil(file_size / chunk_size)
         
         with open(file_path, "wb") as f:
+            # 1. Pull first 5 chunks (Start of file headers: FTYP, etc)
             async for chunk in client.stream_media(message, limit=5):
                 f.write(chunk)
+                
             if total_chunks > 5:
                 offset = total_chunks - 5
-                f.seek(offset * chunk_size)
-                async for chunk in client.stream_media(message, offset=offset, limit=5):
-                    f.write(chunk)
+                # Prevent overlapping if the file is right between 5MB and 10MB
+                if offset < 5: 
+                    offset = 5 
+                limit = total_chunks - offset
+                
+                if limit > 0:
+                    # 2. Seek creates an empty "hole" of zeros matching the exact file size
+                    f.seek(offset * chunk_size)
+                    # 3. Pull the last chunks (End of file index: MOOV atoms)
+                    async for chunk in client.stream_media(message, offset=offset, limit=limit):
+                        f.write(chunk)
 
 async def partial_download_http(url, file_path, limit_mb=15):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -6318,7 +6294,7 @@ async def mediainfo_handler(client: Client, message: Message):
             except Exception as e:
                 logger.warning(f"MediaInfo stream failed, attempting full download: {e}", exc_info=True)
                 await status_msg.edit_text("⚠️ Stream failed, trying full download...")
-                await media_msg.download(file_name=str(file_path))
+                await client.download_media(media_msg, file_name=str(file_path))
 
         real_ext = Path(file_name_display).suffix
         if real_ext:
