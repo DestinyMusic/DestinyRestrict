@@ -6419,18 +6419,24 @@ HTML_DASHBOARD = """
             if (video) video.playbackRate = parseFloat(speed);
         }
 
+        function applyPlaybackSpeed() {
+            const video = document.getElementById('hidden-video');
+            const speed = document.getElementById('pop-speed-select')?.value || 1;
+            if (video) video.playbackRate = parseFloat(speed);
+        }
+
         function parseWebVTT(text) {
             if (!text) return [];
             const cues = [];
-            // Handle both Windows (\r\n) and Unix (\n) line endings seamlessly
-            const lines = String(text).replace(/\r/g, '').split('\n');
+            // Handle both Windows (\\r\\n) and Unix (\\n) line endings seamlessly
+            const lines = String(text).replace(/\\r/g, '').split('\\n');
             let i = 0;
             
             while (i < lines.length) {
                 if (lines[i].includes('-->')) {
                     const timeParts = lines[i].split('-->');
                     const start = vttTimeToSeconds(timeParts[0]);
-                    const end = vttTimeToSeconds(timeParts[1].trim().split(/\s+/)[0]);
+                    const end = vttTimeToSeconds(timeParts[1].trim().split(/\\s+/)[0]);
                     
                     let payload = [];
                     i++;
@@ -6440,7 +6446,7 @@ HTML_DASHBOARD = """
                     }
                     
                     // Strip HTML tags AND complex ASS animation/position tags from Anime MKVs
-                    const cleanText = payload.join('\n').replace(/<[^>]*>/g, '').replace(/\{[^}]*\}/g, '').trim();
+                    const cleanText = payload.join('\\n').replace(/<[^>]*>/g, '').replace(/\\{[^}]*\\}/g, '').trim();
                     if (cleanText && Number.isFinite(start) && Number.isFinite(end)) {
                         cues.push({ start, end, text: cleanText });
                     }
