@@ -7688,403 +7688,199 @@ async def _api_spectrogram_web_handler(request):
 # ==============================================================================
 
 async def _api_media_probe_handler(request):
-    """Probe media metadata/tracks without downloading the whole Telegram file."""
+    """Lightning-fast HTTP Range probe."""
     user_id = int(request.query.get("user_id", 0))
     link = request.query.get("link", "").strip()
-    if not link:
-        return web.json_response({"status": "error", "message": "Link required"}, status=400)
+    if not link: return web.json_response({"status": "error", "message": "Link required"}, status=400)
 
-    # DYNAMIC WAKE-UP: Reconnect session if server restarted
-    uclient = USER_CLIENTS.get(user_id)
-    if not uclient or not uclient.is_connected:
-        session_str = await db.get_session(user_id)
-        if session_str:
-            try:
-                api_id = await db.get_api_id(user_id) or API_ID
-                api_hash = await db.get_api_hash(user_id) or API_HASH
-                uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-                uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
-                await uclient.start()
-                USER_CLIENTS[user_id] = uclient
-            except Exception:
-                uclient = app
-        else:
-            uclient = app
+    is_tg = "t.me" in link
+    actual_url = link
+    real_file_name = "Unknown_Media"
+    mime_type = "video/mp4"
 
-    target_path = None
-    temp_dir = None
+    if is_tg:
+        parsed = _parse_source_link(link)
+        chat_id = parsed.get("chat_id")
+        msg_id = parsed.get("msg_id")
+        if chat_id is None or msg_id is None: return web.json_response({"status": "error"})
+        
+        uclient = USER_CLIENTS.get(user_id)
+        if not uclient or not uclient.is_connected:
+            session_str = await db.get_session(user_id)
+            if session_str:
+                try:
+                    api_id = await db.get_api_id(user_id) or API_ID
+                    api_hash = await db.get_api_hash(user_id) or API_HASH
+                    uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+                    uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+                    await uclient.start()
+                    USER_CLIENTS[user_id] = uclient
+                except: uclient = app
+            else: uclient = app
 
-    try:
-        mime_type = "video/mp4"
-        requires_transcode = False
+        msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
+        media = msg.document or msg.video or msg.audio
+        if not media: return web.json_response({"status": "error", "message": "No media found"})
 
-        if "t.me" in link:
-            parsed = _parse_source_link(link)
-            chat_id = parsed.get("chat_id")
-            msg_id = parsed.get("msg_id")
-            if chat_id is None or msg_id is None:
-                return web.json_response({"status": "error", "message": "Invalid Telegram media link"}, status=400)
+        real_file_name = getattr(media, "file_name", None) or getattr(media, "title", None) or f"Telegram_Media_{msg_id}"
+        mime_type = getattr(media, "mime_type", "video/mp4")
+        
+        # Link the file to the new high-speed proxy
+        actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+    else:
+        real_file_name = os.path.basename(urlparse(link).path) or "Direct_Stream_Media"
 
-            chat_id_clean = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
-            msg = await uclient.get_messages(chat_id_clean, msg_id)
-            if not msg:
-                return web.json_response({"status": "error", "message": "Telegram message not found"}, status=404)
+    lower_name = str(real_file_name).lower()
+    is_audio = lower_name.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma")) or "audio" in mime_type.lower()
+    requires_transcode = is_audio or not lower_name.endswith((".mp4", ".webm"))
 
-            media = msg.document or msg.video or msg.audio
-            if not media:
-                return web.json_response({"status": "error", "message": "No media found in message"}, status=404)
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-headers", "User-Agent: Mozilla/5.0\r\n",
+        "-probesize", "64M", "-analyzeduration", "20M",
+        "-show_entries", "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
+        "-of", "json", actual_url
+    ]
 
-            real_file_name = getattr(media, "file_name", None)
-            if not real_file_name and getattr(media, "title", None):
-                real_file_name = media.title
-            real_file_name = real_file_name or f"Telegram_Media_{msg_id}"
-            mime_type = getattr(media, "mime_type", None) or mime_type
-            lower_name = str(real_file_name).lower()
-            requires_transcode = not ("mp4" in str(mime_type).lower() and not lower_name.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv")))
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    stdout, stderr = await proc.communicate()
+    
+    if proc.returncode != 0:
+        err = stderr.decode("utf-8", errors="ignore").strip()
+        return web.json_response({"status": "error", "message": f"FFprobe failed: {err}"})
 
-            temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            target_path = temp_dir / "probe_chunk.dat"
+    probe_data = json.loads(stdout.decode("utf-8", errors="ignore") or "{}")
+    streams = probe_data.get("streams", [])
+    video_streams = [s for s in streams if s.get("codec_type") == "video"]
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+    sub_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
 
-            # Larger edge sample makes multi-audio/subtitle metadata much more reliable,
-            # while remaining dramatically cheaper than downloading the full movie.
-            await partial_download_tg(uclient, msg, target_path, limit_mb=32)
-        else:
-            # Reuse the existing HTTP helper so Content-Disposition / URL filenames are preserved.
-            temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
-            temp_dir.mkdir(parents=True, exist_ok=True)
-            target_path = temp_dir / "probe_chunk.dat"
-            file_size, detected_name = await partial_download_http(link, target_path, limit_mb=32)
-            real_file_name = detected_name or "Direct_Stream_Media"
-            lower_name = str(real_file_name).lower()
-            lower_link = link.lower()
-            # Direct MP4/WebM can normally stay native. Other direct containers may
-            # need the FFmpeg bridge. HTML page URLs are rejected by the helper above.
-            is_hls = bool(re.search(r"\.(?:m3u8)(?:$|[?#])", lower_link))
-            is_dash = bool(re.search(r"\.(?:mpd)(?:$|[?#])", lower_link))
-            requires_transcode = not lower_name.endswith((".mp4", ".webm"))
-            if is_hls or is_dash:
-                requires_transcode = True
+    width = int(video_streams[0].get("width") or 1920) if video_streams else 1920
+    height = int(video_streams[0].get("height") or 1080) if video_streams else 1080
 
-        cmd = [
-            "ffprobe", "-v", "error",
-            "-probesize", "64M",
-            "-analyzeduration", "20M",
-            "-show_entries",
-            "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
-            "-of", "json", str(target_path)
-        ]
-        proc = await asyncio.create_subprocess_exec(
-            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        stdout, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            err = stderr.decode("utf-8", errors="ignore").strip()
-            raise RuntimeError(f"ffprobe could not identify this media stream from the available probe bytes: {err or 'unknown format or incomplete media'}")
+    qualities = ["Original"]
+    if not is_audio:
+        if height >= 2160 or width >= 3840: qualities.extend(["4K", "1080p", "720p", "480p", "360p"])
+        elif height >= 1080 or width >= 1920: qualities.extend(["1080p", "720p", "480p", "360p"])
+        elif height >= 720: qualities.extend(["720p", "480p", "360p"])
+        elif height >= 480: qualities.extend(["480p", "360p"])
+        else: qualities.append("360p")
 
-        probe_data = json.loads(stdout.decode("utf-8", errors="ignore") or "{}")
-        streams = probe_data.get("streams", [])
-        video_streams = [s for s in streams if s.get("codec_type") == "video"]
-        audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
-        sub_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
+    audio_tracks = []
+    for i, s in enumerate(audio_streams):
+        tags = s.get("tags", {}) or {}
+        lang = tags.get("language") or tags.get("LANGUAGE")
+        title = tags.get("title") or tags.get("TITLE") or tags.get("handler_name")
+        label = title or lang or f"Track {i + 1}"
+        audio_tracks.append({"index": s.get("index"), "label": label})
 
-        width = int(video_streams[0].get("width") or 1920) if video_streams else 1920
-        height = int(video_streams[0].get("height") or 1080) if video_streams else 1080
+    subtitles = []
+    for i, s in enumerate(sub_streams):
+        tags = s.get("tags", {}) or {}
+        lang = tags.get("language") or tags.get("LANGUAGE")
+        title = tags.get("title") or tags.get("TITLE") or tags.get("handler_name")
+        label = title or lang or f"Subtitle {i + 1}"
+        subtitles.append({"index": s.get("index"), "label": label})
 
-        qualities = ["Original"]
-        if height >= 2160 or width >= 3840:
-            qualities.extend(["4K", "1080p", "720p", "480p", "360p"])
-        elif height >= 1080 or width >= 1920:
-            qualities.extend(["1080p", "720p", "480p", "360p"])
-        elif height >= 720:
-            qualities.extend(["720p", "480p", "360p"])
-        elif height >= 480:
-            qualities.extend(["480p", "360p"])
-        else:
-            qualities.append("360p")
+    duration_val = 0.0
+    try: duration_val = float(probe_data.get("format", {}).get("duration", 0))
+    except: pass
 
-        def get_tag(tags_dict, keys_to_find):
-            if not tags_dict: return None
-            wanted = {str(k).lower() for k in keys_to_find}
-            for k, v in tags_dict.items():
-                if str(k).lower() in wanted and v not in (None, ""):
-                    return str(v)
-            return None
+    return web.json_response({
+        "status": "success",
+        "file_name": real_file_name,
+        "mime_type": mime_type,
+        "requires_transcode": requires_transcode,
+        "video_width": width,
+        "video_height": height,
+        "duration": duration_val,
+        "qualities": list(OrderedDict.fromkeys(qualities)),
+        "audio_tracks": audio_tracks,
+        "subtitles": subtitles,
+    })
 
-        audio_tracks = []
-        for i, s in enumerate(audio_streams):
-            tags = s.get("tags", {}) or {}
-            language = get_tag(tags, ["language"])
-            title = get_tag(tags, ["title", "handler_name"])
-            label = title or language or f"Track {i + 1}"
-            audio_tracks.append({
-                "index": s.get("index"),
-                "codec": s.get("codec_name"),
-                "label": label,
-                "language": language or "",
-                "channels": s.get("channels"),
-                "channel_layout": s.get("channel_layout"),
-                "default": bool((s.get("disposition") or {}).get("default")),
-            })
-
-        subtitles = []
-        for i, s in enumerate(sub_streams):
-            tags = s.get("tags", {}) or {}
-            language = get_tag(tags, ["language"])
-            title = get_tag(tags, ["title", "handler_name"])
-            label = title or language or f"Subtitle {i + 1}"
-            subtitles.append({
-                "index": s.get("index"),
-                "codec": s.get("codec_name"),
-                "label": label,
-                "language": language or "",
-                "default": bool((s.get("disposition") or {}).get("default")),
-                "forced": bool((s.get("disposition") or {}).get("forced")),
-            })
-
-        # Make the default track the first visible choice when possible.
-        audio_tracks.sort(key=lambda x: (not x.get("default", False), x.get("index") if x.get("index") is not None else 9999))
-        subtitles.sort(key=lambda x: (not x.get("default", False), x.get("index") if x.get("index") is not None else 9999))
-
-        duration_val = 0.0
-        try:
-            duration_val = float(probe_data.get("format", {}).get("duration", 0))
-        except: pass
-
-        return web.json_response({
-            "status": "success",
-            "file_name": real_file_name,
-            "mime_type": mime_type,
-            "requires_transcode": requires_transcode,
-            "video_width": width,
-            "video_height": height,
-            "duration": duration_val,
-            "qualities": list(OrderedDict.fromkeys(qualities)),
-            "audio_tracks": audio_tracks,
-            "subtitles": subtitles,
-        })
-    except Exception as e:
-        logger.warning(f"[MediaProbe] {e}", exc_info=True)
-        return web.json_response({"status": "error", "message": str(e)}, status=500)
-    finally:
-        if temp_dir and temp_dir.exists():
-            shutil.rmtree(temp_dir, ignore_errors=True)
 
 async def _api_stream_handler(request):
-    """HTTP 206 proxy for compatible MP4s and low-latency FFmpeg bridge for other variants."""
+    """High-speed Fast-Seek proxy engine."""
     user_id = int(request.query.get("user_id", 0))
     link = request.query.get("link", "")
     quality = request.query.get("quality", "Original")
     audio_idx = request.query.get("audio_idx", None)
     start_time = request.query.get("start", None)
+    transcode_param = request.query.get("transcode", "")
+    force_transcode = transcode_param in ("1", "true")
 
-    if not link:
-        return web.Response(status=400, text="No media link provided")
+    if not link: return web.Response(status=400, text="No link provided")
 
-    # DYNAMIC WAKE-UP
-    uclient = USER_CLIENTS.get(user_id)
-    if not uclient or not uclient.is_connected:
-        session_str = await db.get_session(user_id)
-        if session_str:
-            try:
-                api_id = await db.get_api_id(user_id) or API_ID
-                api_hash = await db.get_api_hash(user_id) or API_HASH
-                uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-                uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
-                await uclient.start()
-                USER_CLIENTS[user_id] = uclient
-            except Exception:
-                uclient = app
-        else:
-            uclient = app
+    is_tg = "t.me" in link
+    actual_url = link
+    is_audio = False
+    is_unfriendly = False
 
-    # ======================================================================
-    # TELEGRAM SOURCE
-    # ======================================================================
-    if "t.me" in link:
+    if is_tg:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
         msg_id = parsed.get("msg_id")
-        if chat_id is None or msg_id is None:
-            return web.Response(status=400, text="Invalid Telegram media link")
-
-        try:
-            msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
-            media = msg.document or msg.video or msg.audio
-            if not media:
-                return web.Response(status=404, text="Media not found")
-
-            file_size = int(getattr(media, 'file_size', 0) or 0)
-            mime_type = getattr(media, 'mime_type', None) or "video/mp4"
-            filename = str(getattr(media, 'file_name', '') or '').lower()
-            is_unfriendly_container = filename.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv", ".ts", ".webm"))
-            
-            is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma")) or "audio" in mime_type.lower()
-            is_native_mime = "mp4" in mime_type.lower() or is_audio
-
-            # Native zero-transcode path.
-            if quality == "Original" and audio_idx is None and not is_unfriendly_container and is_native_mime and file_size > 0 and not start_time:
-                range_header = request.headers.get("Range", "")
-                start_byte = 0
-                end_byte = file_size - 1
-
-                if range_header:
-                    match = re.match(r"bytes=(\d+)-(\d*)", range_header)
-                    if match:
-                        start_byte = min(int(match.group(1)), file_size - 1)
-                        if match.group(2):
-                            end_byte = min(int(match.group(2)), file_size - 1)
-
-                if end_byte < start_byte:
-                    return web.Response(status=416, headers={"Content-Range": f"bytes */{file_size}"})
-
-                chunk_len = end_byte - start_byte + 1
-                status = 206 if range_header else 200
-                headers = {
-                    "Accept-Ranges": "bytes",
-                    "Content-Length": str(chunk_len),
-                    "Content-Type": mime_type,
-                    "Access-Control-Allow-Origin": "*",
-                    "Cache-Control": "no-store",
-                }
-                if status == 206:
-                    headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{file_size}"
-
-                response = web.StreamResponse(status=status, headers=headers)
-                await response.prepare(request)
-                async for chunk in uclient.stream_media(msg, offset=start_byte, limit=chunk_len):
-                    await response.write(chunk)
-                await response.write_eof()
-                return response
-
-            res_scale_map = {"4K": "3840:-2", "1080p": "1920:-2", "720p": "1280:-2", "480p": "854:-2", "360p": "640:-2"}
-            scale_filter = res_scale_map.get(quality)
-
-            ffmpeg_cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0"]
-            
-            if is_audio:
-                ffmpeg_cmd.extend(["-f", "lavfi", "-i", "color=c=black:s=640x360:r=1"])
-                if audio_idx is not None and str(audio_idx).strip() != "":
-                    ffmpeg_cmd.extend(["-map", "1:v:0", "-map", f"0:{audio_idx}"])
-                else:
-                    ffmpeg_cmd.extend(["-map", "1:v:0", "-map", "0:a:0?"])
-            else:
-                if scale_filter:
-                    ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
-                if audio_idx is not None and str(audio_idx).strip() != "":
-                    ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
-                else:
-                    ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
-
-            if start_time is not None:
+        if chat_id is None or msg_id is None: return web.Response(status=400)
+        
+        uclient = USER_CLIENTS.get(user_id)
+        if not uclient or not uclient.is_connected:
+            session_str = await db.get_session(user_id)
+            if session_str:
                 try:
-                    start_float = max(0.0, float(start_time))
-                    if start_float > 0:
-                        ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
-                except Exception: pass
-
-            ffmpeg_cmd.extend(["-sn"])
+                    api_id = await db.get_api_id(user_id) or API_ID
+                    api_hash = await db.get_api_hash(user_id) or API_HASH
+                    uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+                    uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+                    await uclient.start()
+                    USER_CLIENTS[user_id] = uclient
+                except: uclient = app
+            else: uclient = app
             
-            if is_audio:
-                ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-shortest"])
-            else:
-                if quality == "Original":
-                    ffmpeg_cmd.extend(["-c:v", "copy"])
-                else:
-                    ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"])
+        msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
+        media = msg.document or msg.video or msg.audio
+        if not media: return web.Response(status=404, text="Media not found")
+        
+        filename = str(getattr(media, 'file_name', '') or '').lower()
+        mime_type = getattr(media, 'mime_type', 'video/mp4').lower()
+        
+        actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+        is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma")) or "audio" in mime_type
+        is_unfriendly = filename.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv", ".ts", ".webm"))
+        
+        # Super-fast direct bypass for standard MP4s
+        if quality == "Original" and audio_idx is None and not is_unfriendly and not is_audio and not force_transcode and not start_time:
+            raise web.HTTPFound(actual_url)
 
-            ffmpeg_cmd.extend([
-                "-c:a", "aac", "-b:a", "320k",
-                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-                "-f", "mp4", "pipe:1"
-            ])
+    else:
+        lower_link = link.lower()
+        is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
+        is_unfriendly = not bool(re.search(r"\.(mp4|m4a)(?:$|[?#])", lower_link))
 
-            proc = await asyncio.create_subprocess_exec(
-                *ffmpeg_cmd,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-
-            response = web.StreamResponse(
-                status=200,
-                headers={
-                    "Content-Type": "video/mp4",
-                    "Access-Control-Allow-Origin": "*",
-                    "Accept-Ranges": "none",
-                    "Cache-Control": "no-store",
-                }
-            )
-            await response.prepare(request)
-
-            async def pipe_tg_to_ffmpeg():
-                try:
-                    async for chunk in uclient.stream_media(msg):
-                        if proc.stdin.is_closing(): break
-                        proc.stdin.write(chunk)
-                        await proc.stdin.drain()
-                except Exception:
-                    pass
-                finally:
-                    try: proc.stdin.close()
-                    except: pass
-
-            async def pipe_ffmpeg_to_response():
-                try:
-                    while True:
-                        buf = await proc.stdout.read(64 * 1024)
-                        if not buf: break
-                        await response.write(buf)
-                    await response.write_eof()
-                except Exception:
-                    pass
-
-            tg_task = asyncio.create_task(pipe_tg_to_ffmpeg())
-            out_task = asyncio.create_task(pipe_ffmpeg_to_response())
-            await asyncio.gather(tg_task, out_task)
-            return response
-        except Exception as e:
-            return web.Response(status=500, text=str(e))
-
-    # ======================================================================
-    # DIRECT HTTP SOURCE
-    # ======================================================================
-    
-    transcode_param = request.query.get("transcode", "")
-    force_transcode = transcode_param in ("1", "true")
-    
-    lower_link = link.lower()
-    is_native_container = bool(re.search(r"\.(mp4|webm|flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
-    is_audio_only = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
-    
-    needs_ffmpeg = (
-        force_transcode or
-        quality != "Original" or
-        (audio_idx is not None and str(audio_idx).strip() != "") or
-        not is_native_container
-    )
+    needs_ffmpeg = force_transcode or quality != "Original" or (audio_idx is not None and str(audio_idx).strip() != "") or is_unfriendly or is_audio
 
     if needs_ffmpeg:
         res_scale_map = {"4K": "3840:-2", "1080p": "1920:-2", "720p": "1280:-2", "480p": "854:-2", "360p": "640:-2"}
         scale_filter = res_scale_map.get(quality)
-        
+
         ffmpeg_cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n",
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-            "-probesize", "10M", "-analyzeduration", "5M"
+            "-headers", "User-Agent: Mozilla/5.0\r\n",
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"
         ]
-        
+
+        # FAST SEEK (Placed BEFORE the input)
         if start_time is not None:
             try:
                 start_float = max(0.0, float(start_time))
                 if start_float > 0:
                     ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
             except: pass
-            
-        ffmpeg_cmd.extend(["-i", link])
+        
+        ffmpeg_cmd.extend(["-i", actual_url])
 
-        if is_audio_only:
+        if is_audio:
+            # Inject a 1fps black video stream so HTML5 WebGL player accepts audio files
             ffmpeg_cmd.extend(["-f", "lavfi", "-i", "color=c=black:s=640x360:r=1"])
             if audio_idx is not None and str(audio_idx).strip() != "":
                 ffmpeg_cmd.extend(["-map", "1:v:0", "-map", f"0:{audio_idx}"])
@@ -8093,21 +7889,20 @@ async def _api_stream_handler(request):
         else:
             if scale_filter:
                 ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
-
             if audio_idx is not None and str(audio_idx).strip() != "":
                 ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
             else:
                 ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
 
         ffmpeg_cmd.extend(["-sn"])
-        
-        if is_audio_only:
+
+        if is_audio:
             ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-shortest"])
         else:
             if quality == "Original":
                 ffmpeg_cmd.extend(["-c:v", "copy"])
             else:
-                ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "22", "-pix_fmt", "yuv420p"])
+                ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"])
 
         ffmpeg_cmd.extend([
             "-c:a", "aac", "-b:a", "320k",
@@ -8115,241 +7910,93 @@ async def _api_stream_handler(request):
             "-f", "mp4", "pipe:1"
         ])
 
-        proc = await asyncio.create_subprocess_exec(
-            *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        response = web.StreamResponse(
-            status=200, 
-            headers={
-                "Content-Type": "video/mp4", 
-                "Access-Control-Allow-Origin": "*", 
-                "Accept-Ranges": "none", 
-                "Cache-Control": "no-store"
-            }
-        )
+        proc = await asyncio.create_subprocess_exec(*ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        response = web.StreamResponse(status=200, headers={"Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*", "Accept-Ranges": "none", "Cache-Control": "no-store"})
         await response.prepare(request)
 
         try:
             while True:
                 buf = await proc.stdout.read(64 * 1024)
-                if not buf:
-                    break
+                if not buf: break
                 await response.write(buf)
             await response.write_eof()
-        except Exception:
-            pass
+        except Exception: pass
         finally:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
-        return response
-
-    headers = {"User-Agent": "Mozilla/5.0"}
-    if request.headers.get("Range"):
-        headers["Range"] = request.headers["Range"]
-
-    timeout = aiohttp.ClientTimeout(total=None, sock_read=120)
-    session = aiohttp.ClientSession(timeout=timeout)
-    try:
-        remote = await session.get(link, headers=headers, allow_redirects=True)
-        if remote.status >= 400:
-            text = await remote.text()
-            await remote.release()
-            await session.close()
-            return web.Response(status=remote.status, text=text[:500])
-
-        out_headers = {
-            "Content-Type": remote.headers.get("Content-Type", "video/mp4"),
-            "Access-Control-Allow-Origin": "*",
-            "Accept-Ranges": remote.headers.get("Accept-Ranges", "bytes"),
-            "Cache-Control": "no-store",
-        }
-
-        response = web.StreamResponse(status=remote.status, headers=out_headers)
-        await response.prepare(request)
-        try:
-            async for chunk in remote.content.iter_chunked(128 * 1024):
-                await response.write(chunk)
-            await response.write_eof()
-        finally:
-            remote.close()
-            await session.close()
-        return response
-    except Exception as e:
-        try: await session.close()
-        except: pass
-        return web.Response(status=502, text=f"Direct stream proxy failed: {e}")
-
-    # ======================================================================
-    # DIRECT HTTP SOURCE — proxy instead of 302 so WebGL gets CORS-safe bytes.
-    # ======================================================================
-    
-    transcode_param = request.query.get("transcode", "")
-    force_transcode = transcode_param in ("1", "true")
-    
-    lower_link = link.lower()
-    is_native_container = bool(re.search(r"\.(mp4|webm|flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
-    is_audio_only = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
-    
-    # Route through FFmpeg if transcode is forced or container is unsupported by browsers (e.g. MKV/AVI)
-    needs_ffmpeg = (
-        force_transcode or
-        quality != "Original" or
-        (audio_idx is not None and str(audio_idx).strip() != "") or
-        not is_native_container
-    )
-
-    if needs_ffmpeg:
-        res_scale_map = {"4K": "3840:-2", "1080p": "1920:-2", "720p": "1280:-2", "480p": "854:-2", "360p": "640:-2"}
-        scale_filter = res_scale_map.get(quality)
-        
-        ffmpeg_cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n",
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-            "-probesize", "10M", "-analyzeduration", "5M"
-        ]
-        
-        if start_time is not None:
-            try:
-                start_float = max(0.0, float(start_time))
-                if start_float > 0:
-                    ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
+            try: proc.kill(); await proc.wait()
             except: pass
-            
-        ffmpeg_cmd.extend(["-i", link])
-
-        if is_audio_only:
-            ffmpeg_cmd.extend(["-vn"])
-            if audio_idx is not None and str(audio_idx).strip() != "":
-                ffmpeg_cmd.extend(["-map", f"0:{audio_idx}"])
-            else:
-                ffmpeg_cmd.extend(["-map", "0:a:0?"])
-        else:
-            if scale_filter:
-                ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
-
-            if audio_idx is not None and str(audio_idx).strip() != "":
-                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
-            else:
-                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
-
-        ffmpeg_cmd.extend(["-sn"])
-        
-        if not is_audio_only:
-            if quality == "Original":
-                ffmpeg_cmd.extend(["-c:v", "copy"])
-            else:
-                ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "22", "-pix_fmt", "yuv420p"])
-
-        ffmpeg_cmd.extend([
-            "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-            "-f", "mp4", "pipe:1"
-        ])
-
-        proc = await asyncio.create_subprocess_exec(
-            *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        response = web.StreamResponse(
-            status=200, 
-            headers={
-                "Content-Type": "video/mp4", 
-                "Access-Control-Allow-Origin": "*", 
-                "Accept-Ranges": "none", 
-                "Cache-Control": "no-store"
-            }
-        )
-        await response.prepare(request)
-
-        try:
-            while True:
-                buf = await proc.stdout.read(64 * 1024)
-                if not buf:
-                    break
-                await response.write(buf)
-            await response.write_eof()
-        except Exception:
-            pass
-        finally:
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
         return response
 
+    # Fallback Native HTTP Proxy
     headers = {"User-Agent": "Mozilla/5.0"}
-    if request.headers.get("Range"):
-        headers["Range"] = request.headers["Range"]
-
+    if request.headers.get("Range"): headers["Range"] = request.headers["Range"]
     timeout = aiohttp.ClientTimeout(total=None, sock_read=120)
     session = aiohttp.ClientSession(timeout=timeout)
     try:
-        remote = await session.get(link, headers=headers, allow_redirects=True)
-        if remote.status >= 400:
-            text = await remote.text()
-            await remote.release()
-            await session.close()
-            return web.Response(status=remote.status, text=text[:500])
-
-        remote_content_type = (remote.headers.get("Content-Type") or "").lower()
-        if "text/html" in remote_content_type:
-            text = await remote.text(errors="ignore")
-            remote.close()
-            await session.close()
-            return web.Response(
-                status=415,
-                text="The URL returned an HTML webpage, not a direct media stream.",
-                headers={"Access-Control-Allow-Origin": "*"}
-            )
-
-        # Do NOT forward upstream Content-Length/Content-Range blindly. Several
-        # CDNs advertise the original size and then close a partial response early;
-        # forwarding that header makes the browser raise ContentLengthError.
-        # Without it aiohttp uses chunked transfer and the bytes we actually write
-        # are exactly the bytes declared by this response.
+        remote = await session.get(actual_url, headers=headers, allow_redirects=True)
         out_headers = {
             "Content-Type": remote.headers.get("Content-Type", "video/mp4"),
             "Access-Control-Allow-Origin": "*",
             "Accept-Ranges": remote.headers.get("Accept-Ranges", "bytes"),
             "Cache-Control": "no-store",
         }
-
         response = web.StreamResponse(status=remote.status, headers=out_headers)
         await response.prepare(request)
-        try:
-            try:
-                async for chunk in remote.content.iter_chunked(128 * 1024):
-                    await response.write(chunk)
-            except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError, ConnectionError) as exc:
-                # Upstream ended before its advertised length. Since we intentionally
-                # did not send Content-Length to the browser, avoid producing a second
-                # protocol-level length error. The caller may still treat the stream as
-                # incomplete, but the server itself remains healthy.
-                logger.warning(f"[Direct proxy] Upstream ended early: {exc}")
-            try:
-                await response.write_eof()
-            except Exception:
-                pass
-        finally:
-            remote.close()
-            await session.close()
+        async for chunk in remote.content.iter_chunked(128 * 1024):
+            await response.write(chunk)
+        await response.write_eof()
+        remote.close()
+        await session.close()
         return response
     except Exception as e:
-        try: await session.close()
-        except: pass
-        return web.Response(status=502, text=f"Direct stream proxy failed: {e}")
+        return web.Response(status=502, text=f"Proxy failed: {e}")
+
 
 async def _api_subtitles_handler(request):
-    """Extract one embedded text subtitle stream to WebVTT for the custom player overlay."""
+    """Instant Subtitle Extraction using HTTP Range Requests."""
     user_id = int(request.query.get("user_id", 0))
     link = request.query.get("link", "")
     sub_idx = request.query.get("sub_idx", "0")
     
-    # DYNAMIC WAKE-UP
+    if not link: return web.Response(status=400, text="Invalid Link")
+
+    is_tg = "t.me" in link
+    actual_url = link
+
+    if is_tg:
+        parsed = _parse_source_link(link)
+        chat_id = parsed.get("chat_id")
+        msg_id = parsed.get("msg_id")
+        if chat_id is None or msg_id is None: return web.Response(status=400)
+        
+        actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-headers", "User-Agent: Mozilla/5.0\r\n",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        "-i", actual_url,
+        "-map", f"0:{sub_idx}",
+        "-c:s", "webvtt",
+        "-f", "webvtt", "pipe:1"
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        vtt_content, stderr_data = await proc.communicate()
+
+        if proc.returncode != 0:
+            return web.Response(status=500, text="Subtitle extraction failed")
+
+        return web.Response(body=vtt_content, content_type="text/vtt", headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"})
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+async def _api_tg_stream_handler(request):
+    """Internal File-to-Link Proxy to allow FFmpeg to natively seek Telegram files via HTTP."""
+    user_id = int(request.query.get("user_id", 0))
+    chat_id = request.query.get("chat_id")
+    msg_id = int(request.query.get("msg_id"))
+    
     uclient = USER_CLIENTS.get(user_id)
     if not uclient or not uclient.is_connected:
         session_str = await db.get_session(user_id)
@@ -8358,85 +8005,52 @@ async def _api_subtitles_handler(request):
                 api_id = await db.get_api_id(user_id) or API_ID
                 api_hash = await db.get_api_hash(user_id) or API_HASH
                 uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-                uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
-                await uclient.start()
-                USER_CLIENTS[user_id] = uclient
-            except Exception:
-                uclient = app
-        else:
-            uclient = app
+                await uclient.connect()
+            except Exception: uclient = app
+        else: uclient = app
+    
+    chat_id = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
+    msg = await uclient.get_messages(chat_id, msg_id)
+    media = msg.document or msg.video or msg.audio
+    if not media: return web.Response(status=404)
+    file_size = getattr(media, 'file_size', 0)
+    
+    range_header = request.headers.get("Range", "")
+    start_byte = 0
+    end_byte = file_size - 1
 
-    if not link:
-        return web.Response(status=400, text="Invalid Link")
-
-    is_tg = "t.me" in link
-    msg = None
-
-    if is_tg:
-        parsed = _parse_source_link(link)
-        chat_id = parsed.get("chat_id")
-        msg_id = parsed.get("msg_id")
-        if chat_id is None or msg_id is None:
-            return web.Response(status=400, text="Invalid Telegram media link")
-        try:
-            msg = await uclient.get_messages(chat_id, msg_id)
-            if not msg:
-                return web.Response(status=404, text="Media not found")
-        except Exception as e:
-            return web.Response(status=500, text=str(e))
-
-    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
-    if not is_tg:
-        cmd.extend([
-            "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n",
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-            "-i", link
-        ])
-    else:
-        cmd.extend(["-i", "pipe:0"])
-
-    cmd.extend([
-        "-map", f"0:{sub_idx}",
-        "-c:s", "webvtt",
-        "-f", "webvtt", "pipe:1"
-    ])
-
+    if range_header:
+        match = re.match(r"bytes=(\d+)-(\d*)", range_header)
+        if match:
+            start_byte = int(match.group(1))
+            if match.group(2):
+                end_byte = min(int(match.group(2)), file_size - 1)
+    
+    if start_byte >= file_size:
+        return web.Response(status=416, headers={"Content-Range": f"bytes */{file_size}"})
+        
+    chunk_len = end_byte - start_byte + 1
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(chunk_len),
+        "Content-Type": getattr(media, 'mime_type', "application/octet-stream"),
+        "Content-Range": f"bytes {start_byte}-{end_byte}/{file_size}",
+        "Access-Control-Allow-Origin": "*"
+    }
+    
+    response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
+    await response.prepare(request)
+    
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE if is_tg else None,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE
-        )
-
-        if is_tg and msg:
-            async def feed():
-                try:
-                    async for chunk in uclient.stream_media(msg):
-                        if proc.stdin.is_closing(): break
-                        proc.stdin.write(chunk)
-                        await proc.stdin.drain()
-                except Exception as e:
-                    logger.debug(f"[Subtitles] input feed ended: {e}")
-                finally:
-                    try: proc.stdin.close()
-                    except: pass
-            asyncio.create_task(feed())
-
-        vtt_content, stderr_data = await proc.communicate()
-
-        if proc.returncode not in (0, None):
-            err = stderr_data.decode("utf-8", errors="ignore")
-            return web.Response(status=500, text=err[-1000:] or "Subtitle extraction failed")
-
-        return web.Response(
-            body=vtt_content,
-            content_type="text/vtt",
-            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}
-        )
-    except Exception as e:
-        logger.warning(f"[Subtitles] {e}", exc_info=True)
-        return web.Response(status=500, text=str(e))
+        async for chunk in uclient.stream_media(msg, offset=start_byte, limit=chunk_len):
+            await response.write(chunk)
+        await response.write_eof()
+    except Exception: pass
+    
+    if uclient != app and getattr(uclient, "is_temp", False):
+        try: await uclient.disconnect()
+        except: pass
+    return response
 
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
@@ -8469,6 +8083,9 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/media_probe", _api_media_probe_handler)
     app_web.router.add_get("/api/stream", _api_stream_handler)
     app_web.router.add_get("/api/subtitles", _api_subtitles_handler)
+    app_web.router.add_get("/api/topics", _api_topics_handler)
+    app_web.router.add_get("/api/tg_stream", _api_tg_stream_handler) # <-- ADD THIS LINE
+    app_web.router.add_post("/api/mediainfo", _api_mediainfo_web_handler)
     
     runner = web.AppRunner(app_web)
     await runner.setup()
