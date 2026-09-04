@@ -6324,26 +6324,16 @@ HTML_DASHBOARD = """
         // ======================================================================
         // ROBUST ASPECT-RATIO / SURFACE SIZING
         // ======================================================================
-        function getViewportRatioForMode(mode) {
-            if (mode === '21-9') return 21 / 9;
-            if (mode === '4-3') return 4 / 3;
-            return 16 / 9;
+        function getEffectiveVideoSize() {
+            const video = document.getElementById('hidden-video');
+            let w = video?.videoWidth || 16;
+            let h = video?.videoHeight || 9;
+            if (matrix3DIn === 'lr' || matrix3DIn === 'ci') w = Math.round(w / 2);
+            if (matrix3DIn === 'tb' || matrix3DIn === 'ri') h = Math.round(h / 2);
+            return { w, h };
         }
 
         function updateViewportBox() {
-            const vp = document.getElementById('cinema-viewport');
-            if (!vp) return;
-            if (document.fullscreenElement === vp || document.webkitFullscreenElement === vp) {
-                vp.style.height = '100vh';
-                vp.style.aspectRatio = 'auto';
-                return;
-            }
-            const width = vp.clientWidth || Math.round(vp.getBoundingClientRect().width);
-            if (width > 0) {
-                // Explicit height makes the ratio deterministic on browsers where aspect-ratio is being ignored.
-                vp.style.aspectRatio = 'auto';
-                vp.style.height = `${Math.max(1, Math.round(width / playerViewportRatio))}px`;
-            }
             resizePlayerSurface();
         }
 
@@ -6351,54 +6341,93 @@ HTML_DASHBOARD = """
             const vp = document.getElementById('cinema-viewport');
             const canvas = document.getElementById('webgl-canvas');
             const video = document.getElementById('hidden-video');
-            if (!vp || !canvas) return;
+            if (!vp || !canvas || !video) return;
+
+            // Skip WebGL sizing completely if it's an Audio-only file (FLAC, MP3)
+            if (video.videoWidth === 0 || video.videoHeight === 0) {
+                canvas.style.display = 'none';
+                return;
+            } else {
+                canvas.style.display = 'block';
+            }
 
             const vw = vp.clientWidth;
             const vh = vp.clientHeight;
             if (vw <= 0 || vh <= 0) return;
 
-            const sw = video?.videoWidth || 16;
-            const sh = video?.videoHeight || 9;
+            let { w: sw, h: sh } = getEffectiveVideoSize();
+            let drawW, drawH;
+
+            if (playerAspectMode === 'stretch') {
+                drawW = vw;
+                drawH = vh;
+            } else {
+                // Determine the mathematical aspect ratio target
+                let targetAspect = sw / sh;
+                if (playerAspectMode === '16-9') targetAspect = 16 / 9;
+                else if (playerAspectMode === '21-9') targetAspect = 21 / 9;
+                else if (playerAspectMode === '4-3') targetAspect = 4 / 3;
+
+                // Create a virtual box with the target aspect ratio
+                let effW = 1000 * targetAspect;
+                let effH = 1000;
+
+                const scale = (playerAspectMode === 'cover') 
+                    ? Math.max(vw / effW, vh / effH) 
+                    : Math.min(vw / effW, vh / effH);
+
+                drawW = Math.max(1, Math.round(effW * scale));
+                drawH = Math.max(1, Math.round(effH * scale));
+            }
 
             canvas.style.left = '50%';
             canvas.style.top = '50%';
             canvas.style.transform = 'translate(-50%, -50%)';
-
-            if (playerAspectMode === 'stretch') {
-                canvas.style.width = '100%';
-                canvas.style.height = '100%';
-                return;
-            }
-
-            const sourceAspect = sw / sh;
-            const viewAspect = vw / vh;
-            const scale = playerAspectMode === 'cover'
-                ? Math.max(vw / sw, vh / sh)
-                : Math.min(vw / sw, vh / sh);
-            const drawW = Math.max(1, Math.round(sw * scale));
-            const drawH = Math.max(1, Math.round(sh * scale));
-
-            // For contain, this produces letterbox/pillarbox. For cover, overflow is clipped by the viewport.
             canvas.style.width = `${drawW}px`;
             canvas.style.height = `${drawH}px`;
-            canvas.dataset.sourceAspect = String(sourceAspect);
-            canvas.dataset.viewAspect = String(viewAspect);
+        }
+
+        function renderWebGLFrame() {
+            const video = document.getElementById('hidden-video');
+            const canvas = document.getElementById('webgl-canvas');
+            if (gl && glProgram && glTexture && video && video.readyState >= video.HAVE_CURRENT_DATA) {
+                
+                // Do not crash WebGL on Audio-only files
+                if (video.videoWidth === 0 || video.videoHeight === 0) {
+                    requestAnimationFrame(renderWebGLFrame);
+                    return;
+                }
+
+                const { w: outW, h: outH } = getEffectiveVideoSize();
+
+                // IMPORTANT: The WebGL buffer must match the 3D-adjusted output size
+                if (canvas.width !== outW || canvas.height !== outH) {
+                    canvas.width = outW;
+                    canvas.height = outH;
+                    resizePlayerSurface();
+                }
+
+                gl.viewport(0, 0, canvas.width, canvas.height);
+                gl.bindTexture(gl.TEXTURE_2D, glTexture);
+                try {
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+                } catch (err) {}
+
+                const inMap = { none: 0, lr: 1, tb: 2, ci: 3, ri: 4 };
+                const outMap = { rc: 0, gm: 1, ba: 2, vr: 3, '2d': 4 };
+                gl.uniform1i(gl.getUniformLocation(glProgram, 'u_in_mode'), inMap[matrix3DIn] ?? 0);
+                gl.uniform1i(gl.getUniformLocation(glProgram, 'u_out_mode'), outMap[matrix3DOut] ?? 0);
+                gl.uniform1i(gl.getUniformLocation(glProgram, 'u_swap'), isRightFirst ? 1 : 0);
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+            }
+            requestAnimationFrame(renderWebGLFrame);
         }
 
         function applyAspectRatio(mode) {
             const allowed = ['contain', 'cover', 'stretch', '16-9', '21-9', '4-3'];
             if (!allowed.includes(mode)) mode = 'contain';
-
-            if (mode === '16-9' || mode === '21-9' || mode === '4-3') {
-                playerViewportRatio = getViewportRatioForMode(mode);
-                // Named cinematic ratios preserve the picture and crop only as necessary.
-                playerAspectMode = 'cover';
-            } else {
-                playerViewportRatio = 16 / 9;
-                playerAspectMode = mode;
-            }
-
-            updateViewportBox();
+            playerAspectMode = mode;
+            resizePlayerSurface();
             localStorage.setItem('player_aspect_mode', mode);
             wakeHUD();
         }
@@ -7858,9 +7887,12 @@ async def _api_stream_handler(request):
             mime_type = getattr(media, 'mime_type', None) or "video/mp4"
             filename = str(getattr(media, 'file_name', '') or '').lower()
             is_unfriendly_container = filename.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv", ".ts", ".webm"))
+            
+            is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac")) or "audio" in mime_type.lower()
+            is_native_mime = "mp4" in mime_type.lower() or is_audio
 
             # Native zero-transcode path. Browser can byte-range seek directly.
-            if quality == "Original" and audio_idx is None and not is_unfriendly_container and "mp4" in mime_type.lower() and file_size > 0 and not start_time:
+            if quality == "Original" and audio_idx is None and not is_unfriendly_container and is_native_mime and file_size > 0 and not start_time:
                 range_header = request.headers.get("Range", "")
                 start_byte = 0
                 end_byte = file_size - 1
@@ -7907,31 +7939,33 @@ async def _api_stream_handler(request):
             if scale_filter:
                 ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
 
-            if audio_idx is not None and str(audio_idx).strip() != "":
-                # audio_idx comes from ffprobe's global stream index.
-                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
+            if is_audio:
+                ffmpeg_cmd.extend(["-vn"])
+                if audio_idx is not None and str(audio_idx).strip() != "":
+                    ffmpeg_cmd.extend(["-map", f"0:{audio_idx}"])
+                else:
+                    ffmpeg_cmd.extend(["-map", "0:a:0?"])
             else:
-                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
+                if audio_idx is not None and str(audio_idx).strip() != "":
+                    ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
+                else:
+                    ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
 
-            # Output seek for pipe input. This is intentionally after -i because
-            # Telegram's stream is not seekable as an FFmpeg input.
+            # Output seek for pipe input.
             if start_time is not None:
                 try:
                     start_float = max(0.0, float(start_time))
-                except Exception:
-                    start_float = 0.0
-                if start_float > 0:
-                    ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
+                    if start_float > 0:
+                        ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
+                except Exception: pass
 
             ffmpeg_cmd.extend(["-sn"])
             
-            if quality == "Original":
-                # FAST PLAYBACK: Instantly copies video stream instead of CPU-heavy re-encoding
-                ffmpeg_cmd.extend(["-c:v", "copy"])
-            else:
-                ffmpeg_cmd.extend([
-                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"
-                ])
+            if not is_audio:
+                if quality == "Original":
+                    ffmpeg_cmd.extend(["-c:v", "copy"])
+                else:
+                    ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"])
 
             ffmpeg_cmd.extend([
                 "-c:a", "aac", "-b:a", "192k",
@@ -7997,14 +8031,15 @@ async def _api_stream_handler(request):
     force_transcode = transcode_param in ("1", "true")
     
     lower_link = link.lower()
-    is_native_mp4 = bool(re.search(r"\.(mp4|webm)(?:$|[?#])", lower_link))
+    is_native_container = bool(re.search(r"\.(mp4|webm|flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
+    is_audio_only = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
     
-    # If the URL is extensionless (like hashed links) or an MKV/AVI, route through FFmpeg
+    # Route through FFmpeg if transcode is forced or container is unsupported by browsers (e.g. MKV/AVI)
     needs_ffmpeg = (
         force_transcode or
         quality != "Original" or
         (audio_idx is not None and str(audio_idx).strip() != "") or
-        not is_native_mp4
+        not is_native_container
     )
 
     if needs_ffmpeg:
@@ -8027,18 +8062,30 @@ async def _api_stream_handler(request):
             
         ffmpeg_cmd.extend(["-i", link])
 
-        if scale_filter:
-            ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
-
-        if audio_idx is not None and str(audio_idx).strip() != "":
-            ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
+        if is_audio_only:
+            ffmpeg_cmd.extend(["-vn"])
+            if audio_idx is not None and str(audio_idx).strip() != "":
+                ffmpeg_cmd.extend(["-map", f"0:{audio_idx}"])
+            else:
+                ffmpeg_cmd.extend(["-map", "0:a:0?"])
         else:
-            ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
+            if scale_filter:
+                ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
+
+            if audio_idx is not None and str(audio_idx).strip() != "":
+                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
+            else:
+                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
+
+        ffmpeg_cmd.extend(["-sn"])
+        
+        if not is_audio_only:
+            if quality == "Original":
+                ffmpeg_cmd.extend(["-c:v", "copy"])
+            else:
+                ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-crf", "22", "-pix_fmt", "yuv420p"])
 
         ffmpeg_cmd.extend([
-            "-sn",
-            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-            "-crf", "22", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-f", "mp4", "pipe:1"
