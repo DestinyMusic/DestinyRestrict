@@ -4994,7 +4994,10 @@ HTML_DASHBOARD = """
 
                     <!-- Quick Settings Popup -->
                     <div id="media-settings-popup" class="settings-popup">
-                        <div class="pop-title">Stream Settings</div>
+                        <div class="pop-title" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>Stream Settings</span>
+                            <button onclick="toggleSettingsPopup()" style="background: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: bold; cursor: pointer;">Close ✕</button>
+                        </div>
                         
                         <div style="display: flex; gap: 8px; margin-bottom: 12px;">
                             <button class="primary-btn" style="padding: 8px; font-size: 11px; background: #ea580c;" onclick="openExternalPlayer('vlc')">Open in VLC</button>
@@ -5968,6 +5971,7 @@ HTML_DASHBOARD = """
         let playerDirectCompatible = true;
         let playerTimelineOffset = 0;
         let playerStreamGeneration = 0;
+        let playerTotalDuration = 0;
         let activeSubtitleIndex = 'off';
         let subtitleCues = [];
         let subtitleAbortController = null;
@@ -6195,9 +6199,18 @@ HTML_DASHBOARD = """
         function skipPlayback(sec) {
             const video = document.getElementById('hidden-video');
             if (!video) return;
-            const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
-            const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity;
-            const target = Math.max(0, Math.min(duration, current + Number(sec || 0)));
+            
+            let current = video.currentTime || 0;
+            let dur = video.duration || Infinity;
+            
+            if (playerRequiresTranscode && playerTotalDuration > 0) {
+                current = playerTimelineOffset + current;
+                dur = playerTotalDuration;
+            } else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur === 0 || dur === Infinity)) {
+                dur = playerTotalDuration;
+            }
+
+            const target = Math.max(0, Math.min(dur, current + Number(sec || 0)));
             wakeHUD();
 
             if (playerRequiresTranscode) {
@@ -6205,25 +6218,33 @@ HTML_DASHBOARD = """
                 return;
             }
             try { video.currentTime = target; } catch (_) {}
-            renderCurrentSubtitle();
+            renderCurrentSubtitle(target);
         }
 
         function seekPlayback(e) {
             const video = document.getElementById('hidden-video');
             const bar = document.getElementById('cinema-scrubber');
-            if (!video || !bar || !Number.isFinite(video.duration) || video.duration <= 0) return;
+            if (!video || !bar) return;
+            
+            let dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity;
+            if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur === 0 || dur === Infinity)) {
+                dur = playerTotalDuration;
+            }
+            if (dur === Infinity) return;
+
             const rect = bar.getBoundingClientRect();
             const clientX = e.clientX ?? (e.touches?.[0]?.clientX ?? rect.left);
             const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-            const target = pos * video.duration;
+            const target = pos * dur;
             wakeHUD();
+            
             if (playerRequiresTranscode) restartStreamAt(target);
             else {
                 video.currentTime = target;
-                renderCurrentSubtitle();
+                renderCurrentSubtitle(target);
             }
         }
-
+        
         function toggleSettingsPopup() {
             const popup = document.getElementById('media-settings-popup');
             if (!popup) return;
@@ -6354,19 +6375,30 @@ HTML_DASHBOARD = """
                 const end = vttTimeToSeconds(timeParts[1].trim().split(/\\s+/)[0]);
                 const payload = lines.slice(timeIndex + 1).join('\\n').trim();
                 if (!payload || !Number.isFinite(start) || !Number.isFinite(end)) continue;
-                cues.push({ start, end, text: payload.replace(/<[^>]*>/g, '') });
+                
+                // Strip HTML tags AND complex ASS animation/position tags from Anime MKVs
+                const cleanText = payload.replace(/<[^>]*>/g, '').replace(/\\{[^}]*\\}/g, '');
+                cues.push({ start, end, text: cleanText });
             }
             return cues.sort((a, b) => a.start - b.start);
         }
 
-        function renderCurrentSubtitle() {
+        function renderCurrentSubtitle(forceTime = null) {
             const video = document.getElementById('hidden-video');
             const overlay = document.getElementById('subtitle-overlay');
             if (!video || !overlay || activeSubtitleIndex === 'off') {
                 if (overlay) overlay.innerHTML = '';
                 return;
             }
-            const t = (Number.isFinite(video.currentTime) ? video.currentTime : 0) + (playerTimelineOffset || 0);
+            
+            let t = 0;
+            if (forceTime !== null) {
+                t = forceTime;
+            } else {
+                let cur = video.currentTime || 0;
+                t = playerRequiresTranscode ? (playerTimelineOffset + cur) : cur;
+            }
+
             const hits = subtitleCues.filter(c => t >= c.start && t <= c.end);
             if (!hits.length) {
                 overlay.innerHTML = '';
@@ -6377,7 +6409,7 @@ HTML_DASHBOARD = """
             overlay.firstElementChild.textContent = safeText;
             applySubtitleStyle();
         }
-
+        
         async function applySubtitleSelection() {
             const subSelect = document.getElementById('pop-sub-select');
             const overlay = document.getElementById('subtitle-overlay');
@@ -6565,6 +6597,7 @@ HTML_DASHBOARD = """
 
                 playerDirectCompatible = !Boolean(pdata.requires_transcode);
                 playerRequiresTranscode = !playerDirectCompatible;
+                playerTotalDuration = Number(pdata.duration) || 0;
                 if (titleEl) titleEl.innerText = pdata.file_name || 'Telegram Stream';
 
                 qSelect.innerHTML = '';
@@ -6638,8 +6671,18 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('loadeddata', () => renderCurrentSubtitle());
             vidElem.addEventListener('seeked', () => renderCurrentSubtitle());
             vidElem.addEventListener('timeupdate', () => {
-                const cur = vidElem.currentTime || 0;
-                const dur = Number.isFinite(vidElem.duration) && vidElem.duration > 0 ? vidElem.duration : 0;
+                let cur = vidElem.currentTime || 0;
+                let dur = Number.isFinite(vidElem.duration) && vidElem.duration > 0 ? vidElem.duration : 0;
+
+                // Sync live pipes to the global timeline so it behaves like a standard VOD
+                if (playerRequiresTranscode && playerTotalDuration > 0) {
+                    cur = playerTimelineOffset + cur;
+                    dur = playerTotalDuration;
+                } else if (playerTotalDuration > 0 && (!dur || dur === Infinity)) {
+                    dur = playerTotalDuration;
+                }
+                cur = Math.min(cur, dur);
+
                 const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
                 const fill = document.getElementById('scrubber-fill');
                 const time = document.getElementById('hud-time');
@@ -6654,7 +6697,7 @@ HTML_DASHBOARD = """
                     return `${hh}${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
                 };
                 if (time) time.innerText = `${fmt(cur)} / ${fmt(dur)}`;
-                renderCurrentSubtitle();
+                renderCurrentSubtitle(cur);
             });
             vidElem.addEventListener('error', () => {
                 const mediaError = vidElem.error;
@@ -7609,7 +7652,7 @@ async def _api_media_probe_handler(request):
             "-probesize", "64M",
             "-analyzeduration", "20M",
             "-show_entries",
-            "stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
+            "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
             "-of", "json", str(target_path)
         ]
         proc = await asyncio.create_subprocess_exec(
@@ -7684,6 +7727,11 @@ async def _api_media_probe_handler(request):
         audio_tracks.sort(key=lambda x: (not x.get("default", False), x.get("index") if x.get("index") is not None else 9999))
         subtitles.sort(key=lambda x: (not x.get("default", False), x.get("index") if x.get("index") is not None else 9999))
 
+        duration_val = 0.0
+        try:
+            duration_val = float(probe_data.get("format", {}).get("duration", 0))
+        except: pass
+
         return web.json_response({
             "status": "success",
             "file_name": real_file_name,
@@ -7691,6 +7739,7 @@ async def _api_media_probe_handler(request):
             "requires_transcode": requires_transcode,
             "video_width": width,
             "video_height": height,
+            "duration": duration_val,
             "qualities": list(OrderedDict.fromkeys(qualities)),
             "audio_tracks": audio_tracks,
             "subtitles": subtitles,
