@@ -6351,31 +6351,87 @@ HTML_DASHBOARD = """
             renderCurrentSubtitle(target);
         }
 
-        function seekPlayback(e) {
-            const video = document.getElementById('hidden-video');
-            const bar = document.getElementById('cinema-scrubber');
-            if (!video || !bar) return;
+        // 🟢 FIX: Fully Draggable & Clickable Scrubber Logic
+        let isDraggingScrubber = false;
+
+        function getScrubberTime(e, bar) {
+            const rect = bar.getBoundingClientRect();
+            const clientX = e.clientX ?? (e.touches?.[0]?.clientX ?? rect.left);
+            let pos = (clientX - rect.left) / rect.width;
+            pos = Math.max(0, Math.min(1, pos));
             
-            let dur = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity;
+            const video = document.getElementById('hidden-video');
+            let dur = Number.isFinite(video?.duration) && video.duration > 0 ? video.duration : Infinity;
             if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur === 0 || dur === Infinity)) {
                 dur = playerTotalDuration;
             }
-            if (dur === Infinity) return;
+            if (dur === Infinity) return { pos: 0, target: 0, dur: 0 };
+            
+            return { pos, target: pos * dur, dur };
+        }
 
-            const rect = bar.getBoundingClientRect();
-            const clientX = e.clientX ?? (e.touches?.[0]?.clientX ?? rect.left);
-            const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-            const target = pos * dur;
-            wakeHUD();
+        function seekPlayback(e) {
+            // Disabled: Replaced by the smart pointer events below.
+        }
+
+        // Initialize smooth drag listeners safely
+        setTimeout(() => {
+            const scrubberBar = document.getElementById('cinema-scrubber');
+            if (!scrubberBar) return;
+            
+            scrubberBar.removeAttribute('onclick'); // Remove old static click
+
+            scrubberBar.addEventListener('pointerdown', (e) => {
+                isDraggingScrubber = true;
+                scrubberBar.setPointerCapture(e.pointerId);
+                updateScrubberUI(e, scrubberBar);
+            });
+
+            scrubberBar.addEventListener('pointermove', (e) => {
+                if (isDraggingScrubber) updateScrubberUI(e, scrubberBar);
+            });
+
+            scrubberBar.addEventListener('pointerup', (e) => {
+                if (isDraggingScrubber) {
+                    isDraggingScrubber = false;
+                    scrubberBar.releasePointerCapture(e.pointerId);
+                    commitSeek(e, scrubberBar);
+                }
+            });
+        }, 1000);
+
+        function updateScrubberUI(e, bar) {
+            const { pos, target, dur } = getScrubberTime(e, bar);
+            if (dur === 0) return;
             
             const fill = document.getElementById('scrubber-fill');
             if (fill) fill.style.width = `${pos * 100}%`;
             
+            const fmt = (s) => {
+                if (!Number.isFinite(s) || s < 0) return '00:00';
+                const h = Math.floor(s / 3600);
+                const m = Math.floor((s % 3600) / 60);
+                const sec = Math.floor(s % 60);
+                const hh = h > 0 ? `${String(h).padStart(2, '0')}:` : '';
+                return `${hh}${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+            };
+            
+            const timeText = document.getElementById('hud-time');
+            if (timeText) timeText.innerText = `${fmt(target)} / ${fmt(dur)}`;
+            wakeHUD();
+        }
+
+        function commitSeek(e, bar) {
+            const { target, dur } = getScrubberTime(e, bar);
+            if (dur === 0) return;
+            wakeHUD();
+            
+            const video = document.getElementById('hidden-video');
             if (playerRequiresTranscode) {
                 isTranscodeSeeking = true;
                 restartStreamAt(target);
             } else {
-                video.currentTime = target;
+                if (video) video.currentTime = target;
                 renderCurrentSubtitle(target);
             }
         }
@@ -6966,8 +7022,8 @@ HTML_DASHBOARD = """
                 const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
                 const time = document.getElementById('hud-time');
                 
-                // 🟢 FIX: Do not visually reset the bar to 0:00 while the browser is buffering the new seek!
-                if (!isTranscodeSeeking && !vidElem.seeking) {
+                // 🟢 FIX: Do not visually reset the bar while buffering or DRAGGING!
+                if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
                     const fill = document.getElementById('scrubber-fill');
                     if (fill) fill.style.width = `${percent}%`;
                     
@@ -7868,6 +7924,47 @@ async def _api_spectrogram_web_handler(request):
 # --- HIGH-PERFORMANCE STREAMING, TRANSCODING & PROBE ENGINE ---
 # ==============================================================================
 
+async def resolve_direct_link(url):
+    import re, aiohttp
+    
+    # 1. Google Drive (Converts regular drive link to your worker bypass)
+    gdrive_match = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", url)
+    if gdrive_match:
+        return f"https://gdrive-dd.bypased.workers.dev/direct.aspx?id={gdrive_match.group(1)}"
+        
+    # 2. GoFile (API Token extraction)
+    gofile_match = re.search(r"gofile\.io/d/([a-zA-Z0-9]+)", url)
+    if gofile_match:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.post("https://api.gofile.io/accounts") as r:
+                    token = (await r.json())["data"]["token"]
+                async with s.get(f"https://api.gofile.io/contents/{gofile_match.group(1)}?wt=4fd6sg89d7s6", headers={"Authorization": f"Bearer {token}"}) as r:
+                    children = (await r.json())["data"]["children"]
+                    for item in children.values():
+                        if item.get("type") == "file": return item["link"]
+        except Exception: pass
+
+    # 3. Buzzheavier (Scrapes HTML for direct media source)
+    buzz_match = re.search(r"buzzheavier\.com/([a-zA-Z0-9]+)", url)
+    if buzz_match:
+        try:
+            async with aiohttp.ClientSession() as s:
+                async with s.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}) as r:
+                    html_text = await r.text()
+                    m = re.search(r'href="(https://[^"]+\.(mp4|mkv|avi|webm)[^"]*)"', html_text)
+                    if m: return m.group(1)
+        except Exception: pass
+        
+    # 4. Fallback: Resolve basic HTTP redirects
+    try:
+        async with aiohttp.ClientSession() as s:
+            async with s.head(url, allow_redirects=True, timeout=5) as r:
+                return str(r.url)
+    except: pass
+    
+    return url
+    
 async def _api_media_probe_handler(request):
     """Lightning-fast HTTP Range probe."""
     user_id = int(request.query.get("user_id", 0))
@@ -7909,11 +8006,11 @@ async def _api_media_probe_handler(request):
         # Link the file to the new high-speed proxy
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
     else:
-        real_file_name = os.path.basename(urlparse(link).path) or "Direct_Stream_Media"
+        actual_url = await resolve_direct_link(link) # 🟢 Automatically fetches the raw MP4 from GoFile/GDrive/Buzzheavier
+        real_file_name = os.path.basename(urlparse(actual_url).path) or "Direct_Stream_Media"
         try:
-            # Do a lightning-fast HEAD request to grab the true filename from the server
             async with aiohttp.ClientSession() as session:
-                async with session.head(link, allow_redirects=True, timeout=5) as resp:
+                async with session.head(actual_url, allow_redirects=True, timeout=5) as resp:
                     cd = resp.headers.get("Content-Disposition", "")
                     if cd:
                         m = re.search(r"filename\*=UTF-8''([^;]+)", cd, re.I)
@@ -7929,7 +8026,7 @@ async def _api_media_probe_handler(request):
 
     cmd = [
         "ffprobe", "-v", "error",
-        "-headers", "User-Agent: Mozilla/5.0\r\n",
+        "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\nAccept: */*\r\n", # 🟢 Bypasses Cloudflare TLS blocks
         "-probesize", "64M", "-analyzeduration", "20M",
         "-show_entries", "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
         "-of", "json", actual_url
@@ -8046,7 +8143,8 @@ async def _api_stream_handler(request):
             raise web.HTTPFound(actual_url)
 
     else:
-        lower_link = link.lower()
+        actual_url = await resolve_direct_link(link) # 🟢 Extracts the raw MP4 from hosters
+        lower_link = actual_url.lower()
         is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
         is_unfriendly = not bool(re.search(r"\.(mp4|m4a)(?:$|[?#])", lower_link))
 
@@ -8058,10 +8156,10 @@ async def _api_stream_handler(request):
 
         ffmpeg_cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-headers", "User-Agent: Mozilla/5.0\r\n",
+            "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\nAccept: */*\r\n", # 🟢 Bypasses Cloudflare TLS blocks
             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-            "-probesize", "5M", "-analyzeduration", "5M",      # 🟢 FIX: Stops FFmpeg from downloading huge chunks to probe
-            "-fflags", "+nobuffer+fastseek+flush_packets"      # 🟢 FIX: Forces FFmpeg to start streaming instantly
+            "-probesize", "5M", "-analyzeduration", "5M",
+            "-fflags", "+nobuffer+flush_packets"               # 🟢 FIX: Removed '+fastseek' to prevent 0-byte HTTP stream crashes
         ]
 
         # FAST SEEK (Placed BEFORE the input)
@@ -8170,8 +8268,8 @@ async def _api_subtitles_handler(request):
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-headers", "User-Agent: Mozilla/5.0\r\n",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-probesize", "5M", "-analyzeduration", "5M",      # 🟢 FIX: Lightning fast probe
-        "-fflags", "+nobuffer+fastseek+flush_packets",     # 🟢 FIX: Disable input demuxer buffering
+        "-probesize", "5M", "-analyzeduration", "5M",
+        "-fflags", "+nobuffer+flush_packets",              # 🟢 FIX: Removed '+fastseek' to prevent EOF crashes
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
         "-vn", "-an",                                      # 🟢 FIX: Completely blind ffmpeg to heavy video/audio streams
