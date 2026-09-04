@@ -6691,6 +6691,7 @@ HTML_DASHBOARD = """
         // ======================================================================
         // STREAM SELECTION — preserves playback position across changes
         // ======================================================================
+        
         async function setVideoSource(streamUrl, preserveTime = 0, shouldPlay = true) {
             const video = document.getElementById('hidden-video');
             if (!video) return;
@@ -6706,15 +6707,20 @@ HTML_DASHBOARD = """
             const onMetadata = async () => {
                 if (generation !== playerStreamGeneration) return;
                 video.removeEventListener('loadedmetadata', onMetadata);
-                isTranscodeSeeking = false; // 🟢 FIX: Unlock the scrubber bar!
+                isTranscodeSeeking = false; 
                 updateViewportBox();
                 resizePlayerSurface();
+                
+                // 🟢 FIX: Forcefully apply the target timestamp across both transcode and direct modes
                 try {
-                    if (Number.isFinite(preserveTime) && preserveTime > 0) {
-                        // currentTime must be assigned after metadata is available.
-                        video.currentTime = preserveTime;
+                    const targetSeek = Number(preserveTime) || 0;
+                    if (targetSeek > 0) {
+                        video.currentTime = targetSeek;
                     }
-                } catch (_) {}
+                } catch (e) {
+                    console.warn("Seek adjustment failed:", e);
+                }
+
                 if (shouldPlay) {
                     try { await video.play(); }
                     catch (err) { console.warn('Autoplay after track switch failed:', err); }
@@ -6782,8 +6788,31 @@ HTML_DASHBOARD = """
         }
 
         // ======================================================================
-        // MEDIA PROBE + LOAD
+        // MEDIA PROBE + LOAD & HYBRID FALLBACK WATCHDOG
         // ======================================================================
+        function canBrowserDirectPlay(mimeType, videoCodec, audioCodec) {
+            if (!window.MediaSource) return false;
+            const vCodec = videoCodec === 'hevc' ? 'hvc1.1.6.L93.B0' : 'avc1.640028';
+            const aCodec = audioCodec === 'aac' ? 'mp4a.40.2' : (audioCodec === 'mp3' ? 'mp4a.40.34' : '');
+            if (!aCodec || ['ac3', 'eac3', 'dts', 'truehd', 'flac'].includes(audioCodec?.toLowerCase())) return false;
+            return MediaSource.isTypeSupported(`video/mp4; codecs="${vCodec}, ${aCodec}"`);
+        }
+
+        let playbackWatchdogTimer = null;
+        function armPlaybackWatchdog(fallbackUrl, currentTargetTime = 0) {
+            clearTimeout(playbackWatchdogTimer);
+            playbackWatchdogTimer = setTimeout(async () => {
+                const video = document.getElementById('hidden-video');
+                if (video && (video.paused || video.readyState < 2)) {
+                    console.warn("⚠️ Client WASM/Direct path stalled. Falling back to Server FFmpeg...");
+                    playerRequiresTranscode = true;
+                    playerTimelineOffset = currentTargetTime;
+                    await setVideoSource(fallbackUrl, 0, true);
+                }
+            }, 2500);
+        }
+        function disarmPlaybackWatchdog() { clearTimeout(playbackWatchdogTimer); }
+
         function addOption(select, value, label) {
             const option = document.createElement('option');
             option.value = String(value ?? '');
@@ -6804,9 +6833,9 @@ HTML_DASHBOARD = """
             const aSelect = document.getElementById('pop-audio-select');
             const sSelect = document.getElementById('pop-sub-select');
 
-            if (titleEl) titleEl.innerText = '⏳ Probing media…';
+            if (titleEl) titleEl.innerText = '⏳ Probing routing...';
             if (vp) vp.classList.remove('idle-hide');
-            if (btn) { btn.innerText = '⏳ Probing Media...'; btn.disabled = true; }
+            if (btn) { btn.innerText = '⏳ Routing...'; btn.disabled = true; }
 
             qSelect.innerHTML = '';
             addOption(qSelect, 'Original', 'Original');
@@ -6821,7 +6850,6 @@ HTML_DASHBOARD = """
                 if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
 
                 playerDirectCompatible = !Boolean(pdata.requires_transcode);
-                playerRequiresTranscode = !playerDirectCompatible;
                 playerTotalDuration = Number(pdata.duration) || 0;
                 if (titleEl) titleEl.innerText = pdata.file_name || 'Telegram Stream';
 
@@ -6852,7 +6880,26 @@ HTML_DASHBOARD = """
                 if (aspectSelect) aspectSelect.value = savedAspect;
                 applyAspectRatio(savedAspect);
 
-                await applyTrackSelection();
+                // --- HYBRID ROUTING LOGIC ---
+                // We use probe data to determine if the browser can play it natively
+                const vCodec = pdata.streams?.find(s => s.codec_type === 'video')?.codec_name || 'h264';
+                const aCodec = pdata.streams?.find(s => s.codec_type === 'audio')?.codec_name || 'aac';
+                const isClientCompatible = canBrowserDirectPlay(pdata.mime_type, vCodec, aCodec);
+                
+                const serverFfmpegUrl = buildStreamUrl(0);
+
+                if (isClientCompatible) {
+                    console.log("⚡ Route: FAST CLIENT-SIDE (WASM/Direct Stream)");
+                    playerRequiresTranscode = false;
+                    armPlaybackWatchdog(serverFfmpegUrl, 0); // Watchdog armed
+                    const directUrl = `/api/tg_stream?user_id=${currentUser}&link=${encodeURIComponent(link)}`;
+                    await setVideoSource(directUrl, 0, true);
+                } else {
+                    console.log("🛡️ Route: SERVER-SIDE FFMPEG (Codec conversion needed)");
+                    playerRequiresTranscode = true;
+                    await setVideoSource(serverFfmpegUrl, 0, true);
+                }
+
                 if (!gl) initWebGL();
                 wakeHUD();
             } catch (err) {
@@ -6891,17 +6938,26 @@ HTML_DASHBOARD = """
             });
             vidElem.addEventListener('ended', () => wakeHUD());
             vidElem.addEventListener('waiting', () => { if (bigPlay) bigPlay.innerHTML = '⏳'; });
-            vidElem.addEventListener('playing', () => { if (bigPlay) bigPlay.innerHTML = pauseSvg; });
-            vidElem.addEventListener('loadedmetadata', () => { updateViewportBox(); resizePlayerSurface(); applyPlaybackSpeed(); });
+            vidElem.addEventListener('playing', () => { 
+                disarmPlaybackWatchdog(); // 🟢 Disarm Watchdog (Playback Started)
+                if (bigPlay) bigPlay.innerHTML = pauseSvg; 
+            });
+            vidElem.addEventListener('loadedmetadata', () => { 
+                disarmPlaybackWatchdog(); // 🟢 Disarm Watchdog (Metadata Loaded)
+                updateViewportBox(); resizePlayerSurface(); applyPlaybackSpeed(); 
+            });
             vidElem.addEventListener('loadeddata', () => { renderCurrentSubtitle(); applyPlaybackSpeed(); });
             vidElem.addEventListener('seeked', () => renderCurrentSubtitle());
             vidElem.addEventListener('timeupdate', () => {
+                disarmPlaybackWatchdog(); // 🟢 Disarm Watchdog (Frames flowing)
                 let cur = vidElem.currentTime || 0;
                 let dur = Number.isFinite(vidElem.duration) && vidElem.duration > 0 ? vidElem.duration : 0;
 
-                if (playerRequiresTranscode && playerTotalDuration > 0) {
+                if (playerRequiresTranscode) {
                     cur = playerTimelineOffset + cur;
-                    dur = playerTotalDuration;
+                    if (playerTotalDuration > 0) {
+                        dur = playerTotalDuration;
+                    }
                 } else if (playerTotalDuration > 0 && (!dur || dur === Infinity)) {
                     dur = playerTotalDuration;
                 }
@@ -8003,7 +8059,9 @@ async def _api_stream_handler(request):
         ffmpeg_cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
             "-headers", "User-Agent: Mozilla/5.0\r\n",
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5"
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+            "-probesize", "5M", "-analyzeduration", "5M",      # 🟢 FIX: Stops FFmpeg from downloading huge chunks to probe
+            "-fflags", "+nobuffer+fastseek+flush_packets"      # 🟢 FIX: Forces FFmpeg to start streaming instantly
         ]
 
         # FAST SEEK (Placed BEFORE the input)
@@ -8043,6 +8101,7 @@ async def _api_stream_handler(request):
 
         ffmpeg_cmd.extend([
             "-c:a", "aac", "-b:a", "320k",
+            "-avoid_negative_ts", "make_zero",
             "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-f", "mp4", "pipe:1"
         ])
@@ -8111,12 +8170,13 @@ async def _api_subtitles_handler(request):
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-headers", "User-Agent: Mozilla/5.0\r\n",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-probesize", "32M", "-analyzeduration", "32M", 
-        "-discard", "v",  # Drop video packets instantly
-        "-discard", "a",  # Drop audio packets instantly
+        "-probesize", "5M", "-analyzeduration", "5M",      # 🟢 FIX: Lightning fast probe
+        "-fflags", "+nobuffer+fastseek+flush_packets",     # 🟢 FIX: Disable input demuxer buffering
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
+        "-vn", "-an",                                      # 🟢 FIX: Completely blind ffmpeg to heavy video/audio streams
         "-c:s", "webvtt",
+        "-flush_packets", "1",                             # 🟢 FIX: Forces WebVTT to stream to frontend instantly
         "-f", "webvtt", "pipe:1"
     ]
 
