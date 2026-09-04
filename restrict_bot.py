@@ -2174,11 +2174,8 @@ async def watch_setup(client: Client, message: Message):
     if is_restricted is None:
         return await message.reply(status_text, quote=True)
     
-    source_thread_id = None
-    clean_text = link_text.replace("https://", "").replace("http://", "").replace("t.me/", "").replace("c/", "").split("?")[0]
-    parts = clean_text.strip("/").split("/")
-    if len(parts) >= 3 and parts[1].isdigit():
-         source_thread_id = int(parts[1])
+    parsed = _parse_source_link(link_text)
+    source_thread_id = parsed.get("topic_id")
     
     PENDING_TASKS[user_id] = {
         "mode": "WATCHER", 
@@ -2501,7 +2498,7 @@ async def chats_cmd(client: Client, message: Message):
             api_id = await db.get_api_id(user_id) or API_ID
             api_hash = await db.get_api_hash(user_id) or API_HASH
             uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[user_id] = uclient
             await status.edit("🔄 <b>Session Active! Fetching your dialogs...</b>", parse_mode=enums.ParseMode.HTML)
@@ -2893,7 +2890,7 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
                 workers=4,
                 ipv6=False
             )
-            new_client.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+            new_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await new_client.start()
             USER_CLIENTS[user_id] = new_client
             await status_msg.delete()
@@ -3182,10 +3179,15 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
     if not msg_type or (allowed_types and msg_type not in allowed_types):
         return "SKIPPED"
 
-    if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)):
+    # 🟢 Shield live watchers from global batch cancellations
+    is_w_task = False
+    if user_id in ACTIVE_PROCESSES and task_uuid in ACTIVE_PROCESSES[user_id]:
+        is_w_task = ACTIVE_PROCESSES[user_id][task_uuid].get("is_watcher", False)
+
+    if (batch_temp.IS_BATCH.get(user_id) and not is_w_task) or (task_uuid and CANCEL_FLAGS.get(task_uuid)):
         return "FAILED"
 
-    # 🟢 FIX: Mid-Batch Restriction Fallback Ejector
+    # 🟢 Mid-Batch Restriction Fallback Ejector
     is_content_protected = getattr(msg, "has_protected_content", False) or getattr(msg.chat, "has_protected_content", False)
     if is_content_protected:
         return "FALLBACK_RESTRICTED"
@@ -3195,12 +3197,16 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
         try:
             await client.send_message(dest_chat_id, msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
             return "SUCCESS"
-        except Exception:
+        except Exception as e:
+            # 🟢 KICKS TO DOWNLOAD MODE IF FORWARDS ARE RESTRICTED
+            if "CHAT_FORWARDS_RESTRICTED" in str(e) or "RESTRICTED" in str(e): return "FALLBACK_RESTRICTED"
             if acc:
                 try:
                     await acc.send_message(dest_chat_id, msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
                     return "SUCCESS"
-                except Exception: return "FAILED"
+                except Exception as e2: 
+                    if "CHAT_FORWARDS_RESTRICTED" in str(e2) or "RESTRICTED" in str(e2): return "FALLBACK_RESTRICTED"
+                    return "FAILED"
             return "FAILED"
 
     try:
@@ -3217,8 +3223,14 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
 
             try:
                 copy_res = await client.copy_media_group(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
-            except Exception:
-                if acc: copy_res = await acc.copy_media_group(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
+            except Exception as e:
+                if "CHAT_FORWARDS_RESTRICTED" in str(e) or "RESTRICTED" in str(e): return "FALLBACK_RESTRICTED"
+                if acc:
+                    try:
+                        copy_res = await acc.copy_media_group(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
+                    except Exception as e2:
+                        if "CHAT_FORWARDS_RESTRICTED" in str(e2) or "RESTRICTED" in str(e2): return "FALLBACK_RESTRICTED"
+                        copy_res = False
                 else: copy_res = False
             
             if copy_res:
@@ -3229,20 +3241,25 @@ async def handle_public_unrestricted(client: Client, acc, chatid: str, msgid: in
         # 🟢 Single Media Copy
         try:
             copy_res = await client.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
-            if not copy_res: raise ValueError()
+            if not copy_res: raise ValueError("Bot copy failed")
             return "SUCCESS"
-        except Exception:
+        except Exception as e:
+            if "CHAT_FORWARDS_RESTRICTED" in str(e) or "RESTRICTED" in str(e):
+                return "FALLBACK_RESTRICTED"
             if acc:
                 try: 
                     copy_res = await acc.copy_message(chat_id=dest_chat_id, from_chat_id=chatid, message_id=msgid, message_thread_id=dest_thread_id)
                     return "SUCCESS" if copy_res else "FAILED"
-                except Exception: return "FAILED"
+                except Exception as e2: 
+                    if "CHAT_FORWARDS_RESTRICTED" in str(e2) or "RESTRICTED" in str(e2):
+                        return "FALLBACK_RESTRICTED"
+                    return "FAILED"
             return "FAILED"
 
     except FloodWait as e:
         USER_FLOOD_LOCKS[user_id].set_lock(e.value + 5)
         await asyncio.sleep(e.value + 5)
-        return "FAILED" # Will be retried or caught gracefully
+        return "FAILED" 
     except Exception as e:
         logger.error(f"Total copy failure for {msgid}: {e}")
         return "FAILED"
@@ -3638,7 +3655,14 @@ async def _fetch_and_validate_msg(client, acc, chatid, msgid, user_id, filter_th
     msg_type = get_message_type(msg)
     if not msg_type: return None, None
     if allowed_types is not None and msg_type not in allowed_types: return None, None
-    if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): return None, None
+    
+    # 🟢 FIX: Shield Watchers from Global Cancels
+    is_w_task = False
+    if user_id in ACTIVE_PROCESSES and task_uuid in ACTIVE_PROCESSES[user_id]:
+        is_w_task = ACTIVE_PROCESSES[user_id][task_uuid].get("is_watcher", False)
+        
+    if (batch_temp.IS_BATCH.get(user_id) and not is_w_task) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): 
+        return None, None
 
     return msg, msg_type
 
@@ -3944,9 +3968,14 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
             if me.is_premium: is_premium = True
     except Exception: pass
 
+    # 🟢 Define the watcher shield variable
+    is_w_task = False
+    if user_id in ACTIVE_PROCESSES and task_uuid in ACTIVE_PROCESSES[user_id]:
+        is_w_task = ACTIVE_PROCESSES[user_id][task_uuid].get("is_watcher", False)
+
     try: 
         for attempt in range(3):
-            if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): return False
+            if (batch_temp.IS_BATCH.get(user_id) and not is_w_task) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): return False
             try:
                 msg_fresh = await fetcher.get_messages(chatid, msgid)
                 if msg_fresh.empty: return False
@@ -4069,7 +4098,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                     async with USER_SEMAPHORES[user_id]:
                         async with SERVER_UPLOAD_LIMIT:
                             for part in parts:
-                                if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): raise Exception("CANCELLED")
+                                if (batch_temp.IS_BATCH.get(user_id) and not is_w_task) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): raise Exception("CANCELLED")
                                 while True:
                                     await USER_FLOOD_LOCKS[user_id].wait_if_locked() 
                                     try:
@@ -4132,7 +4161,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
         if down_task and not down_task.done(): down_task.cancel()
         
         if not download_success: return False
-        if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): return False
+        if (batch_temp.IS_BATCH.get(user_id) and not is_w_task) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): return False
 
         if status_message:
             PROGRESS.pop(f"{status_message.id}:up", None)
@@ -4155,7 +4184,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
         async with SERVER_UPLOAD_LIMIT:
             async with USER_SEMAPHORES[user_id]:
                 while True:
-                    if batch_temp.IS_BATCH.get(user_id) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): break
+                    if (batch_temp.IS_BATCH.get(user_id) and not is_w_task) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): break
                     
                     await USER_FLOOD_LOCKS[user_id].wait_if_locked() 
                     try:
@@ -5505,9 +5534,7 @@ async def _api_add_watcher(request):
 
         parsed = _parse_source_link(link)
 
-        web_clean = link.replace("https://", "").replace("http://", "").replace("t.me/s/", "t.me/").replace("t.me/", "").replace("c/", "").split("?")[0]
-        web_parts = web_clean.strip("/").split("/")
-        source_thread = int(web_parts[1]) if (len(web_parts) == 2 and web_parts[1].isdigit()) else parsed.get("topic_id")
+        source_thread = parsed.get("topic_id")
         
         # 🟢 FIX 1: Safely resolve Source & Destination Names (WITH TOPICS)
         user_client = USER_CLIENTS.get(user_id, app)
@@ -5540,7 +5567,7 @@ async def _api_add_watcher(request):
                 u_api = await db.get_api_id(user_id) or API_ID
                 u_hash = await db.get_api_hash(user_id) or API_HASH
                 new_client = Client(f"User_{user_id}", session_string=user_session, api_id=u_api, api_hash=u_hash, workers=4, ipv6=False)
-                new_client.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+                new_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
                 await new_client.start()
                 USER_CLIENTS[user_id] = new_client
 
@@ -5702,7 +5729,7 @@ async def _api_chats_handler(request):
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
         except Exception as e:
@@ -6317,8 +6344,17 @@ async def process_watcher_message(client, message):
         watchers.extend(await cursor_global.to_list(length=100))
 
     # 🟢 Live Listener ONLY pushes IDs to the queue now!
+    if not hasattr(batch_temp, "WATCHER_LAST_MSG"):
+        batch_temp.WATCHER_LAST_MSG = {}
+
     for w in watchers:
         wid = str(w["_id"])
+        
+        # Prevent Bot and User Session from duplicating the same message
+        if batch_temp.WATCHER_LAST_MSG.get(wid) == message.id:
+            continue
+        batch_temp.WATCHER_LAST_MSG[wid] = message.id
+        
         await WATCHER_QUEUES[wid].put(message.id)
         await start_watcher_worker(wid)
 
@@ -6407,7 +6443,7 @@ async def main():
     logger.info("🛡️ Auto-Cleanup Watchdog Started") 
 
     # Attach the listener to the main bot so it functions without a User Session!
-    app.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+    app.add_handler(MessageHandler(user_watcher_handler, filters.all))
 
     await app.start()
     logger.info("🤖 Bot Started") 
@@ -6486,7 +6522,7 @@ async def main():
                 no_updates=False 
             )
             
-            user_client.add_handler(MessageHandler(user_watcher_handler, filters.channel | filters.group | filters.private))
+            user_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
             
             await user_client.start()
             USER_CLIENTS[user_id] = user_client
