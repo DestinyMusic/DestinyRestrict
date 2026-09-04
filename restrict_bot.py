@@ -2622,48 +2622,60 @@ async def chats_cmd(client: Client, message: Message):
 
     users, groups, channels, bots = [], [], [], []
     
-    # 🟢 RETRY LOOP: Handles transient network drops or fork-specific socket timeouts
+    # 🟢 RETRY LOOP: Handles transient network drops, socket timeouts, and pagination bugs
     max_retries = 3
     success = False
     last_err = None
 
     for attempt in range(max_retries):
-        try:
-            users.clear(); groups.clear(); channels.clear(); bots.clear()
-            async for d in uclient.get_dialogs():
-                chat = getattr(d, "chat", None)
-                if not chat:
-                    continue
-                cid = getattr(chat, "id", None)
-                if not cid:
-                    continue
+        users.clear(); groups.clear(); channels.clear(); bots.clear()
+        
+        async def fetch_tg_dialogs():
+            try:
+                # Limit 500 speeds up retrieval and prevents memory exhaustion
+                async for d in uclient.get_dialogs(limit=500):
+                    chat = getattr(d, "chat", None)
+                    if not chat: continue
+                    cid = getattr(chat, "id", None)
+                    if not cid: continue
 
-                title = getattr(chat, "title", None)
-                first_name = getattr(chat, "first_name", None)
-                name = html.escape(title or first_name or f"Chat {cid}")
-                line = f"• <b>{name}</b> │ <code>{cid}</code>"
-                
-                c_type = getattr(chat, "type", None)
-                type_str = str(c_type).lower() if c_type else ""
-                
-                if "group" in type_str or "supergroup" in type_str:
-                    groups.append(line)
-                elif "channel" in type_str:
-                    channels.append(line)
-                elif "bot" in type_str:
-                    bots.append(line)
-                elif "private" in type_str:
-                    users.append(line)
-            
+                    title = getattr(chat, "title", None)
+                    first_name = getattr(chat, "first_name", None)
+                    name = html.escape(title or first_name or f"Chat {cid}")
+                    line = f"• <b>{name}</b> │ <code>{cid}</code>"
+                    
+                    c_type = getattr(chat, "type", None)
+                    type_str = str(c_type).lower() if c_type else ""
+                    
+                    if "group" in type_str or "supergroup" in type_str:
+                        groups.append(line)
+                    elif "channel" in type_str:
+                        channels.append(line)
+                    elif "bot" in type_str:
+                        bots.append(line)
+                    elif "private" in type_str:
+                        users.append(line)
+            except AttributeError as e:
+                # Catch pagination bug safely inside the fetcher so we don't lose the arrays
+                if "'NoneType' object has no attribute 'id'" not in str(e):
+                    raise e
+
+        try:
+            # Use wait_for to prevent indefinite socket hangs
+            await asyncio.wait_for(fetch_tg_dialogs(), timeout=20.0)
             success = True
             break
+        except asyncio.TimeoutError:
+            last_err = "Timeout - Telegram took too long to respond."
+            logger.warning(f"Dialog fetch attempt {attempt + 1} timed out.")
+            await asyncio.sleep(2)
         except Exception as e:
             last_err = e
-            bot_logger.warning(f"Dialog fetch attempt {attempt + 1} failed: {e}")
+            logger.warning(f"Dialog fetch attempt {attempt + 1} failed: {e}")
             await asyncio.sleep(2)
 
     if not success:
-        return await status.edit(f"❌ <b>Error reading dialogs after retries:</b> <code>{last_err}</code>", parse_mode=enums.ParseMode.HTML)
+        return await status.edit(f"❌ <b>Error reading dialogs after {max_retries} retries:</b> <code>{last_err}</code>", parse_mode=enums.ParseMode.HTML)
 
     await status.delete()
 
@@ -6048,35 +6060,48 @@ async def _api_chats_handler(request):
 
     chat_list = []
     try:
-        async def fetch_dialogs():
+        async def fetch_web_dialogs():
             chats = []
-            count = 0
-            async for d in uclient.get_dialogs(limit=300):
-                chat = getattr(d, "chat", None)
-                if not chat:
-                    continue
-                cid = getattr(chat, "id", None)
-                if not cid:
-                    continue
+            try:
+                async for d in uclient.get_dialogs(limit=500):
+                    chat = getattr(d, "chat", None)
+                    if not chat: continue
+                    cid = getattr(chat, "id", None)
+                    if not cid: continue
 
-                title = getattr(chat, "title", None)
-                first_name = getattr(chat, "first_name", None)
-                name = title or first_name or f"Chat {cid}"
-                c_type = getattr(chat, "type", None)
-                
-                cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
-                is_forum = getattr(chat, "is_forum", False)
-                chats.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
-                count += 1
-                if count % 25 == 0:
-                    await asyncio.sleep(0)
+                    title = getattr(chat, "title", None)
+                    first_name = getattr(chat, "first_name", None)
+                    name = title or first_name or f"Chat {cid}"
+                    c_type = getattr(chat, "type", None)
+                    
+                    cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
+                    is_forum = getattr(chat, "is_forum", False)
+                    chats.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
+            except AttributeError as e:
+                if "'NoneType' object has no attribute 'id'" not in str(e):
+                    raise e
             return chats
 
-        # Prevent indefinite hangs with a 15-second timeout
-        chat_list = await asyncio.wait_for(fetch_dialogs(), timeout=15.0)
+        max_retries = 3
+        success = False
+        last_err = None
 
-    except asyncio.TimeoutError:
-        return web.json_response({"status": "error", "message": "Telegram API took too long to respond. Try again."})
+        for attempt in range(max_retries):
+            try:
+                # 15-second timeout per attempt to prevent Web UI indefinite hangs
+                chat_list = await asyncio.wait_for(fetch_web_dialogs(), timeout=15.0)
+                success = True
+                break
+            except asyncio.TimeoutError:
+                last_err = "Telegram API timeout."
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                last_err = str(e)
+                await asyncio.sleep(1.5)
+
+        if not success:
+            return web.json_response({"status": "error", "message": f"Failed after {max_retries} retries. Last error: {last_err}"})
+
     except Exception as e: 
         return web.json_response({"status": "error", "message": str(e)})
     finally:
