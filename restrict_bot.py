@@ -4617,17 +4617,28 @@ HTML_DASHBOARD = """
         .hidden-video-feed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0.001; pointer-events: none; z-index: 5; }
         ::cue { background: rgba(0,0,0,0.8); color: #fff; font-size: 20px; text-shadow: 2px 2px 4px #000; }
 
-        /* Center Skip Buttons (Visible UI) */
+        /* Center Skip Buttons (Liquid Glass UI) */
         .center-controls {
-            position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 40px;
-            z-index: 20; pointer-events: none; opacity: 1; transition: opacity 0.4s ease;
+            position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 5vw;
+            z-index: 20; pointer-events: none; opacity: 1; transition: opacity 0.4s ease, transform 0.4s cubic-bezier(0.4, 0, 0.2, 1);
         }
         .center-btn {
-            width: 60px; height: 60px; background: rgba(0,0,0,0.6); border-radius: 50%; border: 1px solid rgba(255,255,255,0.2);
-            color: #fff; font-size: 20px; display: flex; align-items: center; justify-content: center;
-            cursor: pointer; pointer-events: auto; backdrop-filter: blur(4px); transition: transform 0.1s, background 0.2s;
+            width: 70px; height: 70px; background: rgba(255, 255, 255, 0.08); border-radius: 50%; 
+            border: 1px solid rgba(255, 255, 255, 0.15); color: #fff; display: flex; align-items: center; justify-content: center; 
+            cursor: pointer; pointer-events: auto; backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+            box-shadow: 0 10px 30px rgba(0,0,0,0.3), inset 0 0 15px rgba(255,255,255,0.05);
+            transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
         }
-        .center-btn:active { transform: scale(0.9); background: var(--accent); }
+        .center-btn:hover {
+            background: rgba(255, 255, 255, 0.15); border-color: rgba(255, 255, 255, 0.3);
+            transform: scale(1.1); box-shadow: 0 15px 40px rgba(0,0,0,0.4), inset 0 0 20px rgba(255,255,255,0.1);
+        }
+        .center-btn:active { transform: scale(0.95); background: rgba(255, 255, 255, 0.25); }
+        #big-play-overlay {
+            width: 90px; height: 90px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.4), inset 0 0 20px rgba(255,255,255,0.1), 0 0 30px var(--glow);
+        }
+        #big-play-overlay:hover { box-shadow: 0 15px 50px rgba(0,0,0,0.5), inset 0 0 30px rgba(255,255,255,0.2), 0 0 45px var(--glow); }
 
         /* Floating Netflix-Style OSD HUD */
         .cinema-hud {
@@ -4865,11 +4876,17 @@ HTML_DASHBOARD = """
                     <!-- Video Title Bar -->
                     <div class="cinema-title-bar" id="cinema-title">No Media Loaded</div>
 
-                    <!-- Center Visible Controls (Play & 15s Skips) -->
+                    <!-- Center Visible Controls (Liquid Glass SVGs) -->
                     <div class="center-controls" id="center-controls">
-                        <div class="center-btn" onclick="skipPlayback(-15)" title="Rewind 15s">⏪</div>
-                        <div class="center-btn" id="big-play-overlay" onclick="togglePlayback()" style="width: 80px; height: 80px; font-size: 32px; background: var(--accent); border: none; box-shadow: 0 0 30px var(--glow);">▶</div>
-                        <div class="center-btn" onclick="skipPlayback(15)" title="Forward 15s">⏩</div>
+                        <div class="center-btn" onclick="skipPlayback(-15)" title="Rewind 15s">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M11 18V6l-8.5 6 8.5 6zm.5-6l8.5 6V6l-8.5 6z"/></svg>
+                        </div>
+                        <div class="center-btn" id="big-play-overlay" onclick="togglePlayback()">
+                            <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                        </div>
+                        <div class="center-btn" onclick="skipPlayback(15)" title="Forward 15s">
+                            <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor"><path d="M4 18l8.5-6L4 6v12zm9-12v12l8.5-6L13 6z"/></svg>
+                        </div>
                     </div>
 
                     <!-- Double-Tap Seek Zones (Invisible Overlay for Mobile Swipes) -->
@@ -4938,7 +4955,9 @@ HTML_DASHBOARD = """
                         </div>
                         <div class="cinema-controls-row">
                             <div class="ctrl-group">
-                                <button class="cinema-btn" id="hud-play-btn" onclick="togglePlayback()" title="Play/Pause">⏸️</button>
+                                <button class="cinema-btn" id="hud-play-btn" onclick="togglePlayback()" title="Play/Pause">
+                                    <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>
+                                </button>
                                 <span class="time-badge" id="hud-time">00:00 / 00:00</span>
                             </div>
                             <div class="ctrl-group">
@@ -4947,76 +4966,7 @@ HTML_DASHBOARD = """
                             </div>
                         </div>
                     </div>
-                </div>
-
-                    <!-- 3D Over-Under / SBS Matrix Menu (Matches Provided UI) -->
-                    <div id="menu-3d" class="matrix-3d-menu">
-                        <div class="matrix-header">Anaglyph 3D</div>
-                        <div class="matrix-grid">
-                            <div>
-                                <div class="matrix-column-title">In Format</div>
-                                <div class="matrix-option" onclick="setMatrix3DIn('lr', this)">Left/Right <div class="matrix-radio"></div></div>
-                                <div class="matrix-option" onclick="setMatrix3DIn('tb', this)">Top/Bottom <div class="matrix-radio"></div></div>
-                                <div class="matrix-option" onclick="setMatrix3DIn('ci', this)">Column Interleaved <div class="matrix-radio"></div></div>
-                                <div class="matrix-option" onclick="setMatrix3DIn('ri', this)">Row Interleaved <div class="matrix-radio"></div></div>
-                                <div class="matrix-option active" onclick="setMatrix3DIn('none', this)">None <div class="matrix-radio"></div></div>
-                            </div>
-                            <div>
-                                <div class="matrix-column-title">Out Format</div>
-                                <div class="matrix-option" onclick="setMatrix3DOut('gm', this)">Green/Magenta <div class="matrix-radio"></div></div>
-                                <div class="matrix-option active" onclick="setMatrix3DOut('rc', this)">Red/Cyan <div class="matrix-radio"></div></div>
-                                <div class="matrix-option" onclick="setMatrix3DOut('ba', this)">Blue/Amber <div class="matrix-radio"></div></div>
-                                <div class="matrix-option" onclick="setMatrix3DOut('lf', this)">Left Frame First <div class="matrix-radio"></div></div>
-                                <div class="matrix-option" onclick="setMatrix3DOut('rf', this)">Right Frame First <div class="matrix-radio"></div></div>
-                                <div class="matrix-option" onclick="setMatrix3DOut('vr', this)">VR <div class="matrix-radio"></div></div>
-                                <div class="matrix-option" onclick="setMatrix3DOut('2d', this)">2D <div class="matrix-radio"></div></div>
-                            </div>
-                        </div>
-                        <button class="primary-btn" style="margin-top: 30px;" onclick="document.getElementById('menu-3d').classList.remove('open')">Close Menu</button>
-                    </div>
-
-                    <!-- Quick Settings Popup -->
-                    <div id="media-settings-popup" class="settings-popup">
-                        <div class="pop-title">Stream Settings</div>
-                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">VIDEO QUALITY</label>
-                        <select id="pop-quality-select" class="pop-select" onchange="applyTrackSelection()"></select>
-
-                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">AUDIO STREAM</label>
-                        <select id="pop-audio-select" class="pop-select" onchange="applyTrackSelection()"></select>
-
-                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLES</label>
-                        <select id="pop-sub-select" class="pop-select" onchange="applySubtitleSelection()"></select>
-
-                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
-                        <select id="pop-aspect-select" class="pop-select" onchange="applyAspectRatio(this.value)">
-                            <option value="contain">Fit (Default)</option>
-                            <option value="16-9">16:9 Standard</option>
-                            <option value="21-9">21:9 Cinemascope</option>
-                            <option value="4-3">4:3 Retro / IMAX</option>
-                            <option value="cover">Zoom / Fill</option>
-                            <option value="stretch">Stretch</option>
-                        </select>
-                    </div>
-
-                    <!-- HUD Overlay with Clean Emojis -->
-                    <div class="cinema-hud" id="cinema-hud">
-                        <div class="cinema-scrubber-bar" id="cinema-scrubber" onclick="seekPlayback(event)">
-                            <div class="scrubber-fill" id="scrubber-fill"></div>
-                        </div>
-                        <div class="cinema-controls-row">
-                            <div class="ctrl-group">
-                                <button class="cinema-btn" id="hud-play-btn" onclick="togglePlayback()" title="Play/Pause">⏸️</button>
-                                <button class="cinema-btn" onclick="skipPlayback(-10)" title="Rewind 10s">⏪</button>
-                                <button class="cinema-btn" onclick="skipPlayback(10)" title="Forward 10s">⏩</button>
-                                <span class="time-badge" id="hud-time">00:00 / 00:00</span>
-                            </div>
-                            <div class="ctrl-group">
-                                <button class="cinema-btn" onclick="toggleSettingsPopup()" title="Tracks & Aspect">⚙️</button>
-                                <button class="cinema-btn" onclick="toggleFullScreen()" title="Fullscreen">⛶</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
+                </div> <!-- END OF CINEMA VIEWPORT -->
 
                 <div class="card" style="margin-top: 20px;">
                     <div class="input-group">
@@ -6092,10 +6042,6 @@ HTML_DASHBOARD = """
             if (!link) return alert("Provide a valid Telegram or HTTP media link!");
             activeMediaLink = link;
 
-            // 🏷️ Set Video Title (Green Line) from link and wake the UI
-            const parts = link.split('/');
-            const titleEl = document.getElementById('cinema-title');
-            if (titleEl) titleEl.innerText = parts[parts.length - 1] || "Telegram Stream";
             wakeHUD();
 
             const btn = document.querySelector('button[onclick="loadTheaterMedia()"]');
@@ -6116,6 +6062,10 @@ HTML_DASHBOARD = """
                 const probeRes = await fetch(`/api/media_probe?user_id=${currentUser}&link=${encodeURIComponent(link)}`);
                 const pdata = await probeRes.json();
                 if (pdata.status === 'success') {
+                    // Fetch real filename from backend!
+                    const titleEl = document.getElementById('cinema-title');
+                    if (titleEl) titleEl.innerText = pdata.file_name || "Telegram Stream";
+
                     const qSelect = document.getElementById('pop-quality-select');
                     qSelect.innerHTML = pdata.qualities.map(q => `<option value="${q}">${q}</option>`).join('');
 
@@ -6189,22 +6139,31 @@ HTML_DASHBOARD = """
         function applyAspectRatio(mode) {
             const canvas = document.getElementById('webgl-canvas');
             const video = document.getElementById('hidden-video');
+            const vp = document.getElementById('cinema-viewport'); // Apply constraints to the wrapper
             
             [canvas, video].forEach(el => {
                 el.style.width = '100%'; el.style.height = '100%'; 
                 el.style.maxWidth = 'none'; el.style.maxHeight = 'none';
                 el.style.aspectRatio = 'auto';
 
-                if (mode === 'contain') { el.style.objectFit = 'contain'; }
-                else if (mode === 'cover') { el.style.objectFit = 'cover'; }
-                else if (mode === 'stretch') { el.style.objectFit = 'fill'; }
+                if (mode === 'contain') { 
+                    el.style.objectFit = 'contain'; 
+                    vp.style.aspectRatio = '16/9';
+                }
+                else if (mode === 'cover') { 
+                    el.style.objectFit = 'cover'; 
+                    vp.style.aspectRatio = '16/9';
+                }
+                else if (mode === 'stretch') { 
+                    el.style.objectFit = 'fill'; 
+                    vp.style.aspectRatio = '16/9';
+                }
                 else {
-                    el.style.width = 'auto'; el.style.height = 'auto'; 
-                    el.style.maxWidth = '100%'; el.style.maxHeight = '100%';
-                    el.style.objectFit = 'fill';
-                    if (mode === '16-9') el.style.aspectRatio = '16/9';
-                    if (mode === '21-9') el.style.aspectRatio = '21/9';
-                    if (mode === '4-3') el.style.aspectRatio = '4/3';
+                    // Force WebGL and Video to fill the newly structured box
+                    el.style.objectFit = 'fill'; 
+                    if (mode === '16-9') vp.style.aspectRatio = '16/9';
+                    if (mode === '21-9') vp.style.aspectRatio = '21/9';
+                    if (mode === '4-3') vp.style.aspectRatio = '4/3';
                 }
             });
         }
@@ -6246,21 +6205,26 @@ HTML_DASHBOARD = """
         const bigPlay = document.getElementById('big-play-overlay');
         const hudPlay = document.getElementById('hud-play-btn');
 
+        const playSvg = `<svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
+        const pauseSvg = `<svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
+        const smallPlaySvg = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
+        const smallPauseSvg = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
+
         vidElem.addEventListener('play', () => {
-            hudPlay.innerText = "⏸️";
-            bigPlay.innerHTML = '⏸️';
+            hudPlay.innerHTML = smallPauseSvg;
+            bigPlay.innerHTML = pauseSvg;
             wakeHUD();
         });
         vidElem.addEventListener('pause', () => {
-            hudPlay.innerText = "▶️";
-            bigPlay.innerHTML = '▶';
+            hudPlay.innerHTML = smallPlaySvg;
+            bigPlay.innerHTML = playSvg;
             wakeHUD();
         });
         vidElem.addEventListener('waiting', () => {
             bigPlay.innerHTML = '⏳';
         });
         vidElem.addEventListener('playing', () => {
-            bigPlay.innerHTML = '⏸️';
+            bigPlay.innerHTML = pauseSvg;
         });
 
         // Add auto-hide class to the center controls as well
@@ -7156,12 +7120,16 @@ async def _api_media_probe_handler(request):
             if not media:
                 return web.json_response({"status": "error", "message": "No media found in message"})
 
+            # Extract Actual Telegram Filename
+            real_file_name = getattr(media, "file_name", None) or f"Telegram_Media_{msg_id}"
+
             temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
             temp_dir.mkdir(parents=True, exist_ok=True)
             target_path = temp_dir / "probe_chunk.dat"
             # FIX: Reduced chunk to 5MB so the UI doesn't timeout
             await partial_download_tg(uclient, msg, target_path, limit_mb=5)
         else:
+            real_file_name = "Direct_Stream_Media"
             temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
             temp_dir.mkdir(parents=True, exist_ok=True)
             target_path = temp_dir / "probe_chunk.dat"
@@ -7191,21 +7159,29 @@ async def _api_media_probe_handler(request):
         elif height >= 480: qualities.extend(["480p", "360p"])
         else: qualities.append("360p")
 
+        # Helper to handle case-insensitive audio/subtitle tags
+        def get_tag(tags_dict, keys_to_find):
+            if not tags_dict: return None
+            for k, v in tags_dict.items():
+                if k.lower() in keys_to_find: return v
+            return None
+
         return web.json_response({
             "status": "success",
+            "file_name": real_file_name,
             "qualities": list(OrderedDict.fromkeys(qualities)),
             "audio_tracks": [
                 {
                     "index": s.get("index"),
                     "codec": s.get("codec_name"),
-                    "label": s.get("tags", {}).get("title") or s.get("tags", {}).get("language") or f"Track {i+1}"
+                    "label": get_tag(s.get("tags", {}), ["title"]) or get_tag(s.get("tags", {}), ["language"]) or f"Track {i+1}"
                 } for i, s in enumerate(audio_streams)
             ],
             "subtitles": [
                 {
                     "index": s.get("index"),
                     "codec": s.get("codec_name"),
-                    "label": s.get("tags", {}).get("title") or s.get("tags", {}).get("language") or f"Subtitle {i+1}"
+                    "label": get_tag(s.get("tags", {}), ["title"]) or get_tag(s.get("tags", {}), ["language"]) or f"Subtitle {i+1}"
                 } for i, s in enumerate(sub_streams)
             ]
         })
