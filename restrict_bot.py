@@ -7807,6 +7807,18 @@ async def _api_media_probe_handler(request):
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
     else:
         real_file_name = os.path.basename(urlparse(link).path) or "Direct_Stream_Media"
+        try:
+            # Do a lightning-fast HEAD request to grab the true filename from the server
+            async with aiohttp.ClientSession() as session:
+                async with session.head(link, allow_redirects=True, timeout=5) as resp:
+                    cd = resp.headers.get("Content-Disposition", "")
+                    if cd:
+                        m = re.search(r"filename\*=UTF-8''([^;]+)", cd, re.I)
+                        if m: real_file_name = unquote(m.group(1).strip().strip('"'))
+                        else:
+                            m = re.search(r'filename="?([^";]+)"?', cd, re.I)
+                            if m: real_file_name = m.group(1).strip()
+        except Exception: pass
 
     lower_name = str(real_file_name).lower()
     is_audio = lower_name.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma")) or "audio" in mime_type.lower()
@@ -8144,35 +8156,96 @@ async def resolve_zip_entry(read_fn, zip_size):
         return {"method": 0, "name": cd["name"], "data_offset": data_offset, "size": cd["size"], "comp_size": cd["comp_size"], "has_descriptor": False}
     except Exception: return None
 
-async def fetch_single_chunk(client, msg, offset, limit):
-    data = bytearray()
-    async for chunk in client.stream_media(msg, offset=offset, limit=limit): data.extend(chunk)
-    return bytes(data)
+CLIENT_MSG_CACHE = {}
 
-async def parallel_stream_generator(client, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
+async def get_client_msg(client, chat_id, msg_id):
+    """Caches Telegram messages per-client to prevent floodwaits during chunking."""
+    key = (id(client), chat_id, msg_id)
+    if key not in CLIENT_MSG_CACHE:
+        try:
+            msg = await client.get_messages(chat_id, msg_id)
+            CLIENT_MSG_CACHE[key] = msg
+        except Exception:
+            return None
+    return CLIENT_MSG_CACHE[key]
+
+async def fetch_single_chunk(client, fallback_client, chat_id, msg_id, offset, limit):
+    """Fetches a chunk using strict 1MB boundaries. Fails over to User Session if Bot is blocked."""
+    CHUNK_SIZE = 1048576
+    aligned_offset = (offset // CHUNK_SIZE) * CHUNK_SIZE
+    skip_bytes = offset - aligned_offset
+    aligned_limit = limit + skip_bytes
+    
+    try:
+        msg = await get_client_msg(client, chat_id, msg_id)
+        if getattr(msg, "empty", True) or not (msg.document or msg.video or msg.audio):
+            raise ValueError("Access Denied for this client")
+        
+        data = bytearray()
+        async for chunk in client.stream_media(msg, offset=aligned_offset, limit=aligned_limit):
+            data.extend(chunk)
+        if not data: raise ValueError("EOF Reached")
+        return bytes(data[skip_bytes:skip_bytes + limit])
+    except Exception:
+        if client != fallback_client:
+            # Fallback seamlessly to the User Session if the worker bot isn't in the private channel
+            msg = await get_client_msg(fallback_client, chat_id, msg_id)
+            data = bytearray()
+            async for chunk in fallback_client.stream_media(msg, offset=aligned_offset, limit=aligned_limit):
+                data.extend(chunk)
+            return bytes(data[skip_bytes:skip_bytes + limit])
+        raise
+
+async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
+    """Distributes HTTP range requests evenly across the Bot Pool."""
     end_byte = start_byte + total_length
-    current_offset = start_byte
+    first_block = start_byte // chunk_size
+    last_block = end_byte // chunk_size
+    
+    pool = [fallback_client] + MULTI_BOT_CLIENTS
+    current_block = first_block
+    bytes_yielded = 0
 
-    while current_offset < end_byte:
+    while current_block <= last_block:
         tasks = []
-        bytes_left = end_byte - current_offset
-        batch_count = min(concurrency, math.ceil(bytes_left / chunk_size))
+        batch_count = min(concurrency, (last_block - current_block) + 1)
         
         for i in range(batch_count):
-            task_global_offset = current_offset + (i * chunk_size)
-            task_limit = min(chunk_size, end_byte - task_global_offset)
-            part = next((p for p in msg_parts if p["start"] <= task_global_offset < p["end"]), None)
-            if not part: break
-            internal_offset = task_global_offset - part["start"]
-            internal_limit = min(task_limit, part["size"] - internal_offset)
-            tasks.append(asyncio.create_task(fetch_single_chunk(client, part["msg"], internal_offset, internal_limit)))
-        
+            block_idx = current_block + i
+            block_offset = block_idx * chunk_size
+            
+            part = next((p for p in msg_parts if p["start"] <= block_offset < p["end"]), None)
+            if not part: continue
+            
+            internal_offset = block_offset - part["start"]
+            internal_limit = min(chunk_size, part["size"] - internal_offset)
+            
+            worker_client = pool[i % len(pool)]
+            tasks.append(asyncio.create_task(
+                fetch_single_chunk(worker_client, fallback_client, chat_id, part["msg_id"], internal_offset, internal_limit)
+            ))
+            
         if not tasks: break
-        results = await asyncio.gather(*tasks)
-        for res in results:
-            if res: yield res
-        current_offset += sum(len(r) for r in results)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
         
+        for i, res in enumerate(results):
+            if isinstance(res, Exception): raise res # Abort and let proxy handle it
+            
+            block_idx = current_block + i
+            block_offset = block_idx * chunk_size
+            valid_data = res
+            
+            if block_idx == first_block:
+                skip = start_byte - block_offset
+                valid_data = valid_data[skip:]
+                
+            yield_len = min(len(valid_data), total_length - bytes_yielded)
+            if yield_len > 0:
+                yield valid_data[:yield_len]
+                bytes_yielded += yield_len
+                
+        current_block += batch_count
+
 async def _api_tg_stream_handler(request):
     """High-Speed File-to-Link Proxy with Parallel Chunking, Split Files & ZIP Extraction."""
     user_id = int(request.query.get("user_id", 0))
@@ -8202,7 +8275,6 @@ async def _api_tg_stream_handler(request):
         parts_map = []
         global_offset = 0
         
-        # Check if the user specified an explicit range (e.g. 101-105)
         range_spec = request.query.get("range", "")
         range_match = re.match(r"^(\d+)-(\d+)$", range_spec)
         
@@ -8214,7 +8286,7 @@ async def _api_tg_stream_handler(request):
                     doc = m.document or m.video or m.audio
                     if doc:
                         psz = doc.file_size
-                        parts_map.append({"msg": m, "start": global_offset, "end": global_offset + psz, "size": psz})
+                        parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
                         global_offset += psz
                 except Exception: continue
         else:
@@ -8227,7 +8299,7 @@ async def _api_tg_stream_handler(request):
                         doc = m.document or m.video
                         if not doc: break
                         psz = doc.file_size
-                        parts_map.append({"msg": m, "start": global_offset, "end": global_offset + psz, "size": psz})
+                        parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
                         global_offset += psz
                         current_id += 1
                         next_m = await uclient.get_messages(chat_id, current_id)
@@ -8237,18 +8309,17 @@ async def _api_tg_stream_handler(request):
                     except Exception: break
             else:
                 part_size = getattr(media, "file_size", 0)
-                parts_map.append({"msg": msg, "start": 0, "end": part_size, "size": part_size})
+                parts_map.append({"msg_id": msg_id, "start": 0, "end": part_size, "size": part_size})
                 global_offset = part_size
                 
         virtual_size = global_offset
         virtual_data_offset = 0
 
-        # 2. Extract STORED ZIP Files
         is_zip = filename.endswith(".zip") or ".zip." in filename
         if is_zip:
             async def zip_read(off, length):
                 buf = bytearray()
-                async for chunk in parallel_stream_generator(uclient, parts_map, off, length, concurrency=4): buf.extend(chunk)
+                async for chunk in parallel_stream_generator(uclient, chat_id, parts_map, off, length, concurrency=4): buf.extend(chunk)
                 return bytes(buf[:length])
                 
             entry = await resolve_zip_entry(zip_read, virtual_size)
@@ -8257,7 +8328,6 @@ async def _api_tg_stream_handler(request):
                 virtual_data_offset = entry["data_offset"]
                 mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
 
-        # 3. HTTP Range Handling
         range_header = request.headers.get("Range", "")
         start_byte = 0
         end_byte = virtual_size - 1
@@ -8282,22 +8352,24 @@ async def _api_tg_stream_handler(request):
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         await response.prepare(request)
         
-        # Shift global bytes by the ZIP's internal data offset
         adjusted_start = start_byte + virtual_data_offset
         
-        # 4. Multi-Threaded Dispatch
-        async for chunk in parallel_stream_generator(uclient, parts_map, adjusted_start, chunk_len, concurrency=4):
-            await response.write(chunk)
-        await response.write_eof()
+        try:
+            async for chunk in parallel_stream_generator(uclient, chat_id, parts_map, adjusted_start, chunk_len, concurrency=4):
+                await response.write(chunk)
+            await response.write_eof()
+        except Exception: 
+            pass
         
-    except Exception as e:
-        logger.warning(f"Proxy Stream Dropped: {e}")
+    except Exception:
+        pass
     finally:
         if is_temp:
             try: await uclient.disconnect()
             except: pass
             
     return response
+
 MULTI_BOT_CLIENTS = []
 
 async def init_worker_bots():
