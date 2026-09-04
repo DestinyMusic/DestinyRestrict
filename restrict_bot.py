@@ -5730,7 +5730,8 @@ HTML_DASHBOARD = """
                 const data = await res.json();
                 if (data.status === 'success' && data.tokens) {
                     const el = document.getElementById('worker-tokens-input');
-                    if (el) el.value = data.tokens.join('\n');
+                    // Use a double backslash so Python passes the raw '\n' to JavaScript
+                    if (el) el.value = data.tokens.join('\\n');
                 }
             } catch (_) {}
         }
@@ -6510,12 +6511,6 @@ HTML_DASHBOARD = """
             if (parts.length === 3) return Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
             if (parts.length === 2) return Number(parts[0]) * 60 + Number(parts[1]);
             return Number(parts[0]) || 0;
-        }
-
-        function applyPlaybackSpeed() {
-            const video = document.getElementById('hidden-video');
-            const speed = document.getElementById('pop-speed-select')?.value || 1;
-            if (video) video.playbackRate = parseFloat(speed);
         }
 
         function applyPlaybackSpeed() {
