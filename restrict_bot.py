@@ -4602,24 +4602,43 @@ HTML_DASHBOARD = """
         .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud {
             padding: 40px 30px; padding-bottom: max(30px, env(safe-area-inset-bottom));
         }
-        .cinema-viewport:fullscreen .cinema-btn, .cinema-viewport:-webkit-full-screen .cinema-btn {
-            font-size: 28px; /* Scales up icons in fullscreen */
+        .cinema-viewport:fullscreen .cinema-title-bar, .cinema-viewport:-webkit-full-screen .cinema-title-bar {
+            padding: 30px 30px; font-size: 18px;
         }
-        .cinema-viewport:fullscreen .time-badge, .cinema-viewport:-webkit-full-screen .time-badge {
-            font-size: 16px;
-        }
+        .cinema-viewport:fullscreen .cinema-btn, .cinema-viewport:-webkit-full-screen .cinema-btn { font-size: 28px; }
+        .cinema-viewport:fullscreen .time-badge, .cinema-viewport:-webkit-full-screen .time-badge { font-size: 16px; }
 
-        #webgl-canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
-        .hidden-video-feed { display: none; }
+        #webgl-canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; z-index: 1; }
+        
+        /* MAGIC SUBTITLE TRICK: Keep video invisible but active over canvas to render native Cues */
+        .hidden-video-feed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0.001; pointer-events: none; z-index: 5; }
+        ::cue { background: rgba(0,0,0,0.7); color: #fff; font-size: 18px; text-shadow: 1px 1px 2px #000; }
 
         /* Floating Netflix-Style OSD HUD */
         .cinema-hud {
             position: absolute; bottom: 0; left: 0; right: 0; padding: 20px 20px;
             background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.7) 50%, transparent 100%);
-            display: flex; flex-direction: column; gap: 16px; opacity: 0; transition: opacity 0.3s ease;
-            z-index: 25; pointer-events: none;
+            display: flex; flex-direction: column; gap: 16px; opacity: 1; transition: opacity 0.4s ease;
+            z-index: 25; pointer-events: auto;
         }
-        .cinema-viewport:hover .cinema-hud, .cinema-hud.active { opacity: 1; pointer-events: auto; }
+        .cinema-title-bar {
+            position: absolute; top: 0; left: 0; right: 0; padding: 20px;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, transparent 100%);
+            color: #fff; font-weight: 700; font-size: 14px; opacity: 1; transition: opacity 0.4s ease;
+            z-index: 25; pointer-events: none; text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+
+        /* Auto-Hide Logic */
+        .cinema-viewport.idle-hide .cinema-hud, 
+        .cinema-viewport.idle-hide .cinema-title-bar,
+        .cinema-viewport.idle-hide #big-play-overlay { opacity: 0 !important; pointer-events: none !important; cursor: none !important; }
+
+        /* 15s Seek Zones (Double Tap) */
+        .seek-zone { position: absolute; top: 15%; bottom: 25%; width: 35%; z-index: 10; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0); font-size: 32px; font-weight: bold; transition: color 0.2s; user-select: none; }
+        .seek-zone.left { left: 0; }
+        .seek-zone.right { right: 0; }
+        .seek-zone:active { color: rgba(255,255,255,0.8); background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 60%); }
 
         .cinema-scrubber-bar {
             position: relative; width: 100%; height: 6px; background: rgba(255,255,255,0.25);
@@ -4828,10 +4847,90 @@ HTML_DASHBOARD = """
                     <canvas id="webgl-canvas"></canvas>
                     <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline crossorigin="anonymous"></video>
 
-                    <!-- 🎬 Big Play Overlay (Fixes "Not Playing" issue by forcing user interaction) -->
-                    <div id="big-play-overlay" style="position: absolute; inset: 0; display: none; align-items: center; justify-content: center; z-index: 20; background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); cursor: pointer;" onclick="togglePlayback()">
+                    <!-- Video Title Bar -->
+                    <div class="cinema-title-bar" id="cinema-title">No Media Loaded</div>
+
+                    <!-- Double-Tap Seek Zones -->
+                    <div class="seek-zone left" ondblclick="skipPlayback(-15)">⏪ 15s</div>
+                    <div class="seek-zone right" ondblclick="skipPlayback(15)">15s ⏩</div>
+
+                    <!-- Big Play Overlay -->
+                    <div id="big-play-overlay" style="position: absolute; inset: 0; display: none; align-items: center; justify-content: center; z-index: 20; background: rgba(0,0,0,0.5); cursor: pointer;" onclick="togglePlayback()">
                         <div style="width: 80px; height: 80px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 36px; color: #fff; box-shadow: 0 0 30px var(--glow); padding-left: 6px;">▶</div>
                     </div>
+
+                    <!-- 3D Over-Under / SBS Matrix Menu -->
+                    <div id="menu-3d" class="matrix-3d-menu">
+                        <div class="matrix-header">Anaglyph 3D</div>
+                        <div class="matrix-grid">
+                            <div>
+                                <div class="matrix-column-title">In Format</div>
+                                <div class="matrix-option" onclick="setMatrix3DIn('lr', this)">Left/Right <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DIn('tb', this)">Top/Bottom <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DIn('ci', this)">Column Interleaved <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DIn('ri', this)">Row Interleaved <div class="matrix-radio"></div></div>
+                                <div class="matrix-option active" onclick="setMatrix3DIn('none', this)">None <div class="matrix-radio"></div></div>
+                            </div>
+                            <div>
+                                <div class="matrix-column-title">Out Format</div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('gm', this)">Green/Magenta <div class="matrix-radio"></div></div>
+                                <div class="matrix-option active" onclick="setMatrix3DOut('rc', this)">Red/Cyan <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('ba', this)">Blue/Amber <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('lf', this)">Left Frame First <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('rf', this)">Right Frame First <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('vr', this)">VR <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('2d', this)">2D <div class="matrix-radio"></div></div>
+                            </div>
+                        </div>
+                        <button class="primary-btn" style="margin-top: 30px;" onclick="document.getElementById('menu-3d').classList.remove('open')">Close Menu</button>
+                    </div>
+
+                    <!-- Quick Settings Popup -->
+                    <div id="media-settings-popup" class="settings-popup">
+                        <div class="pop-title">Stream Settings</div>
+                        
+                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
+                            <button class="primary-btn" style="padding: 8px; font-size: 11px; background: #ea580c;" onclick="openExternalPlayer('vlc')">Open in VLC</button>
+                            <button class="primary-btn" style="padding: 8px; font-size: 11px; background: #2563eb;" onclick="openExternalPlayer('mx')">Open in MX</button>
+                        </div>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">VIDEO QUALITY</label>
+                        <select id="pop-quality-select" class="pop-select" onchange="applyTrackSelection()"></select>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">AUDIO STREAM</label>
+                        <select id="pop-audio-select" class="pop-select" onchange="applyTrackSelection()"></select>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLES</label>
+                        <select id="pop-sub-select" class="pop-select" onchange="applySubtitleSelection()"></select>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
+                        <select id="pop-aspect-select" class="pop-select" onchange="applyAspectRatio(this.value)">
+                            <option value="contain">Fit (Default)</option>
+                            <option value="cover">Zoom / Fill Screen</option>
+                            <option value="stretch">Stretch</option>
+                            <option value="16-9">16:9 Standard</option>
+                            <option value="21-9">21:9 Cinemascope</option>
+                            <option value="4-3">4:3 Retro / IMAX</option>
+                        </select>
+                    </div>
+
+                    <!-- HUD Overlay -->
+                    <div class="cinema-hud" id="cinema-hud">
+                        <div class="cinema-scrubber-bar" id="cinema-scrubber" onclick="seekPlayback(event)">
+                            <div class="scrubber-fill" id="scrubber-fill"></div>
+                        </div>
+                        <div class="cinema-controls-row">
+                            <div class="ctrl-group">
+                                <button class="cinema-btn" id="hud-play-btn" onclick="togglePlayback()" title="Play/Pause">⏸️</button>
+                                <span class="time-badge" id="hud-time">00:00 / 00:00</span>
+                            </div>
+                            <div class="ctrl-group">
+                                <button class="cinema-btn" onclick="toggleSettingsPopup()" title="Tracks & Aspect">⚙️</button>
+                                <button class="cinema-btn" onclick="toggleFullScreen()" title="Fullscreen">⛶</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
 
                     <!-- 3D Over-Under / SBS Matrix Menu (Matches Provided UI) -->
                     <div id="menu-3d" class="matrix-3d-menu">
@@ -5948,11 +6047,39 @@ HTML_DASHBOARD = """
             el.classList.add('active');
         }
 
+        // ⏱️ Auto-Hide HUD & Title Bar Logic (Fades after 5s)
+        let hudTimeout;
+        function wakeHUD() {
+            const vp = document.getElementById('cinema-viewport');
+            if (vp) {
+                vp.classList.remove('idle-hide');
+                clearTimeout(hudTimeout);
+                // Only start the hide timer if the video is currently playing
+                if (!document.getElementById('hidden-video').paused) {
+                    hudTimeout = setTimeout(() => vp.classList.add('idle-hide'), 5000);
+                }
+            }
+        }
+        
+        // Attach wake events to the viewport so it shows up when you move the mouse/tap
+        const vpElement = document.getElementById('cinema-viewport');
+        if (vpElement) {
+            vpElement.addEventListener('mousemove', wakeHUD);
+            vpElement.addEventListener('touchstart', wakeHUD);
+            vpElement.addEventListener('click', wakeHUD);
+        }
+
         // --- Playback & OSD Logic ---
         async function loadTheaterMedia() {
             const link = document.getElementById('theater-stream-url').value.trim();
             if (!link) return alert("Provide a valid Telegram or HTTP media link!");
             activeMediaLink = link;
+
+            // 🏷️ Set Video Title (Green Line) from link and wake the UI
+            const parts = link.split('/');
+            const titleEl = document.getElementById('cinema-title');
+            if (titleEl) titleEl.innerText = parts[parts.length - 1] || "Telegram Stream";
+            wakeHUD();
 
             const btn = document.querySelector('button[onclick="loadTheaterMedia()"]');
             let origText = "Load & Play";
@@ -5964,8 +6091,8 @@ HTML_DASHBOARD = """
 
             // FIX: Set robust default fallbacks immediately so menus are never empty
             document.getElementById('pop-quality-select').innerHTML = '<option value="Original">Original</option><option value="1080p">1080p</option><option value="720p">720p</option><option value="480p">480p</option><option value="360p">360p</option>';
-            document.getElementById('pop-audio-select').innerHTML = '<option value="">Default Audio</option><option value="0">Track 1</option><option value="1">Track 2</option>';
-            document.getElementById('pop-sub-select').innerHTML = '<option value="off">Off</option><option value="0">Subtitle 1</option>';
+            document.getElementById('pop-audio-select').innerHTML = '<option value="">Default Audio</option>';
+            document.getElementById('pop-sub-select').innerHTML = '<option value="off">Off</option>';
 
             // Probe available streams (tracks & resolutions)
             try {
@@ -5975,12 +6102,15 @@ HTML_DASHBOARD = """
                     const qSelect = document.getElementById('pop-quality-select');
                     qSelect.innerHTML = pdata.qualities.map(q => `<option value="${q}">${q}</option>`).join('');
 
+                    // 🔊 FIX: Show ACTUAL audio names extracted from file tags, fallback to 'Track #' if the file has no names
                     const aSelect = document.getElementById('pop-audio-select');
                     aSelect.innerHTML = (pdata.audio_tracks.length ? '' : '<option value="">Default Audio</option>') + 
-                        pdata.audio_tracks.map(a => `<option value="${a.index}">${a.label} (${a.codec})</option>`).join('');
+                        pdata.audio_tracks.map(a => `<option value="${a.index}">${a.label || 'Track ' + a.index} (${a.codec})</option>`).join('');
 
+                    // 💬 FIX: Show ACTUAL subtitle names extracted from file tags, fallback to 'Subtitle #' if the file has no names
                     const sSelect = document.getElementById('pop-sub-select');
-                    sSelect.innerHTML = '<option value="off">Off</option>' + pdata.subtitles.map(s => `<option value="${s.index}">${s.label}</option>`).join('');
+                    sSelect.innerHTML = '<option value="off">Off</option>' + 
+                        pdata.subtitles.map(s => `<option value="${s.index}">${s.label || 'Subtitle ' + s.index}</option>`).join('');
                 } else {
                     console.warn("Probe failed: ", pdata.message);
                 }
@@ -5992,7 +6122,7 @@ HTML_DASHBOARD = """
                     btn.disabled = false;
                 }
             }
-
+            
             applyTrackSelection();
             if (!gl) initWebGL();
         }
@@ -6030,44 +6160,25 @@ HTML_DASHBOARD = """
 
         function applyAspectRatio(mode) {
             const canvas = document.getElementById('webgl-canvas');
-            
-            // FIX: Reset all sizes to bypass fullscreen wrapper constraints
-            canvas.style.width = '100%'; 
-            canvas.style.height = '100%'; 
-            canvas.style.maxWidth = 'none'; 
-            canvas.style.maxHeight = 'none';
-            canvas.style.aspectRatio = 'auto';
-
-            if (mode === 'contain') { 
-                canvas.style.objectFit = 'contain'; 
-            }
-            else if (mode === 'cover') { 
-                canvas.style.objectFit = 'cover'; 
-            }
-            else if (mode === 'stretch') { 
-                canvas.style.objectFit = 'fill'; 
-            }
-            else {
-                // 16:9, 21:9, 4:3 Modes (Flex Auto-Sizing)
-                canvas.style.width = 'auto'; 
-                canvas.style.height = 'auto'; 
-                canvas.style.maxWidth = '100%'; 
-                canvas.style.maxHeight = '100%';
-                canvas.style.objectFit = 'fill';
-                
-                if (mode === '16-9') canvas.style.aspectRatio = '16/9';
-                if (mode === '21-9') canvas.style.aspectRatio = '21/9';
-                if (mode === '4-3') canvas.style.aspectRatio = '4/3';
-            }
-        }
-
-        function togglePlayback() {
             const video = document.getElementById('hidden-video');
-            if (video.paused) { 
-                video.play().catch(e => console.log("Autoplay blocked, waiting for interaction")); 
-            } else { 
-                video.pause(); 
-            }
+            
+            [canvas, video].forEach(el => {
+                el.style.width = '100%'; el.style.height = '100%'; 
+                el.style.maxWidth = 'none'; el.style.maxHeight = 'none';
+                el.style.aspectRatio = 'auto';
+
+                if (mode === 'contain') { el.style.objectFit = 'contain'; }
+                else if (mode === 'cover') { el.style.objectFit = 'cover'; }
+                else if (mode === 'stretch') { el.style.objectFit = 'fill'; }
+                else {
+                    el.style.width = 'auto'; el.style.height = 'auto'; 
+                    el.style.maxWidth = '100%'; el.style.maxHeight = '100%';
+                    el.style.objectFit = 'fill';
+                    if (mode === '16-9') el.style.aspectRatio = '16/9';
+                    if (mode === '21-9') el.style.aspectRatio = '21/9';
+                    if (mode === '4-3') el.style.aspectRatio = '4/3';
+                }
+            });
         }
 
         function skipPlayback(sec) {
@@ -6128,12 +6239,18 @@ HTML_DASHBOARD = """
             
             const fmt = (s) => {
                 if (isNaN(s) || !isFinite(s)) return "00:00";
-                const m = Math.floor(s / 60);
+                const h = Math.floor(s / 3600);
+                const m = Math.floor((s % 3600) / 60);
                 const sec = Math.floor(s % 60);
-                return `${m < 10 ? '0' : ''}${m}:${sec < 10 ? '0' : ''}${sec}`;
+                const mmss = `${m < 10 ? '0' : ''}${m}:${sec < 10 ? '0' : ''}${sec}`;
+                return h > 0 ? `${h}:${mmss}` : mmss;
             };
             document.getElementById('hud-time').innerText = `${fmt(cur)} / ${fmt(dur)}`;
         });
+
+        // Ensure UI wakes up when playback state changes
+        vidElem.addEventListener('pause', wakeHUD);
+        vidElem.addEventListener('play', wakeHUD);
     </script>
 </body>
 </html>
