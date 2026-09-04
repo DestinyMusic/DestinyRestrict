@@ -4611,11 +4611,47 @@ HTML_DASHBOARD = """
         .cinema-viewport:fullscreen .cinema-btn, .cinema-viewport:-webkit-full-screen .cinema-btn { font-size: 28px; }
         .cinema-viewport:fullscreen .time-badge, .cinema-viewport:-webkit-full-screen .time-badge { font-size: 16px; }
 
-        #webgl-canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; z-index: 1; }
-        
-        /* MAGIC SUBTITLE TRICK: Keep video invisible but active over canvas to render native Cues */
-        .hidden-video-feed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0.001; pointer-events: none; z-index: 5; }
-        ::cue { background: rgba(0,0,0,0.8); color: #fff; font-size: 20px; text-shadow: 2px 2px 4px #000; }
+        /* WebGL canvas is the visible video surface. Keep the CSS box separate from its pixel buffer. */
+        #webgl-canvas {
+            position: absolute; left: 50%; top: 50%;
+            width: 100%; height: 100%;
+            display: block; z-index: 1;
+            transform: translate(-50%, -50%);
+            transform-origin: center center;
+            object-fit: fill;
+            will-change: width, height, transform;
+        }
+
+        /* The video stays active for decoding/WebGL capture, but its pixels are hidden.
+           Native ::cue rendering is intentionally NOT used because opacity would also hide the cues. */
+        .hidden-video-feed {
+            position: absolute; inset: 0; width: 100%; height: 100%;
+            object-fit: fill; opacity: 0; pointer-events: none; z-index: 5;
+        }
+
+        /* Custom subtitle layer: fully independent of the hidden <video>. */
+        .subtitle-overlay {
+            position: absolute; left: 5%; right: 5%; bottom: 10%;
+            display: flex; justify-content: center; align-items: flex-end;
+            z-index: 28; pointer-events: none;
+            text-align: center;
+            padding: 0 10px;
+            transition: opacity 0.25s ease, transform 0.25s ease;
+        }
+        .subtitle-text {
+            max-width: 92%;
+            white-space: pre-wrap;
+            overflow-wrap: anywhere;
+            line-height: 1.35;
+            font-size: 24px;
+            font-weight: 600;
+            color: #ffffff;
+            background: rgba(0, 0, 0, 0.70);
+            border-radius: 7px;
+            padding: 4px 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.95);
+        }
+        .cinema-viewport.fullscreen-subtitle .subtitle-overlay { bottom: 13%; }
 
         /* Center Skip Buttons (Liquid Glass UI) */
         .center-controls {
@@ -4658,7 +4694,22 @@ HTML_DASHBOARD = """
         /* Auto-Hide Logic */
         .cinema-viewport.idle-hide .cinema-hud, 
         .cinema-viewport.idle-hide .cinema-title-bar,
-        .cinema-viewport.idle-hide .center-controls { opacity: 0 !important; pointer-events: none !important; cursor: none !important; }
+        .cinema-viewport.idle-hide .center-controls,
+        .cinema-viewport.idle-hide #big-play-overlay,
+        .cinema-viewport.idle-hide #hud-3d-btn {
+            opacity: 0 !important;
+            pointer-events: none !important;
+            cursor: none !important;
+        }
+        .cinema-viewport.idle-hide .settings-popup {
+            opacity: 0 !important;
+            pointer-events: none !important;
+            transform: translateY(8px);
+        }
+        .cinema-viewport.idle-hide .matrix-3d-menu:not(.open) {
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
 
         /* 15s Seek Zones (Double Tap) */
         .seek-zone { position: absolute; top: 15%; bottom: 25%; width: 35%; z-index: 10; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0); font-size: 32px; font-weight: bold; transition: color 0.2s; user-select: none; }
@@ -4687,8 +4738,9 @@ HTML_DASHBOARD = """
         .settings-popup {
             position: absolute; bottom: 85px; right: 30px; background: color-mix(in srgb, var(--card) 95%, transparent);
             backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--card-border);
-            border-radius: 20px; padding: 20px; width: 320px; display: none; z-index: 30;
-            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+            border-radius: 20px; padding: 20px; width: 320px; max-width: calc(100vw - 24px);
+            display: none; z-index: 30; box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+            transition: opacity 0.25s ease, transform 0.25s ease;
         }
         .settings-popup.open { display: block; }
         .pop-title { font-size: 14px; font-weight: 800; margin-bottom: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
@@ -4696,9 +4748,9 @@ HTML_DASHBOARD = """
 
         /* 3D Matrix Menu (Exact Layout from Image) */
         .matrix-3d-menu {
-            position: absolute; top: 0; right: -360px; width: 340px; height: 100%;
+            position: absolute; top: 0; right: -360px; width: 340px; max-width: 94vw; height: 100%;
             background: color-mix(in srgb, #050505 92%, transparent); backdrop-filter: blur(25px);
-            border-left: 1px solid var(--card-border); transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            border-left: 1px solid var(--card-border); transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
             padding: 24px; overflow-y: auto; z-index: 40;
         }
         .matrix-3d-menu.open { right: 0; }
@@ -4870,7 +4922,8 @@ HTML_DASHBOARD = """
 
                 <div class="cinema-viewport" id="cinema-viewport">
                     <canvas id="webgl-canvas"></canvas>
-                    <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline crossorigin="anonymous"></video>
+                    <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline crossorigin="anonymous" preload="auto"></video>
+                    <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
 
                     <!-- Video Title Bar -->
                     <div class="cinema-title-bar" id="cinema-title">No Media Loaded</div>
@@ -4936,19 +4989,23 @@ HTML_DASHBOARD = """
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLES</label>
                         <select id="pop-sub-select" class="pop-select" onchange="applySubtitleSelection()"></select>
 
-                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE STYLE</label>
-                        <div style="display: flex; gap: 6px; margin-bottom: 14px;">
-                            <select id="pop-sub-size" class="pop-select" style="margin-bottom: 0;" onchange="updateSubStyle()">
-                                <option value="16px">Small</option>
-                                <option value="20px" selected>Medium</option>
-                                <option value="28px">Large</option>
-                            </select>
-                            <select id="pop-sub-color" class="pop-select" style="margin-bottom: 0;" onchange="updateSubStyle()">
-                                <option value="#FFF,rgba(0,0,0,0.8)">White BG</option>
-                                <option value="#FFEB3B,rgba(0,0,0,0.8)">Yellow BG</option>
-                                <option value="#FFF,transparent">White (No BG)</option>
-                            </select>
-                        </div>
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE SIZE</label>
+                        <select id="subtitle-size-select" class="pop-select" onchange="applySubtitleStyle()">
+                            <option value="18">18 px</option>
+                            <option value="22">22 px</option>
+                            <option value="26" selected>26 px</option>
+                            <option value="30">30 px</option>
+                            <option value="36">36 px</option>
+                        </select>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE COLOR</label>
+                        <input id="subtitle-color-input" type="color" value="#ffffff" onchange="applySubtitleStyle()" style="width: 100%; height: 40px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--bg); margin-bottom: 14px; padding: 4px;">
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE BACKGROUND</label>
+                        <input id="subtitle-bg-input" type="color" value="#000000" onchange="applySubtitleStyle()" style="width: 100%; height: 40px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--bg); margin-bottom: 14px; padding: 4px;">
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">BACKGROUND OPACITY</label>
+                        <input id="subtitle-bg-alpha" type="range" min="0" max="100" value="70" oninput="applySubtitleStyle()" style="width: 100%; margin-bottom: 14px;">
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
                         <select id="pop-aspect-select" class="pop-select" onchange="applyAspectRatio(this.value)">
@@ -4974,9 +5031,9 @@ HTML_DASHBOARD = """
                                 <span class="time-badge" id="hud-time">00:00 / 00:00</span>
                             </div>
                             <div class="ctrl-group">
-                                <button class="cinema-btn" onclick="document.getElementById('menu-3d').classList.toggle('open')" title="3D Matrix">👓</button>
-                                <button class="cinema-btn" onclick="toggleSettingsPopup()" title="Tracks & Aspect">⚙️</button>
-                                <button class="cinema-btn" onclick="toggleFullScreen()" title="Fullscreen">⛶</button>
+                                <button class="cinema-btn" id="hud-3d-btn" onclick="toggleMatrixPopup()" title="3D Matrix">👓</button>
+                                <button class="cinema-btn" id="hud-settings-btn" onclick="toggleSettingsPopup()" title="Tracks, subtitles & aspect">⚙️</button>
+                                <button class="cinema-btn" id="hud-fullscreen-btn" onclick="toggleFullScreen()" title="Fullscreen">⛶</button>
                             </div>
                         </div>
                     </div>
@@ -5883,8 +5940,21 @@ HTML_DASHBOARD = """
         }
 
         // ==========================================================================
-        // --- WEBGL 3D ANAGLYPH SHADER PIPELINE & MEDIA THEATER ENGINE ---
-        // ==========================================================================
+        // --- Playback, OSD, tracks, subtitles & aspect-ratio engine ---
+        let playerAspectMode = 'contain';
+        let playerViewportRatio = 16 / 9;
+        let playerRequiresTranscode = false;
+        let playerDirectCompatible = true;
+        let playerTimelineOffset = 0;
+        let playerStreamGeneration = 0;
+        let activeSubtitleIndex = 'off';
+        let subtitleCues = [];
+        let subtitleAbortController = null;
+        let hudTimeout;
+
+        // ======================================================================
+        // WEBGL 3D ANAGLYPH SHADER PIPELINE
+        // ======================================================================
         let matrix3DIn = 'none';
         let matrix3DOut = 'rc';
         let isRightFirst = false;
@@ -5896,7 +5966,7 @@ HTML_DASHBOARD = """
             varying vec2 v_uv;
             void main() {
                 v_uv = (a_position + 1.0) * 0.5;
-                v_uv.y = 1.0 - v_uv.y; // Flip Y for WebGL Texture coord
+                v_uv.y = 1.0 - v_uv.y;
                 gl_Position = vec4(a_position, 0.0, 1.0);
             }
         `;
@@ -5904,8 +5974,8 @@ HTML_DASHBOARD = """
         const fsSource = `
             precision mediump float;
             uniform sampler2D u_image;
-            uniform int u_in_mode;   // 0:None, 1:LR, 2:TB, 3:CI, 4:RI
-            uniform int u_out_mode;  // 0:RC, 1:GM, 2:BA, 3:VR, 4:2D
+            uniform int u_in_mode;
+            uniform int u_out_mode;
             uniform bool u_swap;
             varying vec2 v_uv;
 
@@ -5913,16 +5983,16 @@ HTML_DASHBOARD = """
                 vec2 uvL = v_uv;
                 vec2 uvR = v_uv;
 
-                if (u_in_mode == 1) { // Left / Right (SBS)
+                if (u_in_mode == 1) {
                     uvL = vec2(v_uv.x * 0.5, v_uv.y);
                     uvR = vec2(0.5 + v_uv.x * 0.5, v_uv.y);
-                } else if (u_in_mode == 2) { // Top / Bottom (OU)
+                } else if (u_in_mode == 2) {
                     uvL = vec2(v_uv.x, v_uv.y * 0.5);
                     uvR = vec2(v_uv.x, 0.5 + v_uv.y * 0.5);
-                } else if (u_in_mode == 3) { // Column Interleaved
+                } else if (u_in_mode == 3) {
                     float col = mod(gl_FragCoord.x, 2.0);
                     if (col < 1.0) { uvR = uvL; } else { uvL = uvR; }
-                } else if (u_in_mode == 4) { // Row Interleaved
+                } else if (u_in_mode == 4) {
                     float row = mod(gl_FragCoord.y, 2.0);
                     if (row < 1.0) { uvR = uvL; } else { uvL = uvR; }
                 }
@@ -5935,14 +6005,14 @@ HTML_DASHBOARD = """
                 vec4 cR = texture2D(u_image, uvR);
 
                 if (u_in_mode == 0 || u_out_mode == 4) {
-                    gl_FragColor = cL; // Pure 2D
-                } else if (u_out_mode == 0) { // Red / Cyan
+                    gl_FragColor = cL;
+                } else if (u_out_mode == 0) {
                     gl_FragColor = vec4(cL.r, cR.g, cR.b, 1.0);
-                } else if (u_out_mode == 1) { // Green / Magenta
+                } else if (u_out_mode == 1) {
                     gl_FragColor = vec4(cR.r, cL.g, cR.b, 1.0);
-                } else if (u_out_mode == 2) { // Blue / Amber
+                } else if (u_out_mode == 2) {
                     gl_FragColor = vec4(cR.r, cR.g, cL.b, 1.0);
-                } else if (u_out_mode == 3) { // VR Side-by-Side
+                } else if (u_out_mode == 3) {
                     if (v_uv.x < 0.5) gl_FragColor = texture2D(u_image, vec2(v_uv.x * 2.0, v_uv.y));
                     else gl_FragColor = texture2D(u_image, vec2((v_uv.x - 0.5) * 2.0, v_uv.y));
                 }
@@ -5951,22 +6021,37 @@ HTML_DASHBOARD = """
 
         function initWebGL() {
             const canvas = document.getElementById('webgl-canvas');
-            gl = canvas.getContext('webgl');
-            if (!gl) return;
+            if (!canvas) return;
+            gl = canvas.getContext('webgl', { alpha: false, antialias: true, preserveDrawingBuffer: false });
+            if (!gl) {
+                console.warn('WebGL is unavailable; video surface cannot be rendered.');
+                return;
+            }
 
             function compileShader(type, src) {
                 const s = gl.createShader(type);
                 gl.shaderSource(s, src);
                 gl.compileShader(s);
+                if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+                    console.error('WebGL shader compile error:', gl.getShaderInfoLog(s));
+                    gl.deleteShader(s);
+                    return null;
+                }
                 return s;
             }
 
             const vs = compileShader(gl.VERTEX_SHADER, vsSource);
             const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+            if (!vs || !fs) return;
+
             glProgram = gl.createProgram();
             gl.attachShader(glProgram, vs);
             gl.attachShader(glProgram, fs);
             gl.linkProgram(glProgram);
+            if (!gl.getProgramParameter(glProgram, gl.LINK_STATUS)) {
+                console.error('WebGL program link error:', gl.getProgramInfoLog(glProgram));
+                return;
+            }
             gl.useProgram(glProgram);
 
             const buf = gl.createBuffer();
@@ -5976,7 +6061,7 @@ HTML_DASHBOARD = """
                 -1,  1,  1, -1,  1,  1
             ]), gl.STATIC_DRAW);
 
-            const pos = gl.getAttribLocation(glProgram, "a_position");
+            const pos = gl.getAttribLocation(glProgram, 'a_position');
             gl.enableVertexAttribArray(pos);
             gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
 
@@ -5993,22 +6078,31 @@ HTML_DASHBOARD = """
         function renderWebGLFrame() {
             const video = document.getElementById('hidden-video');
             const canvas = document.getElementById('webgl-canvas');
+            if (gl && glProgram && glTexture && video && video.readyState >= video.HAVE_CURRENT_DATA) {
+                const w = video.videoWidth || 1280;
+                const h = video.videoHeight || 720;
 
-            if (video.readyState >= video.HAVE_CURRENT_DATA) {
-                canvas.width = video.videoWidth || 1280;
-                canvas.height = video.videoHeight || 720;
+                // IMPORTANT: changing canvas.width/height every animation frame resets the drawing buffer.
+                if (canvas.width !== w || canvas.height !== h) {
+                    canvas.width = w;
+                    canvas.height = h;
+                    resizePlayerSurface();
+                }
+
                 gl.viewport(0, 0, canvas.width, canvas.height);
-
                 gl.bindTexture(gl.TEXTURE_2D, glTexture);
-                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+                try {
+                    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+                } catch (err) {
+                    // Browser may reject a cross-origin direct stream without CORS headers.
+                    console.debug('WebGL video texture update failed:', err);
+                }
 
-                const inMap = { 'none': 0, 'lr': 1, 'tb': 2, 'ci': 3, 'ri': 4 };
-                const outMap = { 'rc': 0, 'gm': 1, 'ba': 2, 'vr': 3, '2d': 4 };
-
-                gl.uniform1i(gl.getUniformLocation(glProgram, "u_in_mode"), inMap[matrix3DIn] || 0);
-                gl.uniform1i(gl.getUniformLocation(glProgram, "u_out_mode"), outMap[matrix3DOut] || 0);
-                gl.uniform1i(gl.getUniformLocation(glProgram, "u_swap"), isRightFirst ? 1 : 0);
-
+                const inMap = { none: 0, lr: 1, tb: 2, ci: 3, ri: 4 };
+                const outMap = { rc: 0, gm: 1, ba: 2, vr: 3, '2d': 4 };
+                gl.uniform1i(gl.getUniformLocation(glProgram, 'u_in_mode'), inMap[matrix3DIn] ?? 0);
+                gl.uniform1i(gl.getUniformLocation(glProgram, 'u_out_mode'), outMap[matrix3DOut] ?? 0);
+                gl.uniform1i(gl.getUniformLocation(glProgram, 'u_swap'), isRightFirst ? 1 : 0);
                 gl.drawArrays(gl.TRIANGLES, 0, 6);
             }
             requestAnimationFrame(renderWebGLFrame);
@@ -6016,290 +6110,559 @@ HTML_DASHBOARD = """
 
         function setMatrix3DIn(val, el) {
             matrix3DIn = val;
-            el.parentElement.querySelectorAll('.matrix-option').forEach(o => o.classList.remove('active'));
-            el.classList.add('active');
+            if (el?.parentElement) el.parentElement.querySelectorAll('.matrix-option').forEach(o => o.classList.remove('active'));
+            el?.classList.add('active');
         }
 
         function setMatrix3DOut(val, el) {
-            if (val === 'lf') { isRightFirst = false; }
-            else if (val === 'rf') { isRightFirst = true; }
-            else { matrix3DOut = val; }
-            el.parentElement.querySelectorAll('.matrix-option').forEach(o => o.classList.remove('active'));
-            el.classList.add('active');
+            if (val === 'lf') isRightFirst = false;
+            else if (val === 'rf') isRightFirst = true;
+            else matrix3DOut = val;
+            if (el?.parentElement) el.parentElement.querySelectorAll('.matrix-option').forEach(o => o.classList.remove('active'));
+            el?.classList.add('active');
         }
 
-        // ⏱️ Auto-Hide HUD & Title Bar Logic
-        let hudTimeout;
+        function toggleMatrixPopup() {
+            const menu = document.getElementById('menu-3d');
+            if (!menu) return;
+            menu.classList.toggle('open');
+            wakeHUD();
+        }
+
+        // ======================================================================
+        // HUD / PLAYBACK CONTROLS
+        // ======================================================================
         function wakeHUD() {
             const vp = document.getElementById('cinema-viewport');
+            const video = document.getElementById('hidden-video');
             if (!vp) return;
+
             vp.classList.remove('idle-hide');
             clearTimeout(hudTimeout);
-            const video = document.getElementById('hidden-video');
-            // Only auto-fade if the video has a source and is currently playing
-            if (video && !video.paused && video.readyState > 0) {
-                hudTimeout = setTimeout(() => vp.classList.add('idle-hide'), 3500);
+
+            if (video && !video.paused && !video.ended) {
+                hudTimeout = setTimeout(() => {
+                    // Do not hide an actively open settings/menu panel while the user is interacting with it.
+                    const settingsOpen = document.getElementById('media-settings-popup')?.classList.contains('open');
+                    const matrixOpen = document.getElementById('menu-3d')?.classList.contains('open');
+                    if (settingsOpen || matrixOpen) return;
+                    vp.classList.add('idle-hide');
+                }, 5000);
             }
         }
-        
-        // Attach wake events to the viewport so it shows up when you move the mouse/tap
-        const vpElement = document.getElementById('cinema-viewport');
-        if (vpElement) {
-            vpElement.addEventListener('mousemove', wakeHUD);
-            vpElement.addEventListener('touchstart', wakeHUD);
-            vpElement.addEventListener('click', wakeHUD);
-        }
 
-        // --- Playback & OSD Logic ---
-        function togglePlayback() {
+        async function togglePlayback() {
             const video = document.getElementById('hidden-video');
-            if (!video.src) return;
-            
-            if (video.paused) {
-                video.play();
-            } else {
-                video.pause();
-            }
-            wakeHUD(); // Instantly update UI state
-        }
-
-        async function loadTheaterMedia() {
-        
-        // --- Playback & OSD Logic ---
-        async function loadTheaterMedia() {
-            const link = document.getElementById('theater-stream-url').value.trim();
-            if (!link) return alert("Provide a valid Telegram or HTTP media link!");
-            activeMediaLink = link;
-
+            if (!video) return;
             wakeHUD();
 
-            const btn = document.querySelector('button[onclick="loadTheaterMedia()"]');
-            let origText = "Load & Play";
-            if (btn) {
-                origText = btn.innerText;
-                btn.innerText = "⏳ Probing Media...";
-                btn.disabled = true;
-            }
-
-            // FIX: Set robust default fallbacks immediately so menus are never empty
-            document.getElementById('pop-quality-select').innerHTML = '<option value="Original">Original</option><option value="1080p">1080p</option><option value="720p">720p</option><option value="480p">480p</option><option value="360p">360p</option>';
-            document.getElementById('pop-audio-select').innerHTML = '<option value="">Default Audio</option>';
-            document.getElementById('pop-sub-select').innerHTML = '<option value="off">Off</option>';
-
-            // Probe available streams (tracks & resolutions)
             try {
-                const probeRes = await fetch(`/api/media_probe?user_id=${currentUser}&link=${encodeURIComponent(link)}`);
-                const pdata = await probeRes.json();
-                if (pdata.status === 'success') {
-                    // Fetch real filename from backend!
-                    const titleEl = document.getElementById('cinema-title');
-                    if (titleEl) titleEl.innerText = pdata.file_name || "Telegram Stream";
-
-                    const qSelect = document.getElementById('pop-quality-select');
-                    qSelect.innerHTML = pdata.qualities.map(q => `<option value="${q}">${q}</option>`).join('');
-
-                    // 🔊 FIX: Show ACTUAL audio names extracted from file tags, fallback to 'Track #' if the file has no names
-                    const aSelect = document.getElementById('pop-audio-select');
-                    aSelect.innerHTML = (pdata.audio_tracks.length ? '' : '<option value="">Default Audio</option>') + 
-                        pdata.audio_tracks.map(a => `<option value="${a.index}">${a.label || 'Track ' + a.index} (${a.codec})</option>`).join('');
-
-                    // 💬 FIX: Show ACTUAL subtitle names extracted from file tags, fallback to 'Subtitle #' if the file has no names
-                    const sSelect = document.getElementById('pop-sub-select');
-                    sSelect.innerHTML = '<option value="off">Off</option>' + 
-                        pdata.subtitles.map(s => `<option value="${s.index}">${s.label || 'Subtitle ' + s.index}</option>`).join('');
-                } else {
-                    console.warn("Probe failed: ", pdata.message);
-                }
-            } catch(e) {
-                console.warn("Probe fetch error: ", e);
-            } finally {
-                if (btn) {
-                    btn.innerText = origText;
-                    btn.disabled = false;
-                }
-            }
-            
-            applyTrackSelection();
-            if (!gl) initWebGL();
-        }
-
-        function applyTrackSelection() {
-            const quality = document.getElementById('pop-quality-select').value || 'Original';
-            const audioIdx = document.getElementById('pop-audio-select').value;
-            const video = document.getElementById('hidden-video');
-            if (!activeMediaLink) return;
-
-            let streamUrl = `/api/stream?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&quality=${quality}&t=${Date.now()}`;
-            if (audioIdx) streamUrl += `&audio_idx=${audioIdx}`;
-
-            const curTime = video.currentTime || 0;
-            const wasPlaying = !video.paused;
-            
-            video.src = streamUrl;
-            
-            // Wait for new stream to buffer headers before applying current time!
-            video.addEventListener('loadedmetadata', function onMeta() {
-                video.currentTime = curTime;
-                if (wasPlaying) video.play();
-                video.removeEventListener('loadedmetadata', onMeta);
-            });
-            
-            // Sync HUD icons
-            document.getElementById('hud-play-btn').innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
-            document.getElementById('big-play-overlay').innerHTML = `<svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
-        }
-
-        function applySubtitleSelection() {
-            const subIdx = document.getElementById('pop-sub-select').value;
-            const video = document.getElementById('hidden-video');
-            video.querySelectorAll('track').forEach(t => t.remove());
-
-            if (subIdx !== 'off') {
-                const track = document.createElement('track');
-                track.kind = 'subtitles';
-                track.label = 'Active Subtitles';
-                track.srclang = 'en';
-                // Cache buster for subtitles
-                track.src = `/api/subtitles?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${subIdx}&t=${Date.now()}`;
-                track.default = true;
-                video.appendChild(track);
-                
-                // FIX: Force the browser to render the track immediately
-                setTimeout(() => {
-                    if (video.textTracks && video.textTracks.length > 0) {
-                        for (let i = 0; i < video.textTracks.length; i++) {
-                            video.textTracks[i].mode = 'showing';
-                        }
+                if (video.paused || video.ended) {
+                    if (video.ended) {
+                        try { video.currentTime = 0; } catch (_) {}
                     }
-                }, 500);
-            }
-        }
-
-        function applyAspectRatio(mode) {
-            const canvas = document.getElementById('webgl-canvas');
-            const video = document.getElementById('hidden-video');
-            const vp = document.getElementById('cinema-viewport'); 
-            
-            [canvas, video].forEach(el => {
-                el.style.width = '100%'; el.style.height = '100%';
-                
-                if (mode === 'contain') { 
-                    el.style.objectFit = 'contain'; 
-                    el.style.transform = 'scale(1)';
-                } else if (mode === 'cover') { 
-                    el.style.objectFit = 'cover'; 
-                    el.style.transform = 'scale(1)';
-                } else if (mode === 'stretch') { 
-                    el.style.objectFit = 'fill'; 
-                    el.style.transform = 'scale(1)';
+                    await video.play();
                 } else {
-                    el.style.objectFit = 'fill'; 
+                    video.pause();
                 }
-            });
-            
-            // Only force viewport aspect ratio if we are NOT in fullscreen
-            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-                if (mode === '16-9') vp.style.aspectRatio = '16/9';
-                else if (mode === '21-9') vp.style.aspectRatio = '21/9';
-                else if (mode === '4-3') vp.style.aspectRatio = '4/3';
-                else vp.style.aspectRatio = '16/9';
+            } catch (err) {
+                console.warn('Playback toggle failed:', err);
+                wakeHUD();
             }
         }
 
         function skipPlayback(sec) {
             const video = document.getElementById('hidden-video');
-            video.currentTime += sec;
+            if (!video) return;
+            const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+            const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity;
+            const target = Math.max(0, Math.min(duration, current + Number(sec || 0)));
             wakeHUD();
+
+            if (playerRequiresTranscode) {
+                restartStreamAt(target);
+                return;
+            }
+            try { video.currentTime = target; } catch (_) {}
+            renderCurrentSubtitle();
         }
 
         function seekPlayback(e) {
             const video = document.getElementById('hidden-video');
-            const rect = document.getElementById('cinema-scrubber').getBoundingClientRect();
-            const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            if (video.duration) { video.currentTime = pos * video.duration; }
+            const bar = document.getElementById('cinema-scrubber');
+            if (!video || !bar || !Number.isFinite(video.duration) || video.duration <= 0) return;
+            const rect = bar.getBoundingClientRect();
+            const clientX = e.clientX ?? (e.touches?.[0]?.clientX ?? rect.left);
+            const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+            const target = pos * video.duration;
             wakeHUD();
-        }
-
-        function toggleSettingsPopup() {
-            document.getElementById('media-settings-popup').classList.toggle('open');
-            wakeHUD();
-        }
-
-        // 📱 Fix for iOS/Safari & Android Fullscreen
-        function toggleFullScreen() {
-            const vp = document.getElementById('cinema-viewport');
-            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-                if (vp.requestFullscreen) { vp.requestFullscreen(); }
-                else if (vp.webkitRequestFullscreen) { vp.webkitRequestFullscreen(); }
-            } else {
-                if (document.exitFullscreen) { document.exitFullscreen(); }
-                else if (document.webkitExitFullscreen) { document.webkitExitFullscreen(); }
+            if (playerRequiresTranscode) restartStreamAt(target);
+            else {
+                video.currentTime = target;
+                renderCurrentSubtitle();
             }
         }
 
-        // Sync Time, Scrubber, and Center Overlay State
+        function toggleSettingsPopup() {
+            const popup = document.getElementById('media-settings-popup');
+            if (!popup) return;
+            popup.classList.toggle('open');
+            if (popup.classList.contains('open')) {
+                document.getElementById('menu-3d')?.classList.remove('open');
+            }
+            wakeHUD();
+        }
+
+        function toggleFullScreen() {
+            const vp = document.getElementById('cinema-viewport');
+            if (!vp) return;
+            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                if (vp.requestFullscreen) vp.requestFullscreen();
+                else if (vp.webkitRequestFullscreen) vp.webkitRequestFullscreen();
+            } else {
+                if (document.exitFullscreen) document.exitFullscreen();
+                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+            }
+        }
+
+        // ======================================================================
+        // ROBUST ASPECT-RATIO / SURFACE SIZING
+        // ======================================================================
+        function getViewportRatioForMode(mode) {
+            if (mode === '21-9') return 21 / 9;
+            if (mode === '4-3') return 4 / 3;
+            return 16 / 9;
+        }
+
+        function updateViewportBox() {
+            const vp = document.getElementById('cinema-viewport');
+            if (!vp) return;
+            if (document.fullscreenElement === vp || document.webkitFullscreenElement === vp) {
+                vp.style.height = '100vh';
+                vp.style.aspectRatio = 'auto';
+                return;
+            }
+            const width = vp.clientWidth || Math.round(vp.getBoundingClientRect().width);
+            if (width > 0) {
+                // Explicit height makes the ratio deterministic on browsers where aspect-ratio is being ignored.
+                vp.style.aspectRatio = 'auto';
+                vp.style.height = `${Math.max(1, Math.round(width / playerViewportRatio))}px`;
+            }
+            resizePlayerSurface();
+        }
+
+        function resizePlayerSurface() {
+            const vp = document.getElementById('cinema-viewport');
+            const canvas = document.getElementById('webgl-canvas');
+            const video = document.getElementById('hidden-video');
+            if (!vp || !canvas) return;
+
+            const vw = vp.clientWidth;
+            const vh = vp.clientHeight;
+            if (vw <= 0 || vh <= 0) return;
+
+            const sw = video?.videoWidth || 16;
+            const sh = video?.videoHeight || 9;
+
+            canvas.style.left = '50%';
+            canvas.style.top = '50%';
+            canvas.style.transform = 'translate(-50%, -50%)';
+
+            if (playerAspectMode === 'stretch') {
+                canvas.style.width = '100%';
+                canvas.style.height = '100%';
+                return;
+            }
+
+            const sourceAspect = sw / sh;
+            const viewAspect = vw / vh;
+            const scale = playerAspectMode === 'cover'
+                ? Math.max(vw / sw, vh / sh)
+                : Math.min(vw / sw, vh / sh);
+            const drawW = Math.max(1, Math.round(sw * scale));
+            const drawH = Math.max(1, Math.round(sh * scale));
+
+            // For contain, this produces letterbox/pillarbox. For cover, overflow is clipped by the viewport.
+            canvas.style.width = `${drawW}px`;
+            canvas.style.height = `${drawH}px`;
+            canvas.dataset.sourceAspect = String(sourceAspect);
+            canvas.dataset.viewAspect = String(viewAspect);
+        }
+
+        function applyAspectRatio(mode) {
+            const allowed = ['contain', 'cover', 'stretch', '16-9', '21-9', '4-3'];
+            if (!allowed.includes(mode)) mode = 'contain';
+
+            if (mode === '16-9' || mode === '21-9' || mode === '4-3') {
+                playerViewportRatio = getViewportRatioForMode(mode);
+                // Named cinematic ratios preserve the picture and crop only as necessary.
+                playerAspectMode = 'cover';
+            } else {
+                playerViewportRatio = 16 / 9;
+                playerAspectMode = mode;
+            }
+
+            updateViewportBox();
+            localStorage.setItem('player_aspect_mode', mode);
+            wakeHUD();
+        }
+
+        // ======================================================================
+        // SUBTITLE ENGINE — custom WebVTT renderer with user-configurable style
+        // ======================================================================
+        function vttTimeToSeconds(ts) {
+            const parts = String(ts).trim().replace(',', '.').split(':');
+            if (parts.length === 3) return Number(parts[0]) * 3600 + Number(parts[1]) * 60 + Number(parts[2]);
+            if (parts.length === 2) return Number(parts[0]) * 60 + Number(parts[1]);
+            return Number(parts[0]) || 0;
+        }
+
+        function parseWebVTT(text) {
+            const clean = String(text || '').replace(/^WEBVTT[^\\n]*\\n/i, '').replace(/\\r/g, '');
+            const blocks = clean.split(/\\n\\s*\\n/);
+            const cues = [];
+
+            for (const block of blocks) {
+                const lines = block.split('\\n');
+                const timeIndex = lines.findIndex(line => line.includes('-->'));
+                if (timeIndex < 0) continue;
+                const timeParts = lines[timeIndex].split('-->');
+                if (timeParts.length < 2) continue;
+
+                const start = vttTimeToSeconds(timeParts[0]);
+                const end = vttTimeToSeconds(timeParts[1].trim().split(/\\s+/)[0]);
+                const payload = lines.slice(timeIndex + 1).join('\\n').trim();
+                if (!payload || !Number.isFinite(start) || !Number.isFinite(end)) continue;
+                cues.push({ start, end, text: payload.replace(/<[^>]*>/g, '') });
+            }
+            return cues.sort((a, b) => a.start - b.start);
+        }
+
+        function renderCurrentSubtitle() {
+            const video = document.getElementById('hidden-video');
+            const overlay = document.getElementById('subtitle-overlay');
+            if (!video || !overlay || activeSubtitleIndex === 'off') {
+                if (overlay) overlay.innerHTML = '';
+                return;
+            }
+            const t = (Number.isFinite(video.currentTime) ? video.currentTime : 0) + (playerTimelineOffset || 0);
+            const hits = subtitleCues.filter(c => t >= c.start && t <= c.end);
+            if (!hits.length) {
+                overlay.innerHTML = '';
+                return;
+            }
+            const safeText = hits.map(c => c.text).join('\\n');
+            overlay.innerHTML = `<div class="subtitle-text"></div>`;
+            overlay.firstElementChild.textContent = safeText;
+            applySubtitleStyle();
+        }
+
+        async function applySubtitleSelection() {
+            const subSelect = document.getElementById('pop-sub-select');
+            const overlay = document.getElementById('subtitle-overlay');
+            activeSubtitleIndex = subSelect?.value ?? 'off';
+            subtitleCues = [];
+            if (overlay) overlay.innerHTML = '';
+
+            if (subtitleAbortController) {
+                subtitleAbortController.abort();
+                subtitleAbortController = null;
+            }
+
+            if (activeSubtitleIndex === 'off' || !activeMediaLink) {
+                wakeHUD();
+                return;
+            }
+
+            subtitleAbortController = new AbortController();
+            try {
+                const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}&t=${Date.now()}`;
+                const response = await fetch(url, { signal: subtitleAbortController.signal });
+                if (!response.ok) throw new Error(`Subtitle server returned ${response.status}`);
+                const text = await response.text();
+                subtitleCues = parseWebVTT(text);
+                renderCurrentSubtitle();
+            } catch (err) {
+                if (err?.name !== 'AbortError') {
+                    console.warn('Subtitle load failed:', err);
+                    subtitleCues = [];
+                }
+            } finally {
+                wakeHUD();
+            }
+        }
+
+        function hexToRgba(hex, alpha) {
+            const m = String(hex || '').replace('#', '');
+            const n = parseInt(m.length === 3 ? m.split('').map(c => c + c).join('') : m, 16);
+            if (!Number.isFinite(n)) return `rgba(0,0,0,${alpha})`;
+            return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${alpha})`;
+        }
+
+        function applySubtitleStyle() {
+            const size = Number(document.getElementById('subtitle-size-select')?.value || 26);
+            const fg = document.getElementById('subtitle-color-input')?.value || '#ffffff';
+            const bg = document.getElementById('subtitle-bg-input')?.value || '#000000';
+            const alpha = Math.max(0, Math.min(100, Number(document.getElementById('subtitle-bg-alpha')?.value || 70))) / 100;
+            const text = document.querySelector('#subtitle-overlay .subtitle-text');
+            if (!text) return;
+            text.style.fontSize = `${size}px`;
+            text.style.color = fg;
+            text.style.background = hexToRgba(bg, alpha);
+        }
+
+        // ======================================================================
+        // STREAM SELECTION — preserves playback position across changes
+        // ======================================================================
+        async function setVideoSource(streamUrl, preserveTime = 0, shouldPlay = true) {
+            const video = document.getElementById('hidden-video');
+            if (!video) return;
+            const generation = ++playerStreamGeneration;
+
+            video.pause();
+            video.removeAttribute('src');
+            video.load();
+            video.src = streamUrl;
+            video.load();
+            wakeHUD();
+
+            const onMetadata = async () => {
+                if (generation !== playerStreamGeneration) return;
+                video.removeEventListener('loadedmetadata', onMetadata);
+                updateViewportBox();
+                resizePlayerSurface();
+                try {
+                    if (Number.isFinite(preserveTime) && preserveTime > 0) {
+                        // currentTime must be assigned after metadata is available.
+                        video.currentTime = preserveTime;
+                    }
+                } catch (_) {}
+                if (shouldPlay) {
+                    try { await video.play(); }
+                    catch (err) { console.warn('Autoplay after track switch failed:', err); }
+                }
+                renderCurrentSubtitle();
+            };
+            video.addEventListener('loadedmetadata', onMetadata, { once: true });
+        }
+
+        function buildStreamUrl(startTime = null) {
+            const quality = document.getElementById('pop-quality-select')?.value || 'Original';
+            const audioIdx = document.getElementById('pop-audio-select')?.value || '';
+            const params = new URLSearchParams({
+                user_id: String(currentUser || ''),
+                link: activeMediaLink,
+                quality,
+                t: String(Date.now())
+            });
+            if (audioIdx !== '') params.set('audio_idx', audioIdx);
+            if (Number.isFinite(startTime) && startTime > 0) params.set('start', String(startTime));
+            return `/api/stream?${params.toString()}`;
+        }
+
+        async function applyTrackSelection() {
+            if (!activeMediaLink) return;
+            const video = document.getElementById('hidden-video');
+            if (!video) return;
+
+            const quality = document.getElementById('pop-quality-select')?.value || 'Original';
+            const audioIdx = document.getElementById('pop-audio-select')?.value || '';
+            const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+            const wasPlaying = !video.paused && !video.ended;
+
+            // Any explicit quality or non-default audio requires FFmpeg. MKV/AVI/etc.
+            // also require FFmpeg even when "Original" is selected.
+            playerRequiresTranscode = !playerDirectCompatible || quality !== 'Original' || audioIdx !== '';
+
+            const serverStart = playerRequiresTranscode && current > 0 ? current : null;
+            playerTimelineOffset = serverStart || 0;
+            const streamUrl = buildStreamUrl(serverStart);
+            await setVideoSource(streamUrl, serverStart ? 0 : current, wasPlaying || video.readyState < 2);
+            wakeHUD();
+        }
+
+        async function restartStreamAt(target) {
+            const video = document.getElementById('hidden-video');
+            if (!video || !activeMediaLink) return;
+            const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity;
+            const safeTarget = Math.max(0, Math.min(duration, Number(target) || 0));
+            playerTimelineOffset = safeTarget;
+            await setVideoSource(buildStreamUrl(safeTarget), 0, true);
+            // Server-side -ss is applied after input decode; currentTime starts from the requested position.
+            renderCurrentSubtitle();
+        }
+
+        // ======================================================================
+        // MEDIA PROBE + LOAD
+        // ======================================================================
+        function addOption(select, value, label) {
+            const option = document.createElement('option');
+            option.value = String(value ?? '');
+            option.textContent = label ?? String(value ?? '');
+            select.appendChild(option);
+        }
+
+        async function loadTheaterMedia() {
+            const input = document.getElementById('theater-stream-url');
+            const link = input?.value.trim() || '';
+            if (!link) return alert('Provide a valid Telegram or HTTP media link!');
+
+            activeMediaLink = link;
+            const vp = document.getElementById('cinema-viewport');
+            const titleEl = document.getElementById('cinema-title');
+            const btn = document.querySelector('button[onclick="loadTheaterMedia()"]');
+            const qSelect = document.getElementById('pop-quality-select');
+            const aSelect = document.getElementById('pop-audio-select');
+            const sSelect = document.getElementById('pop-sub-select');
+
+            if (titleEl) titleEl.innerText = '⏳ Probing media…';
+            if (vp) vp.classList.remove('idle-hide');
+            if (btn) { btn.innerText = '⏳ Probing Media...'; btn.disabled = true; }
+
+            qSelect.innerHTML = '';
+            addOption(qSelect, 'Original', 'Original');
+            aSelect.innerHTML = '';
+            addOption(aSelect, '', 'Default Audio');
+            sSelect.innerHTML = '';
+            addOption(sSelect, 'off', 'Off');
+
+            try {
+                const probeRes = await fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}&t=${Date.now()}`);
+                const pdata = await probeRes.json();
+                if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
+
+                playerDirectCompatible = !Boolean(pdata.requires_transcode);
+                playerRequiresTranscode = !playerDirectCompatible;
+                if (titleEl) titleEl.innerText = pdata.file_name || 'Telegram Stream';
+
+                qSelect.innerHTML = '';
+                (pdata.qualities?.length ? pdata.qualities : ['Original']).forEach(q => addOption(qSelect, q, q));
+
+                aSelect.innerHTML = '';
+                addOption(aSelect, '', 'Default Audio');
+                (pdata.audio_tracks || []).forEach((a, i) => {
+                    const lang = a.language ? ` · ${a.language}` : '';
+                    const ch = a.channels ? ` · ${a.channels}ch` : '';
+                    addOption(aSelect, a.index, `${a.label || `Track ${i + 1}`}${lang}${ch}`);
+                });
+
+                sSelect.innerHTML = '';
+                addOption(sSelect, 'off', 'Off');
+                (pdata.subtitles || []).forEach((s, i) => {
+                    const lang = s.language ? ` · ${s.language}` : '';
+                    addOption(sSelect, s.index, `${s.label || `Subtitle ${i + 1}`}${lang}`);
+                });
+
+                activeSubtitleIndex = 'off';
+                subtitleCues = [];
+                document.getElementById('subtitle-overlay').innerHTML = '';
+
+                const savedAspect = localStorage.getItem('player_aspect_mode') || 'contain';
+                const aspectSelect = document.getElementById('pop-aspect-select');
+                if (aspectSelect) aspectSelect.value = savedAspect;
+                applyAspectRatio(savedAspect);
+
+                await applyTrackSelection();
+                if (!gl) initWebGL();
+                wakeHUD();
+            } catch (err) {
+                console.error('Media load failed:', err);
+                if (titleEl) titleEl.innerText = `⚠️ ${err.message || 'Unable to load media'}`;
+                alert(`Media load failed: ${err.message || 'Unable to load media'}`);
+            } finally {
+                if (btn) { btn.innerText = 'Load & Play'; btn.disabled = false; }
+            }
+        }
+
+        // ======================================================================
+        // EVENT WIRING
+        // ======================================================================
         const vidElem = document.getElementById('hidden-video');
+        const vpElement = document.getElementById('cinema-viewport');
         const centerCtrls = document.getElementById('center-controls');
         const bigPlay = document.getElementById('big-play-overlay');
         const hudPlay = document.getElementById('hud-play-btn');
 
         const playSvg = `<svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
-        const pauseSvg = `<svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
+        const pauseSvg = `<svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14h4v14h-4V5z"/></svg>`;
         const smallPlaySvg = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>`;
         const smallPauseSvg = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
 
-        vidElem.addEventListener('play', () => {
-            hudPlay.innerHTML = smallPauseSvg;
-            bigPlay.innerHTML = pauseSvg;
-            wakeHUD();
-        });
-        vidElem.addEventListener('pause', () => {
-            hudPlay.innerHTML = smallPlaySvg;
-            bigPlay.innerHTML = playSvg;
-            wakeHUD();
-        });
-        vidElem.addEventListener('waiting', () => {
-            bigPlay.innerHTML = '⏳';
-        });
-        vidElem.addEventListener('playing', () => {
-            bigPlay.innerHTML = pauseSvg;
-        });
+        if (vidElem) {
+            vidElem.addEventListener('play', () => {
+                if (hudPlay) hudPlay.innerHTML = smallPauseSvg;
+                if (bigPlay) bigPlay.innerHTML = pauseSvg;
+                wakeHUD();
+            });
+            vidElem.addEventListener('pause', () => {
+                if (hudPlay) hudPlay.innerHTML = smallPlaySvg;
+                if (bigPlay) bigPlay.innerHTML = playSvg;
+                wakeHUD();
+            });
+            vidElem.addEventListener('ended', () => wakeHUD());
+            vidElem.addEventListener('waiting', () => { if (bigPlay) bigPlay.innerHTML = '⏳'; });
+            vidElem.addEventListener('playing', () => { if (bigPlay) bigPlay.innerHTML = pauseSvg; });
+            vidElem.addEventListener('loadedmetadata', () => { updateViewportBox(); resizePlayerSurface(); });
+            vidElem.addEventListener('loadeddata', () => renderCurrentSubtitle());
+            vidElem.addEventListener('seeked', () => renderCurrentSubtitle());
+            vidElem.addEventListener('timeupdate', () => {
+                const cur = vidElem.currentTime || 0;
+                const dur = Number.isFinite(vidElem.duration) && vidElem.duration > 0 ? vidElem.duration : 0;
+                const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
+                const fill = document.getElementById('scrubber-fill');
+                const time = document.getElementById('hud-time');
+                if (fill) fill.style.width = `${percent}%`;
 
-        // Add auto-hide class to the center controls as well
-        document.getElementById('cinema-viewport').classList.add('idle-hide'); // hide on init
-
-        vidElem.addEventListener('timeupdate', () => {
-            const cur = vidElem.currentTime || 0;
-            const dur = vidElem.duration || 1;
-            document.getElementById('scrubber-fill').style.width = (cur / dur * 100) + '%';
-            
-            // FIX: Correct HH:MM:SS logic ensuring padded zeros
-            const fmt = (s) => {
-                if (isNaN(s) || !isFinite(s)) return "00:00";
-                const h = Math.floor(s / 3600);
-                const m = Math.floor((s % 3600) / 60);
-                const sec = Math.floor(s % 60);
-                
-                const hh = h > 0 ? `${h < 10 ? '0' : ''}${h}:` : '';
-                const mm = `${m < 10 ? '0' : ''}${m}:`;
-                const ss = `${sec < 10 ? '0' : ''}${sec}`;
-                return `${hh}${mm}${ss}`;
-            };
-            document.getElementById('hud-time').innerText = `${fmt(cur)} / ${fmt(dur)}`;
-        });
-
-        function updateSubStyle() {
-            const size = document.getElementById('pop-sub-size').value;
-            const colorBg = document.getElementById('pop-sub-color').value.split(',');
-            let style = document.getElementById('dynamic-sub-style');
-            if(!style) {
-                style = document.createElement('style');
-                style.id = 'dynamic-sub-style';
-                document.head.appendChild(style);
-            }
-            style.innerHTML = `::cue { font-size: ${size} !important; color: ${colorBg[0]} !important; background: ${colorBg[1]} !important; text-shadow: 2px 2px 4px #000 !important; font-family: sans-serif !important; }`;
+                const fmt = (s) => {
+                    if (!Number.isFinite(s) || s < 0) return '00:00';
+                    const h = Math.floor(s / 3600);
+                    const m = Math.floor((s % 3600) / 60);
+                    const sec = Math.floor(s % 60);
+                    const hh = h > 0 ? `${String(h).padStart(2, '0')}:` : '';
+                    return `${hh}${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+                };
+                if (time) time.innerText = `${fmt(cur)} / ${fmt(dur)}`;
+                renderCurrentSubtitle();
+            });
+            vidElem.addEventListener('error', () => {
+                const mediaError = vidElem.error;
+                console.warn('Video element error:', mediaError);
+                wakeHUD();
+            });
         }
-        document.addEventListener('DOMContentLoaded', updateSubStyle);
+
+        if (vpElement) {
+            vpElement.addEventListener('pointermove', wakeHUD, { passive: true });
+            vpElement.addEventListener('pointerdown', wakeHUD, { passive: true });
+            vpElement.addEventListener('click', (e) => {
+                // A tap/click wakes controls. Buttons keep their own click handlers.
+                if (e.target.closest('button, .center-btn, .settings-popup, .matrix-3d-menu, .cinema-scrubber-bar')) return;
+                wakeHUD();
+            });
+            vpElement.addEventListener('touchstart', wakeHUD, { passive: true });
+            document.getElementById('media-settings-popup')?.addEventListener('pointerdown', wakeHUD, { passive: true });
+            document.getElementById('menu-3d')?.addEventListener('pointerdown', wakeHUD, { passive: true });
+        }
+
+        const aspectSelect = document.getElementById('pop-aspect-select');
+        if (aspectSelect) {
+            const savedAspect = localStorage.getItem('player_aspect_mode') || 'contain';
+            aspectSelect.value = savedAspect;
+            applyAspectRatio(savedAspect);
+        }
+
+        const resizeObserver = typeof ResizeObserver !== 'undefined' && vpElement
+            ? new ResizeObserver(() => { updateViewportBox(); resizePlayerSurface(); })
+            : null;
+        resizeObserver?.observe(vpElement);
+        window.addEventListener('resize', () => { updateViewportBox(); resizePlayerSurface(); });
+        document.addEventListener('fullscreenchange', () => { updateViewportBox(); resizePlayerSurface(); });
+        document.addEventListener('webkitfullscreenchange', () => { updateViewportBox(); resizePlayerSurface(); });
+
+        // Initial state: hidden while idle, visible on first interaction/playback.
+        if (vpElement) vpElement.classList.add('idle-hide');
+        if (!gl) initWebGL();
+
     </script>
 </body>
 </html>
@@ -7147,7 +7510,7 @@ async def _api_spectrogram_web_handler(request):
 # ==============================================================================
 
 async def _api_media_probe_handler(request):
-    """Probes media to discover available video resolutions, audio streams, and subtitles."""
+    """Probe media metadata/tracks without downloading the whole Telegram file."""
     user_id = int(request.query.get("user_id", 0))
     link = request.query.get("link", "").strip()
     if not link:
@@ -7158,106 +7521,170 @@ async def _api_media_probe_handler(request):
     temp_dir = None
 
     try:
+        mime_type = "video/mp4"
+        requires_transcode = False
+
         if "t.me" in link:
             parsed = _parse_source_link(link)
             chat_id = parsed.get("chat_id")
             msg_id = parsed.get("msg_id")
-            
-            # FIX: Safely cast chat_id to integer for private channels/groups
+            if chat_id is None or msg_id is None:
+                return web.json_response({"status": "error", "message": "Invalid Telegram media link"}, status=400)
+
             chat_id_clean = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
-            
             msg = await uclient.get_messages(chat_id_clean, msg_id)
+            if not msg:
+                return web.json_response({"status": "error", "message": "Telegram message not found"}, status=404)
+
             media = msg.document or msg.video or msg.audio
             if not media:
-                return web.json_response({"status": "error", "message": "No media found in message"})
+                return web.json_response({"status": "error", "message": "No media found in message"}, status=404)
 
-            # Extract Actual Telegram Filename
-            real_file_name = getattr(media, "file_name", None) or f"Telegram_Media_{msg_id}"
+            real_file_name = getattr(media, "file_name", None)
+            if not real_file_name and getattr(media, "title", None):
+                real_file_name = media.title
+            real_file_name = real_file_name or f"Telegram_Media_{msg_id}"
+            mime_type = getattr(media, "mime_type", None) or mime_type
+            lower_name = str(real_file_name).lower()
+            requires_transcode = not ("mp4" in str(mime_type).lower() and not lower_name.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv")))
 
             temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
             temp_dir.mkdir(parents=True, exist_ok=True)
             target_path = temp_dir / "probe_chunk.dat"
-            # FIX: Reduced chunk to 5MB so the UI doesn't timeout
-            await partial_download_tg(uclient, msg, target_path, limit_mb=5)
+
+            # Larger edge sample makes multi-audio/subtitle metadata much more reliable,
+            # while remaining dramatically cheaper than downloading the full movie.
+            await partial_download_tg(uclient, msg, target_path, limit_mb=32)
         else:
-            real_file_name = "Direct_Stream_Media"
+            # Reuse the existing HTTP helper so Content-Disposition / URL filenames are preserved.
             temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
             temp_dir.mkdir(parents=True, exist_ok=True)
             target_path = temp_dir / "probe_chunk.dat"
-            await partial_download_http(link, target_path, limit_mb=10)
+            file_size, detected_name = await partial_download_http(link, target_path, limit_mb=32)
+            real_file_name = detected_name or "Direct_Stream_Media"
+            lower_name = str(real_file_name).lower()
+            requires_transcode = not lower_name.endswith(".mp4")
 
         cmd = [
             "ffprobe", "-v", "error",
-            "-show_entries", "stream=index,codec_type,codec_name,width,height:stream_tags=language,title",
+            "-probesize", "64M",
+            "-analyzeduration", "20M",
+            "-show_entries",
+            "stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
             "-of", "json", str(target_path)
         ]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await proc.communicate()
-        probe_data = json.loads(stdout.decode("utf-8", errors="ignore"))
+        proc = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            err = stderr.decode("utf-8", errors="ignore").strip()
+            raise RuntimeError(f"ffprobe failed: {err or 'unknown error'}")
 
+        probe_data = json.loads(stdout.decode("utf-8", errors="ignore") or "{}")
         streams = probe_data.get("streams", [])
         video_streams = [s for s in streams if s.get("codec_type") == "video"]
         audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
         sub_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
 
-        width = video_streams[0].get("width", 1920) if video_streams else 1920
-        height = video_streams[0].get("height", 1080) if video_streams else 1080
+        width = int(video_streams[0].get("width") or 1920) if video_streams else 1920
+        height = int(video_streams[0].get("height") or 1080) if video_streams else 1080
 
         qualities = ["Original"]
-        if height >= 2160 or width >= 3840: qualities.extend(["4K", "1080p", "720p", "480p", "360p"])
-        elif height >= 1080 or width >= 1920: qualities.extend(["1080p", "720p", "480p", "360p"])
-        elif height >= 720: qualities.extend(["720p", "480p", "360p"])
-        elif height >= 480: qualities.extend(["480p", "360p"])
-        else: qualities.append("360p")
+        if height >= 2160 or width >= 3840:
+            qualities.extend(["4K", "1080p", "720p", "480p", "360p"])
+        elif height >= 1080 or width >= 1920:
+            qualities.extend(["1080p", "720p", "480p", "360p"])
+        elif height >= 720:
+            qualities.extend(["720p", "480p", "360p"])
+        elif height >= 480:
+            qualities.extend(["480p", "360p"])
+        else:
+            qualities.append("360p")
 
-        # Helper to handle case-insensitive audio/subtitle tags
         def get_tag(tags_dict, keys_to_find):
             if not tags_dict: return None
+            wanted = {str(k).lower() for k in keys_to_find}
             for k, v in tags_dict.items():
-                if k.lower() in keys_to_find: return v
+                if str(k).lower() in wanted and v not in (None, ""):
+                    return str(v)
             return None
+
+        audio_tracks = []
+        for i, s in enumerate(audio_streams):
+            tags = s.get("tags", {}) or {}
+            language = get_tag(tags, ["language"])
+            title = get_tag(tags, ["title", "handler_name"])
+            label = title or language or f"Track {i + 1}"
+            audio_tracks.append({
+                "index": s.get("index"),
+                "codec": s.get("codec_name"),
+                "label": label,
+                "language": language or "",
+                "channels": s.get("channels"),
+                "channel_layout": s.get("channel_layout"),
+                "default": bool((s.get("disposition") or {}).get("default")),
+            })
+
+        subtitles = []
+        for i, s in enumerate(sub_streams):
+            tags = s.get("tags", {}) or {}
+            language = get_tag(tags, ["language"])
+            title = get_tag(tags, ["title", "handler_name"])
+            label = title or language or f"Subtitle {i + 1}"
+            subtitles.append({
+                "index": s.get("index"),
+                "codec": s.get("codec_name"),
+                "label": label,
+                "language": language or "",
+                "default": bool((s.get("disposition") or {}).get("default")),
+                "forced": bool((s.get("disposition") or {}).get("forced")),
+            })
+
+        # Make the default track the first visible choice when possible.
+        audio_tracks.sort(key=lambda x: (not x.get("default", False), x.get("index") if x.get("index") is not None else 9999))
+        subtitles.sort(key=lambda x: (not x.get("default", False), x.get("index") if x.get("index") is not None else 9999))
 
         return web.json_response({
             "status": "success",
             "file_name": real_file_name,
+            "mime_type": mime_type,
+            "requires_transcode": requires_transcode,
+            "video_width": width,
+            "video_height": height,
             "qualities": list(OrderedDict.fromkeys(qualities)),
-            "audio_tracks": [
-                {
-                    "index": s.get("index"),
-                    "codec": s.get("codec_name"),
-                    "label": get_tag(s.get("tags", {}), ["title"]) or get_tag(s.get("tags", {}), ["language"]) or f"Track {i+1}"
-                } for i, s in enumerate(audio_streams)
-            ],
-            "subtitles": [
-                {
-                    "index": s.get("index"),
-                    "codec": s.get("codec_name"),
-                    "label": get_tag(s.get("tags", {}), ["title"]) or get_tag(s.get("tags", {}), ["language"]) or f"Subtitle {i+1}"
-                } for i, s in enumerate(sub_streams)
-            ]
+            "audio_tracks": audio_tracks,
+            "subtitles": subtitles,
         })
     except Exception as e:
+        logger.warning(f"[MediaProbe] {e}", exc_info=True)
         return web.json_response({"status": "error", "message": str(e)}, status=500)
     finally:
         if temp_dir and temp_dir.exists():
             shutil.rmtree(temp_dir, ignore_errors=True)
 
 async def _api_stream_handler(request):
-    """Direct HTTP 206 Partial Content range streamer & dynamic FFmpeg transcoder."""
+    """HTTP 206 proxy for compatible MP4s and low-latency FFmpeg bridge for other variants."""
     user_id = int(request.query.get("user_id", 0))
     link = request.query.get("link", "")
     quality = request.query.get("quality", "Original")
     audio_idx = request.query.get("audio_idx", None)
+    start_time = request.query.get("start", None)
 
     if not link:
         return web.Response(status=400, text="No media link provided")
 
     uclient = USER_CLIENTS.get(user_id, app)
 
+    # ======================================================================
+    # TELEGRAM SOURCE
+    # ======================================================================
     if "t.me" in link:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
         msg_id = parsed.get("msg_id")
+        if chat_id is None or msg_id is None:
+            return web.Response(status=400, text="Invalid Telegram media link")
 
         try:
             msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
@@ -7265,74 +7692,99 @@ async def _api_stream_handler(request):
             if not media:
                 return web.Response(status=404, text="Media not found")
 
-            file_size = media.file_size
-            mime_type = media.mime_type or "video/mp4"
-            filename = getattr(media, "file_name", "video.mp4").lower()
-            is_mkv_avi = filename.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv"))
+            file_size = int(getattr(media, 'file_size', 0) or 0)
+            mime_type = getattr(media, 'mime_type', None) or "video/mp4"
+            filename = str(getattr(media, 'file_name', '') or '').lower()
+            is_unfriendly_container = filename.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv", ".ts", ".webm"))
 
-            # Native direct streaming with HTTP 206 seeking (Zero Transcoding CPU overhead)
-            if quality == "Original" and audio_idx is None and not is_mkv_avi and "mp4" in mime_type:
+            # Native zero-transcode path. Browser can byte-range seek directly.
+            if quality == "Original" and audio_idx is None and not is_unfriendly_container and "mp4" in mime_type.lower() and file_size > 0 and not start_time:
                 range_header = request.headers.get("Range", "")
                 start_byte = 0
                 end_byte = file_size - 1
 
                 if range_header:
-                    match = re.match(r"bytes=(\d+)-(.*)", range_header)
+                    match = re.match(r"bytes=(\d+)-(\d*)", range_header)
                     if match:
-                        start_byte = int(match.group(1))
+                        start_byte = min(int(match.group(1)), file_size - 1)
                         if match.group(2):
-                            end_byte = int(match.group(2))
+                            end_byte = min(int(match.group(2)), file_size - 1)
 
-                chunk_len = (end_byte - start_byte) + 1
-                response = web.StreamResponse(
-                    status=206 if range_header else 200,
-                    headers={
-                        "Content-Range": f"bytes {start_byte}-{end_byte}/{file_size}",
-                        "Accept-Ranges": "bytes",
-                        "Content-Length": str(chunk_len),
-                        "Content-Type": mime_type,
-                        "Access-Control-Allow-Origin": "*"
-                    }
-                )
+                if end_byte < start_byte:
+                    return web.Response(status=416, headers={"Content-Range": f"bytes */{file_size}"})
+
+                chunk_len = end_byte - start_byte + 1
+                status = 206 if range_header else 200
+                headers = {
+                    "Accept-Ranges": "bytes",
+                    "Content-Length": str(chunk_len),
+                    "Content-Type": mime_type,
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-store",
+                }
+                if status == 206:
+                    headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{file_size}"
+
+                response = web.StreamResponse(status=status, headers=headers)
                 await response.prepare(request)
-
                 async for chunk in uclient.stream_media(msg, offset=start_byte, limit=chunk_len):
                     await response.write(chunk)
                 await response.write_eof()
                 return response
 
-            # Transcoding / Format Bridge (On-The-Fly via FFmpeg)
+            # ==================================================================
+            # FFmpeg format/quality/audio bridge. No -re: FFmpeg should encode
+            # as fast as the source can be read, not artificially at real time.
+            # ==================================================================
             res_scale_map = {
                 "4K": "3840:-2", "1080p": "1920:-2", "720p": "1280:-2", "480p": "854:-2", "360p": "640:-2"
             }
-            scale_filter = res_scale_map.get(quality, None)
+            scale_filter = res_scale_map.get(quality)
 
-            ffmpeg_cmd = ["ffmpeg", "-re", "-i", "pipe:0"]
+            ffmpeg_cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-i", "pipe:0"]
             if scale_filter:
                 ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
 
-            if audio_idx is not None:
-                ffmpeg_cmd.extend(["-map", "0:v:0", "-map", f"0:{audio_idx}"])
+            if audio_idx is not None and str(audio_idx).strip() != "":
+                # audio_idx comes from ffprobe's global stream index.
+                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
             else:
                 ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
 
+            # Output seek for pipe input. This is intentionally after -i because
+            # Telegram's stream is not seekable as an FFmpeg input.
+            if start_time is not None:
+                try:
+                    start_float = max(0.0, float(start_time))
+                except Exception:
+                    start_float = 0.0
+                if start_float > 0:
+                    ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
+
             ffmpeg_cmd.extend([
+                "-sn",
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k",
-                "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-                "pipe:1"
+                "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "-f", "mp4", "pipe:1"
             ])
 
             proc = await asyncio.create_subprocess_exec(
                 *ffmpeg_cmd,
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL
+                stderr=asyncio.subprocess.PIPE
             )
 
             response = web.StreamResponse(
                 status=200,
-                headers={"Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*"}
+                headers={
+                    "Content-Type": "video/mp4",
+                    "Access-Control-Allow-Origin": "*",
+                    "Accept-Ranges": "none",
+                    "Cache-Control": "no-store",
+                }
             )
             await response.prepare(request)
 
@@ -7358,16 +7810,60 @@ async def _api_stream_handler(request):
                 except Exception:
                     pass
 
-            await asyncio.gather(pipe_tg_to_ffmpeg(), pipe_ffmpeg_to_response())
+            tg_task = asyncio.create_task(pipe_tg_to_ffmpeg())
+            out_task = asyncio.create_task(pipe_ffmpeg_to_response())
+            await asyncio.gather(tg_task, out_task)
+            stderr_data = await proc.stderr.read()
+            if proc.returncode not in (0, None) and stderr_data:
+                logger.warning(f"[Stream FFmpeg] {stderr_data.decode(errors='ignore')[-1000:]}")
             return response
         except Exception as e:
+            logger.warning(f"[Stream] Telegram stream failed: {e}", exc_info=True)
             return web.Response(status=500, text=str(e))
-    else:
-        # Generic HTTP Web Link Direct Redirect / Proxy
-        raise web.HTTPFound(link)
+
+    # ======================================================================
+    # DIRECT HTTP SOURCE — proxy instead of 302 so WebGL gets CORS-safe bytes.
+    # ======================================================================
+    headers = {"User-Agent": "Mozilla/5.0"}
+    if request.headers.get("Range"):
+        headers["Range"] = request.headers["Range"]
+
+    timeout = aiohttp.ClientTimeout(total=None, sock_read=120)
+    session = aiohttp.ClientSession(timeout=timeout)
+    try:
+        remote = await session.get(link, headers=headers, allow_redirects=True)
+        if remote.status >= 400:
+            text = await remote.text()
+            await remote.release()
+            await session.close()
+            return web.Response(status=remote.status, text=text[:500])
+
+        out_headers = {
+            "Content-Type": remote.headers.get("Content-Type", "video/mp4"),
+            "Access-Control-Allow-Origin": "*",
+            "Accept-Ranges": remote.headers.get("Accept-Ranges", "bytes"),
+            "Cache-Control": "no-store",
+        }
+        for name in ("Content-Length", "Content-Range"):
+            if remote.headers.get(name): out_headers[name] = remote.headers[name]
+
+        response = web.StreamResponse(status=remote.status, headers=out_headers)
+        await response.prepare(request)
+        try:
+            async for chunk in remote.content.iter_chunked(128 * 1024):
+                await response.write(chunk)
+            await response.write_eof()
+        finally:
+            remote.close()
+            await session.close()
+        return response
+    except Exception as e:
+        try: await session.close()
+        except: pass
+        return web.Response(status=502, text=f"Direct stream proxy failed: {e}")
 
 async def _api_subtitles_handler(request):
-    """Dynamically extracts embedded subtitle tracks and returns WebVTT on-the-fly."""
+    """Extract one embedded text subtitle stream to WebVTT for the custom player overlay."""
     user_id = int(request.query.get("user_id", 0))
     link = request.query.get("link", "")
     sub_idx = request.query.get("sub_idx", "0")
@@ -7377,27 +7873,63 @@ async def _api_subtitles_handler(request):
         return web.Response(status=400, text="Invalid Link")
 
     parsed = _parse_source_link(link)
-    msg = await uclient.get_messages(parsed["chat_id"], parsed["msg_id"])
+    chat_id = parsed.get("chat_id")
+    msg_id = parsed.get("msg_id")
+    if chat_id is None or msg_id is None:
+        return web.Response(status=400, text="Invalid Telegram media link")
 
-    cmd = ["ffmpeg", "-i", "pipe:0", "-map", f"0:{sub_idx}", "-f", "webvtt", "pipe:1"]
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
-    )
+    try:
+        msg = await uclient.get_messages(chat_id, msg_id)
+        if not msg:
+            return web.Response(status=404, text="Media not found")
 
-    async def feed():
-        try:
-            async for chunk in uclient.stream_media(msg, limit=10):
-                proc.stdin.write(chunk)
-                await proc.stdin.drain()
-        except: pass
-        finally:
-            try: proc.stdin.close()
-            except: pass
+        # Do NOT use a 10 MB Telegram limit here: subtitle packets can occur much later.
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", "pipe:0",
+            "-map", f"0:{sub_idx}",
+            "-f", "webvtt", "pipe:1"
+        ]
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
 
-    asyncio.create_task(feed())
-    vtt_content, _ = await proc.communicate()
-    return web.Response(text=vtt_content.decode("utf-8", errors="ignore"), content_type="text/vtt")
-        
+        async def feed():
+            try:
+                media_stream = msg.document or msg.video or msg.audio
+                if not media_stream:
+                    return
+                async for chunk in uclient.stream_media(msg):
+                    if proc.stdin.is_closing(): break
+                    proc.stdin.write(chunk)
+                    await proc.stdin.drain()
+            except Exception as e:
+                logger.debug(f"[Subtitles] input feed ended: {e}")
+            finally:
+                try: proc.stdin.close()
+                except: pass
+
+        feed_task = asyncio.create_task(feed())
+        vtt_content, stderr_data = await proc.communicate()
+        try: await feed_task
+        except Exception: pass
+
+        if proc.returncode not in (0, None):
+            err = stderr_data.decode("utf-8", errors="ignore")
+            return web.Response(status=500, text=err[-1000:] or "Subtitle extraction failed")
+
+        return web.Response(
+            body=vtt_content,
+            content_type="text/vtt",
+            headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"}
+        )
+    except Exception as e:
+        logger.warning(f"[Subtitles] {e}", exc_info=True)
+        return web.Response(status=500, text=str(e))
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -7479,33 +8011,30 @@ def parseinfo(out, size):
 async def partial_download_tg(client, message, file_path, limit_mb=15):
     media_obj = message.document or message.video or message.audio or message.photo
     file_size = getattr(media_obj, 'file_size', 0)
-    
-    if file_size <= limit_mb * 1024 * 1024:
-        # File is small enough, download natively
+    limit_bytes = max(1, int(limit_mb * 1024 * 1024))
+
+    if file_size <= limit_bytes:
         await client.download_media(message, file_name=str(file_path))
-    else:
-        # File is huge, only fetch First 5MB & Last 5MB (Sparse File technique)
-        chunk_size = 1048576
-        total_chunks = math.ceil(file_size / chunk_size)
-        
-        with open(file_path, "wb") as f:
-            # 1. Pull first 5 chunks (Start of file headers: FTYP, etc)
-            async for chunk in client.stream_media(message, limit=5):
-                f.write(chunk)
-                
-            if total_chunks > 5:
-                offset = total_chunks - 5
-                # Prevent overlapping if the file is right between 5MB and 10MB
-                if offset < 5: 
-                    offset = 5 
-                limit = total_chunks - offset
-                
-                if limit > 0:
-                    # 2. Seek creates an empty "hole" of zeros matching the exact file size
-                    f.seek(offset * chunk_size)
-                    # 3. Pull the last chunks (End of file index: MOOV atoms)
-                    async for chunk in client.stream_media(message, offset=offset, limit=limit):
-                        f.write(chunk)
+        return
+
+    # Preserve the original sparse-file strategy, but actually honor limit_mb.
+    chunk_size = 1048576
+    total_chunks = math.ceil(file_size / chunk_size)
+    edge_chunks = max(1, math.ceil((limit_bytes / 2) / chunk_size))
+    edge_chunks = min(edge_chunks, total_chunks // 2)
+
+    with open(file_path, "wb") as f:
+        # Start of file: container headers + stream declarations.
+        async for chunk in client.stream_media(message, limit=edge_chunks):
+            f.write(chunk)
+
+        if total_chunks > edge_chunks:
+            offset = max(edge_chunks, total_chunks - edge_chunks)
+            tail_limit = total_chunks - offset
+            if tail_limit > 0:
+                f.seek(offset * chunk_size)
+                async for chunk in client.stream_media(message, offset=offset, limit=tail_limit):
+                    f.write(chunk)
 
 async def partial_download_http(url, file_path, limit_mb=15):
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -7533,14 +8062,18 @@ async def partial_download_http(url, file_path, limit_mb=15):
                         f.write(chunk)
         elif file_size > limit_bytes:
             with open(file_path, "wb") as f:
+                edge_bytes = max(1_000_000, limit_bytes // 2)
+                edge_bytes = min(edge_bytes, file_size // 2)
+
                 h_start = headers.copy()
-                h_start["Range"] = "bytes=0-5000000"
+                h_start["Range"] = f"bytes=0-{edge_bytes - 1}"
                 async with session.get(url, headers=h_start) as resp:
                     f.write(await resp.read())
+
                 h_end = headers.copy()
-                h_end["Range"] = f"bytes={file_size - 5000000}-{file_size}"
+                h_end["Range"] = f"bytes={file_size - edge_bytes}-{file_size - 1}"
                 async with session.get(url, headers=h_end) as resp:
-                    f.seek(file_size - 5000000)
+                    f.seek(file_size - edge_bytes)
                     f.write(await resp.read())
         else:
             async with session.get(url, headers=headers) as resp:
