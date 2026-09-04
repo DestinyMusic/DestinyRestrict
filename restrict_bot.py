@@ -4968,7 +4968,10 @@ HTML_DASHBOARD = """
 
                     <!-- 3D Over-Under / SBS Matrix Menu -->
                     <div id="menu-3d" class="matrix-3d-menu">
-                        <div class="matrix-header">Anaglyph 3D</div>
+                        <div class="matrix-header" style="display: flex; justify-content: space-between; align-items: center;">
+                            <span>Anaglyph 3D</span>
+                            <button onclick="document.getElementById('menu-3d').classList.remove('open')" style="background: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: bold; cursor: pointer;">Close ✕</button>
+                        </div>
                         <div class="matrix-grid">
                             <div>
                                 <div class="matrix-column-title">In Format</div>
@@ -4989,7 +4992,6 @@ HTML_DASHBOARD = """
                                 <div class="matrix-option" onclick="setMatrix3DOut('2d', this)">2D <div class="matrix-radio"></div></div>
                             </div>
                         </div>
-                        <button class="primary-btn" style="margin-top: 30px;" onclick="document.getElementById('menu-3d').classList.remove('open')">Close Menu</button>
                     </div>
 
                     <!-- Quick Settings Popup -->
@@ -5009,6 +5011,18 @@ HTML_DASHBOARD = """
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">AUDIO STREAM</label>
                         <select id="pop-audio-select" class="pop-select" onchange="applyTrackSelection()"></select>
+                        
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">PLAYBACK SPEED</label>
+                        <select id="pop-speed-select" class="pop-select" onchange="applyPlaybackSpeed()">
+                            <option value="0.25">0.25x</option>
+                            <option value="0.5">0.5x</option>
+                            <option value="0.75">0.75x</option>
+                            <option value="1" selected>1.0x (Normal)</option>
+                            <option value="1.25">1.25x</option>
+                            <option value="1.5">1.5x</option>
+                            <option value="1.75">1.75x</option>
+                            <option value="2">2.0x</option>
+                        </select>
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLES</label>
                         <select id="pop-sub-select" class="pop-select" onchange="applySubtitleSelection()"></select>
@@ -6100,17 +6114,58 @@ HTML_DASHBOARD = """
             requestAnimationFrame(renderWebGLFrame);
         }
 
+        function getEffectiveVideoSize() {
+            const video = document.getElementById('hidden-video');
+            let w = video?.videoWidth || 16;
+            let h = video?.videoHeight || 9;
+            if (matrix3DIn === 'lr' || matrix3DIn === 'ci') w = Math.round(w / 2);
+            if (matrix3DIn === 'tb' || matrix3DIn === 'ri') h = Math.round(h / 2);
+            return { w, h };
+        }
+
+        function resizePlayerSurface() {
+            const vp = document.getElementById('cinema-viewport');
+            const canvas = document.getElementById('webgl-canvas');
+            if (!vp || !canvas) return;
+
+            const vw = vp.clientWidth;
+            const vh = vp.clientHeight;
+            if (vw <= 0 || vh <= 0) return;
+
+            const { w: sw, h: sh } = getEffectiveVideoSize();
+
+            canvas.style.left = '50%';
+            canvas.style.top = '50%';
+            canvas.style.transform = 'translate(-50%, -50%)';
+
+            if (playerAspectMode === 'stretch') {
+                canvas.style.width = `${vw}px`;
+                canvas.style.height = `${vh}px`;
+                return;
+            }
+
+            const scale = playerAspectMode === 'cover'
+                ? Math.max(vw / sw, vh / sh)
+                : Math.min(vw / sw, vh / sh);
+                
+            const drawW = Math.max(1, Math.round(sw * scale));
+            const drawH = Math.max(1, Math.round(sh * scale));
+
+            canvas.style.width = `${drawW}px`;
+            canvas.style.height = `${drawH}px`;
+        }
+
         function renderWebGLFrame() {
             const video = document.getElementById('hidden-video');
             const canvas = document.getElementById('webgl-canvas');
             if (gl && glProgram && glTexture && video && video.readyState >= video.HAVE_CURRENT_DATA) {
-                const w = video.videoWidth || 1280;
-                const h = video.videoHeight || 720;
+                const { w: outW, h: outH } = getEffectiveVideoSize();
 
-                // IMPORTANT: changing canvas.width/height every animation frame resets the drawing buffer.
-                if (canvas.width !== w || canvas.height !== h) {
-                    canvas.width = w;
-                    canvas.height = h;
+                // IMPORTANT: The WebGL buffer must match the 3D-adjusted output size, not the raw input size!
+                // This prevents 3D SBS videos from being rendered squished.
+                if (canvas.width !== outW || canvas.height !== outH) {
+                    canvas.width = outW;
+                    canvas.height = outH;
                     resizePlayerSurface();
                 }
 
@@ -6119,7 +6174,6 @@ HTML_DASHBOARD = """
                 try {
                     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
                 } catch (err) {
-                    // Browser may reject a cross-origin direct stream without CORS headers.
                     console.debug('WebGL video texture update failed:', err);
                 }
 
@@ -6359,26 +6413,40 @@ HTML_DASHBOARD = """
             return Number(parts[0]) || 0;
         }
 
+        function applyPlaybackSpeed() {
+            const video = document.getElementById('hidden-video');
+            const speed = document.getElementById('pop-speed-select')?.value || 1;
+            if (video) video.playbackRate = parseFloat(speed);
+        }
+
         function parseWebVTT(text) {
-            const clean = String(text || '').replace(/^WEBVTT[^\\n]*\\n/i, '').replace(/\\r/g, '');
-            const blocks = clean.split(/\\n\\s*\\n/);
+            if (!text) return [];
             const cues = [];
-
-            for (const block of blocks) {
-                const lines = block.split('\\n');
-                const timeIndex = lines.findIndex(line => line.includes('-->'));
-                if (timeIndex < 0) continue;
-                const timeParts = lines[timeIndex].split('-->');
-                if (timeParts.length < 2) continue;
-
-                const start = vttTimeToSeconds(timeParts[0]);
-                const end = vttTimeToSeconds(timeParts[1].trim().split(/\\s+/)[0]);
-                const payload = lines.slice(timeIndex + 1).join('\\n').trim();
-                if (!payload || !Number.isFinite(start) || !Number.isFinite(end)) continue;
-                
-                // Strip HTML tags AND complex ASS animation/position tags from Anime MKVs
-                const cleanText = payload.replace(/<[^>]*>/g, '').replace(/\\{[^}]*\\}/g, '');
-                cues.push({ start, end, text: cleanText });
+            // Handle both Windows (\r\n) and Unix (\n) line endings seamlessly
+            const lines = String(text).replace(/\r/g, '').split('\n');
+            let i = 0;
+            
+            while (i < lines.length) {
+                if (lines[i].includes('-->')) {
+                    const timeParts = lines[i].split('-->');
+                    const start = vttTimeToSeconds(timeParts[0]);
+                    const end = vttTimeToSeconds(timeParts[1].trim().split(/\s+/)[0]);
+                    
+                    let payload = [];
+                    i++;
+                    while (i < lines.length && lines[i].trim() !== '' && !lines[i].includes('-->')) {
+                        payload.push(lines[i]);
+                        i++;
+                    }
+                    
+                    // Strip HTML tags AND complex ASS animation/position tags from Anime MKVs
+                    const cleanText = payload.join('\n').replace(/<[^>]*>/g, '').replace(/\{[^}]*\}/g, '').trim();
+                    if (cleanText && Number.isFinite(start) && Number.isFinite(end)) {
+                        cues.push({ start, end, text: cleanText });
+                    }
+                } else {
+                    i++;
+                }
             }
             return cues.sort((a, b) => a.start - b.start);
         }
@@ -6667,8 +6735,8 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('ended', () => wakeHUD());
             vidElem.addEventListener('waiting', () => { if (bigPlay) bigPlay.innerHTML = '⏳'; });
             vidElem.addEventListener('playing', () => { if (bigPlay) bigPlay.innerHTML = pauseSvg; });
-            vidElem.addEventListener('loadedmetadata', () => { updateViewportBox(); resizePlayerSurface(); });
-            vidElem.addEventListener('loadeddata', () => renderCurrentSubtitle());
+            vidElem.addEventListener('loadedmetadata', () => { updateViewportBox(); resizePlayerSurface(); applyPlaybackSpeed(); });
+            vidElem.addEventListener('loadeddata', () => { renderCurrentSubtitle(); applyPlaybackSpeed(); });
             vidElem.addEventListener('seeked', () => renderCurrentSubtitle());
             vidElem.addEventListener('timeupdate', () => {
                 let cur = vidElem.currentTime || 0;
