@@ -15,7 +15,6 @@ from pathlib import Path
 from collections import defaultdict, OrderedDict
 import motor.motor_asyncio
 from pyrogram import Client, filters, enums, idle
-import pyromod.listen
 from pyrogram.errors import (
     FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant,
     InviteHashExpired, UsernameNotOccupied, FileReferenceExpired, UserNotParticipant,
@@ -1856,13 +1855,11 @@ async def confirm_logout_cb(client, query):
     except Exception: pass
 
 from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
-from pyromod.exceptions import ListenerStopped
 
 @app.on_callback_query(filters.regex("^cancel_login$"))
 async def cancel_login_cb(client, query):
     user_id = query.from_user.id
     
-    # Attempt to kill the Pyromod .ask() listener instantly
     try:
         if hasattr(client, "cancel_listener"):
             client.cancel_listener(user_id)
