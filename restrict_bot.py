@@ -8245,24 +8245,10 @@ async def _api_tg_stream_handler(request):
                 part_size = getattr(media, "file_size", 0)
                 parts_map.append({"msg": msg, "start": 0, "end": part_size, "size": part_size})
                 global_offset = part_size
-            current_msg = msg
-            current_id = msg_id
-            while current_msg and getattr(current_msg, "document", None):
-                part_size = current_msg.document.file_size
-                parts_map.append({"msg": current_msg, "start": global_offset, "end": global_offset + part_size, "size": part_size})
-                global_offset += part_size
-                current_id += 1
-                current_msg = await uclient.get_messages(chat_id, current_id)
-                if not getattr(current_msg, "document", None) or not re.search(rf'\.{len(parts_map)+1:03d}$', getattr(current_msg.document, "file_name", "").lower()):
-                    break
-        else:
-            part_size = getattr(media, "file_size", 0)
-            parts_map.append({"msg": msg, "start": 0, "end": part_size, "size": part_size})
-            global_offset = part_size
-            
+                
         virtual_size = global_offset
         virtual_data_offset = 0
-        
+
         # 2. Extract STORED ZIP Files
         is_zip = filename.endswith(".zip") or ".zip." in filename
         if is_zip:
