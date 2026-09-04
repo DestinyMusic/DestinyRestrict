@@ -4593,14 +4593,30 @@ HTML_DASHBOARD = """
             border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent);
             display: flex; align-items: center; justify-content: center;
         }
+        
+        /* 📱 FULLSCREEN ADAPTIVE FIXES */
+        .cinema-viewport:fullscreen, .cinema-viewport:-webkit-full-screen {
+            border-radius: 0 !important; border: none !important; aspect-ratio: auto !important; 
+            width: 100vw !important; height: 100vh !important;
+        }
+        .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud {
+            padding: 40px 30px; padding-bottom: max(30px, env(safe-area-inset-bottom));
+        }
+        .cinema-viewport:fullscreen .cinema-btn, .cinema-viewport:-webkit-full-screen .cinema-btn {
+            font-size: 28px; /* Scales up icons in fullscreen */
+        }
+        .cinema-viewport:fullscreen .time-badge, .cinema-viewport:-webkit-full-screen .time-badge {
+            font-size: 16px;
+        }
+
         #webgl-canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
         .hidden-video-feed { display: none; }
 
         /* Floating Netflix-Style OSD HUD */
         .cinema-hud {
-            position: absolute; bottom: 0; left: 0; right: 0; padding: 25px 30px;
-            background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.6) 60%, transparent 100%);
-            display: flex; flex-direction: column; gap: 12px; opacity: 0; transition: opacity 0.3s ease;
+            position: absolute; bottom: 0; left: 0; right: 0; padding: 20px 20px;
+            background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.7) 50%, transparent 100%);
+            display: flex; flex-direction: column; gap: 16px; opacity: 0; transition: opacity 0.3s ease;
             z-index: 25; pointer-events: none;
         }
         .cinema-viewport:hover .cinema-hud, .cinema-hud.active { opacity: 1; pointer-events: auto; }
@@ -4617,10 +4633,10 @@ HTML_DASHBOARD = """
         }
 
         .cinema-controls-row { display: flex; justify-content: space-between; align-items: center; }
-        .ctrl-group { display: flex; align-items: center; gap: 16px; }
-        .cinema-btn { background: none; border: none; color: #fff; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; transition: transform 0.2s, color 0.2s; }
-        .cinema-btn:hover { color: var(--accent); transform: scale(1.15); }
-        .time-badge { font-size: 12px; font-family: monospace; color: #cbd5e1; font-weight: 600; }
+        .ctrl-group { display: flex; align-items: center; gap: 12px; }
+        .cinema-btn { background: none; border: none; color: #fff; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; transition: transform 0.2s, color 0.2s; padding: 0; }
+        .cinema-btn:hover { color: var(--accent); transform: scale(1.2); }
+        .time-badge { font-size: 11px; font-family: monospace; color: #cbd5e1; font-weight: 600; margin-left: 4px; white-space: nowrap; }
 
         /* Settings Floating Popups */
         .settings-popup {
@@ -4810,7 +4826,12 @@ HTML_DASHBOARD = """
 
                 <div class="cinema-viewport" id="cinema-viewport">
                     <canvas id="webgl-canvas"></canvas>
-                    <video id="hidden-video" class="hidden-video-feed" playsinline crossorigin="anonymous"></video>
+                    <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline crossorigin="anonymous"></video>
+
+                    <!-- 🎬 Big Play Overlay (Fixes "Not Playing" issue by forcing user interaction) -->
+                    <div id="big-play-overlay" style="position: absolute; inset: 0; display: none; align-items: center; justify-content: center; z-index: 20; background: rgba(0,0,0,0.6); backdrop-filter: blur(2px); cursor: pointer;" onclick="togglePlayback()">
+                        <div style="width: 80px; height: 80px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 36px; color: #fff; box-shadow: 0 0 30px var(--glow); padding-left: 6px;">▶</div>
+                    </div>
 
                     <!-- 3D Over-Under / SBS Matrix Menu (Matches Provided UI) -->
                     <div id="menu-3d" class="matrix-3d-menu">
@@ -4838,7 +4859,7 @@ HTML_DASHBOARD = """
                         <button class="primary-btn" style="margin-top: 30px;" onclick="document.getElementById('menu-3d').classList.remove('open')">Close Menu</button>
                     </div>
 
-                    <!-- Quick Settings Popup (Audio / Quality / Subtitles / Aspect) -->
+                    <!-- Quick Settings Popup -->
                     <div id="media-settings-popup" class="settings-popup">
                         <div class="pop-title">Stream Settings</div>
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">VIDEO QUALITY</label>
@@ -4861,21 +4882,21 @@ HTML_DASHBOARD = """
                         </select>
                     </div>
 
-                    <!-- HUD Overlay -->
+                    <!-- HUD Overlay with Clean Emojis -->
                     <div class="cinema-hud" id="cinema-hud">
                         <div class="cinema-scrubber-bar" id="cinema-scrubber" onclick="seekPlayback(event)">
                             <div class="scrubber-fill" id="scrubber-fill"></div>
                         </div>
                         <div class="cinema-controls-row">
                             <div class="ctrl-group">
-                                <button class="cinema-btn" id="hud-play-btn" onclick="togglePlayback()">▶</button>
-                                <button class="cinema-btn" onclick="skipPlayback(-10)">↺ 10s</button>
-                                <button class="cinema-btn" onclick="skipPlayback(10)">10s ↻</button>
+                                <button class="cinema-btn" id="hud-play-btn" onclick="togglePlayback()" title="Play/Pause">⏸️</button>
+                                <button class="cinema-btn" onclick="skipPlayback(-10)" title="Rewind 10s">⏪</button>
+                                <button class="cinema-btn" onclick="skipPlayback(10)" title="Forward 10s">⏩</button>
                                 <span class="time-badge" id="hud-time">00:00 / 00:00</span>
                             </div>
                             <div class="ctrl-group">
-                                <button class="cinema-btn" onclick="toggleSettingsPopup()">⚙️ Tracks & Aspect</button>
-                                <button class="cinema-btn" onclick="toggleFullScreen()">⛶ Fullscreen</button>
+                                <button class="cinema-btn" onclick="toggleSettingsPopup()" title="Tracks & Aspect">⚙️</button>
+                                <button class="cinema-btn" onclick="toggleFullScreen()" title="Fullscreen">⛶</button>
                             </div>
                         </div>
                     </div>
@@ -5996,8 +6017,11 @@ HTML_DASHBOARD = """
 
         function togglePlayback() {
             const video = document.getElementById('hidden-video');
-            if (video.paused) { video.play(); document.getElementById('hud-play-btn').innerText = "❚❚"; }
-            else { video.pause(); document.getElementById('hud-play-btn').innerText = "▶"; }
+            if (video.paused) { 
+                video.play().catch(e => console.log("Autoplay blocked, waiting for interaction")); 
+            } else { 
+                video.pause(); 
+            }
         }
 
         function skipPlayback(sec) {
@@ -6008,28 +6032,56 @@ HTML_DASHBOARD = """
         function seekPlayback(e) {
             const video = document.getElementById('hidden-video');
             const rect = document.getElementById('cinema-scrubber').getBoundingClientRect();
-            const pos = (e.clientX - rect.left) / rect.width;
-            video.currentTime = pos * video.duration;
+            const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            if (video.duration) { video.currentTime = pos * video.duration; }
         }
 
         function toggleSettingsPopup() {
             document.getElementById('media-settings-popup').classList.toggle('open');
         }
 
+        // 📱 Fix for iOS/Safari & Android Fullscreen
         function toggleFullScreen() {
             const vp = document.getElementById('cinema-viewport');
-            if (!document.fullscreenElement) vp.requestFullscreen();
-            else document.exitFullscreen();
+            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                if (vp.requestFullscreen) { vp.requestFullscreen(); }
+                else if (vp.webkitRequestFullscreen) { vp.webkitRequestFullscreen(); } // Safari
+            } else {
+                if (document.exitFullscreen) { document.exitFullscreen(); }
+                else if (document.webkitExitFullscreen) { document.webkitExitFullscreen(); }
+            }
         }
 
-        // Sync Time & Scrubber
+        // Sync Time, Scrubber, and Big Play Overlay State
         const vidElem = document.getElementById('hidden-video');
+        const bigPlay = document.getElementById('big-play-overlay');
+        const hudPlay = document.getElementById('hud-play-btn');
+
+        // Automatically show/hide the Big Play Overlay based on real browser state
+        vidElem.addEventListener('play', () => {
+            bigPlay.style.display = 'none';
+            hudPlay.innerText = "⏸️";
+        });
+        vidElem.addEventListener('pause', () => {
+            bigPlay.style.display = 'flex';
+            hudPlay.innerText = "▶️";
+        });
+        vidElem.addEventListener('waiting', () => {
+            bigPlay.style.display = 'flex';
+            bigPlay.innerHTML = '<div style="color:#fff; font-size:24px;">⏳</div>'; // Loading indicator
+        });
+        vidElem.addEventListener('playing', () => {
+            bigPlay.style.display = 'none';
+            bigPlay.innerHTML = '<div style="width: 80px; height: 80px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 36px; color: #fff; box-shadow: 0 0 30px var(--glow); padding-left: 6px;">▶</div>';
+        });
+
         vidElem.addEventListener('timeupdate', () => {
             const cur = vidElem.currentTime || 0;
             const dur = vidElem.duration || 1;
             document.getElementById('scrubber-fill').style.width = (cur / dur * 100) + '%';
             
             const fmt = (s) => {
+                if (isNaN(s) || !isFinite(s)) return "00:00";
                 const m = Math.floor(s / 60);
                 const sec = Math.floor(s % 60);
                 return `${m < 10 ? '0' : ''}${m}:${sec < 10 ? '0' : ''}${sec}`;
