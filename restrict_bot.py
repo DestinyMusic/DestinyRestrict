@@ -5530,7 +5530,9 @@ HTML_DASHBOARD = """
                 try {
                     const res = await fetch(`/api/topics?user_id=${currentUser}&chat_id=${chatId}`);
                     const data = await res.json();
-                    if (data.status === 'success' && data.topics.length > 0) {
+                    
+                    // Added safe-check (data.topics && ...) to prevent JS crashes
+                    if (data.status === 'success' && data.topics && data.topics.length > 0) {
                         let html = `<div style="padding: 12px; background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; cursor: pointer; margin-bottom: 4px;" onclick="confirmDestination('${chatId}')"><div style="font-size: 13px; font-weight: 700; color: #fff;">General (Root Group)</div></div>`;
                         html += data.topics.map(t => `
                             <div style="padding: 12px; background: var(--bg); border: 1px solid var(--card-border); border-radius: 12px; cursor: pointer;" onclick="confirmDestination('${chatId}/${t.id}')">
@@ -5540,10 +5542,12 @@ HTML_DASHBOARD = """
                         `).join('');
                         list.innerHTML = html;
                     } else {
+                        // Fallback automatically to root chat ID if topics are empty or error occurs
                         confirmDestination(chatId);
                         closeTopicSelector();
                     }
                 } catch(e) {
+                    // Prevent indefinite hang if network drops
                     confirmDestination(chatId);
                     closeTopicSelector();
                 }
@@ -6241,27 +6245,57 @@ async def _api_topics_handler(request):
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(":memory:", session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
-            await uclient.connect()
+            
+            user_workers = 4
+            uclient = Client(
+                name=":memory:", 
+                session_string=session_str, 
+                api_id=api_id, 
+                api_hash=api_hash, 
+                no_updates=True, 
+                workers=user_workers,
+                ipv6=False,
+                **get_transmission_kwargs(workers=user_workers)
+            )
+            # Wrap connect in a timeout to prevent indefinite hanging
+            await asyncio.wait_for(uclient.connect(), timeout=10.0)
             is_temp = True
         except Exception as e:
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
     
     topics = []
     try:
-        async def fetch_topics():
+        async def fetch_tg_topics():
             t_list = []
-            async for topic in uclient.get_forum_topics(chat_id):
-                t_list.append({"id": topic.id, "title": topic.title})
+            try:
+                async for topic in uclient.get_forum_topics(chat_id):
+                    t_list.append({"id": topic.id, "title": topic.title})
+            except AttributeError as e:
+                # Graceful handling of Pyrogram pagination bug
+                if "'NoneType' object has no attribute" not in str(e):
+                    raise e
             return t_list
             
-        topics = await asyncio.wait_for(fetch_topics(), timeout=10.0)
-    except Exception:
-        pass 
+        # Retry loop for topics fetch
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                topics = await asyncio.wait_for(fetch_tg_topics(), timeout=10.0)
+                break # Success
+            except asyncio.TimeoutError:
+                await asyncio.sleep(1)
+            except Exception:
+                await asyncio.sleep(1)
+                
+    except Exception as e:
+        logger.warning(f"Topics endpoint error: {e}")
     finally:
         if is_temp:
-            try: await uclient.disconnect()
-            except: pass
+            try: 
+                # Timeout on disconnect to prevent ghost socket hangs
+                await asyncio.wait_for(uclient.disconnect(), timeout=5.0)
+            except: 
+                pass
 
     return web.json_response({"status": "success", "topics": topics})
 
