@@ -6336,6 +6336,12 @@ HTML_DASHBOARD = """
             const target = Math.max(0, Math.min(dur, current + Number(sec || 0)));
             wakeHUD();
 
+            // 🟢 FIX: Optimistically move the scrubber bar instantly on double-tap skip
+            const fill = document.getElementById('scrubber-fill');
+            if (fill && dur > 0 && dur !== Infinity) {
+                fill.style.width = `${(target / dur) * 100}%`;
+            }
+
             if (playerRequiresTranscode) {
                 restartStreamAt(target);
                 return;
@@ -6360,6 +6366,10 @@ HTML_DASHBOARD = """
             const pos = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
             const target = pos * dur;
             wakeHUD();
+            
+            // 🟢 FIX: Optimistically move the scrubber bar instantly on click/drag
+            const fill = document.getElementById('scrubber-fill');
+            if (fill) fill.style.width = `${pos * 100}%`;
             
             if (playerRequiresTranscode) restartStreamAt(target);
             else {
@@ -8219,19 +8229,28 @@ async def get_client_msg(client, chat_id, msg_id):
     return CLIENT_MSG_CACHE[key]
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk using strict 1MB boundaries. Retries on transient errors."""
+    """Fetches a chunk strictly. Retries on transient errors with clean byte skipping."""
     CHUNK_SIZE = 1048576
-    aligned_offset = (offset // CHUNK_SIZE) * CHUNK_SIZE
-    skip_bytes = offset - aligned_offset
-    target_bytes = skip_bytes + limit
+    chunk_index = offset // CHUNK_SIZE
+    target_bytes = limit
     
     for attempt in range(4):
+        # MUST reset skip_bytes on every retry loop to prevent data corruption
+        skip_bytes = offset % CHUNK_SIZE  
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
-            # 🟢 FIX: Removed limit=... to prevent Pyrogram OFFSET_INVALID math bugs
-            async for chunk in client.stream_media(msg, offset=aligned_offset):
+            # Pass the CHUNK INDEX to Pyrogram, not the byte offset
+            async for chunk in client.stream_media(msg, offset=chunk_index):
+                if skip_bytes > 0:
+                    if len(chunk) <= skip_bytes:
+                        skip_bytes -= len(chunk)
+                        continue
+                    else:
+                        chunk = chunk[skip_bytes:]
+                        skip_bytes = 0
+                        
                 data.extend(chunk)
                 if len(data) >= target_bytes:
                     break
@@ -8239,7 +8258,7 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             if not data: 
                 raise ValueError("EOF Reached or Empty Chunk")
                 
-            return bytes(data[skip_bytes:skip_bytes + limit])
+            return bytes(data[:target_bytes])
             
         except FloodWait as e:
             logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
@@ -8301,15 +8320,15 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 internal_offset = current_offset - part["start"]
                 internal_limit = min(bytes_needed, part["size"] - internal_offset)
                 
-                aligned_offset = (internal_offset // chunk_size) * chunk_size
-                skip_bytes = internal_offset - aligned_offset
+                # Convert byte offset to Pyrogram's expected chunk index
+                chunk_index = internal_offset // chunk_size
                 
                 try:
                     msg = await get_client_msg(client, chat_id, part["msg_id"])
                     bytes_yielded_this_part = 0
+                    skip_bytes = internal_offset % chunk_size
                     
-                    # 🟢 FIX: Removed limit=... and added bulletproof skip_bytes logic
-                    async for chunk in client.stream_media(msg, offset=aligned_offset):
+                    async for chunk in client.stream_media(msg, offset=chunk_index):
                         if skip_bytes > 0:
                             if len(chunk) <= skip_bytes:
                                 skip_bytes -= len(chunk)
@@ -8325,6 +8344,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                             yield chunk_to_yield
                             bytes_yielded_this_part += len(chunk_to_yield)
                             
+                        # Python manually breaks the pipe the precise millisecond we have enough bytes
                         if bytes_yielded_this_part >= internal_limit:
                             break
                             
@@ -8334,57 +8354,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                     logger.error(f"Fast-path stream failed: {e}")
                     raise e
         return
-
-    # ==========================================
-    # MULTI-BOT PARALLEL PATH (Worker Bots Only)
-    # ==========================================
-    end_byte = start_byte + total_length
-    first_block = start_byte // chunk_size
-    last_block = end_byte // chunk_size
-    
-    current_block = first_block
-    bytes_yielded = 0
-
-    while current_block <= last_block:
-        tasks = []
-        batch_count = min(safe_concurrency, (last_block - current_block) + 1)
-        
-        for i in range(batch_count):
-            block_idx = current_block + i
-            block_offset = block_idx * chunk_size
-            
-            part = next((p for p in msg_parts if p["start"] <= block_offset < p["end"]), None)
-            if not part: continue
-            
-            internal_offset = block_offset - part["start"]
-            internal_limit = min(chunk_size, part["size"] - internal_offset)
-            
-            worker_client = working_pool[i % len(working_pool)]
-            tasks.append(asyncio.create_task(
-                fetch_single_chunk(worker_client, chat_id, part["msg_id"], internal_offset, internal_limit)
-            ))
-            
-        if not tasks: break
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for i, res in enumerate(results):
-            if isinstance(res, Exception): 
-                raise res 
-            
-            block_idx = current_block + i
-            block_offset = block_idx * chunk_size
-            valid_data = res
-            
-            if block_idx == first_block:
-                skip = start_byte - block_offset
-                valid_data = valid_data[skip:]
-                
-            yield_len = min(len(valid_data), total_length - bytes_yielded)
-            if yield_len > 0:
-                yield valid_data[:yield_len]
-                bytes_yielded += yield_len
-                
-        current_block += batch_count
 
     # ==========================================
     # MULTI-BOT PARALLEL PATH (Worker Bots Only)
