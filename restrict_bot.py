@@ -6612,9 +6612,40 @@ HTML_DASHBOARD = """
                 const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}&t=${Date.now()}`;
                 const response = await fetch(url, { signal: subtitleAbortController.signal });
                 if (!response.ok) throw new Error(`Subtitle server returned ${response.status}`);
-                const text = await response.text();
-                subtitleCues = parseWebVTT(text);
-                renderCurrentSubtitle();
+                
+                // 🟢 STREAMING PARSER: Loads subtitles instantly chunk-by-chunk!
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    buffer += decoder.decode(value, { stream: true });
+                    
+                    // WebVTT blocks are separated by double blank lines
+                    const blocks = buffer.split(/\\n\\s*\\n/);
+                    
+                    // Keep the last incomplete block in the buffer
+                    buffer = blocks.pop() || '';
+                    
+                    for (const block of blocks) {
+                        const cues = parseWebVTT(block + '\\n\\n');
+                        if (cues.length > 0) subtitleCues.push(...cues);
+                    }
+                    
+                    // Instantly render if we downloaded the current timestamp
+                    renderCurrentSubtitle();
+                }
+                
+                // Parse whatever is left in the final buffer
+                if (buffer.trim()) {
+                    const cues = parseWebVTT(buffer + '\\n\\n');
+                    if (cues.length > 0) subtitleCues.push(...cues);
+                    renderCurrentSubtitle();
+                }
+
             } catch (err) {
                 if (err?.name !== 'AbortError') {
                     console.warn('Subtitle load failed:', err);
@@ -7970,17 +8001,11 @@ async def _api_stream_handler(request):
         ffmpeg_cmd.extend(["-i", actual_url])
 
         if is_audio:
-            # Input 1: Generate a 1fps black video stream so HTML5 accepts the audio file
-            ffmpeg_cmd.extend(["-f", "lavfi", "-i", "color=c=black:s=640x360:r=1"])
-            
-            # Map Input 1 (Video) and Input 0 (Audio)
+            # 🟢 FIX: Do NOT generate a black video! Just stream the audio purely!
             if audio_idx is not None and str(audio_idx).strip() != "":
-                ffmpeg_cmd.extend(["-map", "1:v:0", "-map", f"0:{audio_idx}"])
+                ffmpeg_cmd.extend(["-map", f"0:{audio_idx}"])
             else:
-                ffmpeg_cmd.extend(["-map", "1:v:0", "-map", "0:a:0?"])
-                
-            # Force the stream to end when the audio track finishes
-            ffmpeg_cmd.extend(["-shortest"])
+                ffmpeg_cmd.extend(["-map", "0:a:0?"])
         else:
             if scale_filter:
                 ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
@@ -7992,7 +8017,8 @@ async def _api_stream_handler(request):
         ffmpeg_cmd.extend(["-sn"])
 
         if is_audio:
-            ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p", "-shortest"])
+            # 🟢 FIX: Drop video completely for pure fast audio loading
+            ffmpeg_cmd.extend(["-vn"]) 
         else:
             if quality == "Original":
                 ffmpeg_cmd.extend(["-c:v", "copy"])
@@ -8070,6 +8096,8 @@ async def _api_subtitles_handler(request):
         "-headers", "User-Agent: Mozilla/5.0\r\n",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-probesize", "32M", "-analyzeduration", "32M", 
+        "-discard", "v",  # 🟢 FIX: Drop video packets at demuxer level instantly
+        "-discard", "a",  # 🟢 FIX: Drop audio packets at demuxer level instantly
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
         "-c:s", "webvtt",
@@ -8159,56 +8187,93 @@ async def resolve_zip_entry(read_fn, zip_size):
 CLIENT_MSG_CACHE = {}
 
 async def get_client_msg(client, chat_id, msg_id):
-    """Caches Telegram messages per-client to prevent floodwaits during chunking."""
+    """Caches Telegram messages per-client. Propagates errors instead of permanently caching None."""
     key = (id(client), chat_id, msg_id)
     if key not in CLIENT_MSG_CACHE:
-        try:
-            msg = await client.get_messages(chat_id, msg_id)
-            CLIENT_MSG_CACHE[key] = msg
-        except Exception:
-            return None
+        msg = await client.get_messages(chat_id, msg_id)
+        if getattr(msg, "empty", True) or not (msg.document or msg.video or msg.audio):
+            raise ValueError(f"Empty Message for client {getattr(client, 'name', 'Unknown')}")
+        CLIENT_MSG_CACHE[key] = msg
     return CLIENT_MSG_CACHE[key]
 
-async def fetch_single_chunk(client, fallback_client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk using strict 1MB boundaries. Fails over to User Session if Bot is blocked."""
+async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
+    """Fetches a chunk using strict 1MB boundaries. Retries on transient errors."""
     CHUNK_SIZE = 1048576
     aligned_offset = (offset // CHUNK_SIZE) * CHUNK_SIZE
     skip_bytes = offset - aligned_offset
     aligned_limit = limit + skip_bytes
     
-    try:
-        msg = await get_client_msg(client, chat_id, msg_id)
-        if getattr(msg, "empty", True) or not (msg.document or msg.video or msg.audio):
-            raise ValueError("Access Denied for this client")
-        
-        data = bytearray()
-        async for chunk in client.stream_media(msg, offset=aligned_offset, limit=aligned_limit):
-            data.extend(chunk)
-        if not data: raise ValueError("EOF Reached")
-        return bytes(data[skip_bytes:skip_bytes + limit])
-    except Exception:
-        if client != fallback_client:
-            # Fallback seamlessly to the User Session if the worker bot isn't in the private channel
-            msg = await get_client_msg(fallback_client, chat_id, msg_id)
+    for attempt in range(4):
+        try:
+            msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
-            async for chunk in fallback_client.stream_media(msg, offset=aligned_offset, limit=aligned_limit):
+            async for chunk in client.stream_media(msg, offset=aligned_offset, limit=aligned_limit):
                 data.extend(chunk)
+                
+            if not data: 
+                raise ValueError("EOF Reached or Empty Chunk")
+                
             return bytes(data[skip_bytes:skip_bytes + limit])
-        raise
+            
+        except FloodWait as e:
+            logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
+            await asyncio.sleep(e.value + 1)
+        except Exception as e:
+            if attempt == 3:
+                raise e
+            await asyncio.sleep(1)
+            
+    raise TimeoutError("Exceeded max retries for chunk")
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
-    """Distributes HTTP range requests evenly across the Bot Pool."""
+    """Distributes HTTP range requests evenly across the Bot Pool. Prevents single-account bans."""
     end_byte = start_byte + total_length
     first_block = start_byte // chunk_size
     last_block = end_byte // chunk_size
     
-    pool = [fallback_client] + MULTI_BOT_CLIENTS
+    # 1. Filter the pool safely: Bots FIRST, User Session LAST
+    test_msg_id = msg_parts[0]["msg_id"]
+    working_pool = []
+    is_user_session = False
+    
+    # Primary: Check the Main Bot and Worker Bots
+    for c in ([app] + MULTI_BOT_CLIENTS):
+        try:
+            if await get_client_msg(c, chat_id, test_msg_id):
+                working_pool.append(c)
+        except Exception:
+            pass
+            
+    # Fallback: If no bots have access, switch to the User Session
+    if not working_pool and fallback_client:
+        try:
+            if await get_client_msg(fallback_client, chat_id, test_msg_id):
+                working_pool = [fallback_client]
+                is_user_session = True
+        except Exception:
+            pass
+
+    # Ultimate Failsafe
+    if not working_pool:
+        working_pool = [fallback_client or app]
+        is_user_session = bool(fallback_client)
+        
+    # 2. Prevent Single-Account Ban & FloodWaits!
+    # CRITICAL: If using the User Session, force strictly 1 connection.
+    if is_user_session:
+        safe_concurrency = 1
+    else:
+        safe_concurrency = min(concurrency, len(working_pool))
+        
+    if safe_concurrency < 1: 
+        safe_concurrency = 1
+
     current_block = first_block
     bytes_yielded = 0
 
     while current_block <= last_block:
         tasks = []
-        batch_count = min(concurrency, (last_block - current_block) + 1)
+        batch_count = min(safe_concurrency, (last_block - current_block) + 1)
         
         for i in range(batch_count):
             block_idx = current_block + i
@@ -8220,16 +8285,18 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
             internal_offset = block_offset - part["start"]
             internal_limit = min(chunk_size, part["size"] - internal_offset)
             
-            worker_client = pool[i % len(pool)]
+            worker_client = working_pool[i % len(working_pool)]
             tasks.append(asyncio.create_task(
-                fetch_single_chunk(worker_client, fallback_client, chat_id, part["msg_id"], internal_offset, internal_limit)
+                fetch_single_chunk(worker_client, chat_id, part["msg_id"], internal_offset, internal_limit)
             ))
             
         if not tasks: break
         results = await asyncio.gather(*tasks, return_exceptions=True)
         
         for i, res in enumerate(results):
-            if isinstance(res, Exception): raise res # Abort and let proxy handle it
+            if isinstance(res, Exception): 
+                logger.error(f"Chunk fetch failed: {res}")
+                raise res 
             
             block_idx = current_block + i
             block_offset = block_idx * chunk_size
@@ -8253,19 +8320,30 @@ async def _api_tg_stream_handler(request):
     msg_id = int(request.query.get("msg_id"))
     chat_id = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
     
-    uclient = USER_CLIENTS.get(user_id)
+    msg = None
     is_temp = False
-    if not uclient or not getattr(uclient, "is_connected", False):
-        session_str = await db.get_session(user_id)
-        if not session_str: return web.Response(status=401)
-        try:
-            uclient = Client(":memory:", session_string=session_str, api_id=API_ID, api_hash=API_HASH, no_updates=True, ipv6=False)
-            await uclient.connect()
-            is_temp = True
-        except Exception: return web.Response(status=400)
-            
+    uclient = USER_CLIENTS.get(user_id)
+    
     try:
-        msg = await uclient.get_messages(chat_id, msg_id)
+        # Step 1: Try Primary Bot Pool First (Zero User Session touch)
+        try:
+            msg = await app.get_messages(chat_id, msg_id)
+        except Exception:
+            msg = None
+
+        # Step 2: Fallback to User Session if Bot failed
+        if getattr(msg, "empty", True) or not msg:
+            if not uclient or not getattr(uclient, "is_connected", False):
+                session_str = await db.get_session(user_id)
+                if not session_str: return web.Response(status=401)
+                try:
+                    uclient = Client(":memory:", session_string=session_str, api_id=API_ID, api_hash=API_HASH, no_updates=True, ipv6=False)
+                    await uclient.connect()
+                    is_temp = True
+                except Exception: return web.Response(status=400)
+            
+            msg = await uclient.get_messages(chat_id, msg_id)
+
         media = msg.document or msg.video or msg.audio
         if not media: return web.Response(status=404)
         
@@ -8355,10 +8433,12 @@ async def _api_tg_stream_handler(request):
         adjusted_start = start_byte + virtual_data_offset
         
         try:
+            # Multi-Threaded Dispatch
             async for chunk in parallel_stream_generator(uclient, chat_id, parts_map, adjusted_start, chunk_len, concurrency=4):
                 await response.write(chunk)
             await response.write_eof()
         except Exception: 
+            # Client disconnected (e.g. FFprobe closed early, or user closed tab)
             pass
         
     except Exception:
