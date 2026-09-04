@@ -4658,7 +4658,7 @@ HTML_DASHBOARD = """
         /* Auto-Hide Logic */
         .cinema-viewport.idle-hide .cinema-hud, 
         .cinema-viewport.idle-hide .cinema-title-bar,
-        .cinema-viewport.idle-hide #big-play-overlay { opacity: 0 !important; pointer-events: none !important; cursor: none !important; }
+        .cinema-viewport.idle-hide .center-controls { opacity: 0 !important; pointer-events: none !important; cursor: none !important; }
 
         /* 15s Seek Zones (Double Tap) */
         .seek-zone { position: absolute; top: 15%; bottom: 25%; width: 35%; z-index: 10; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0); font-size: 32px; font-weight: bold; transition: color 0.2s; user-select: none; }
@@ -4866,7 +4866,6 @@ HTML_DASHBOARD = """
             <div id="view-theater" class="view-section">
                 <div class="section-title">
                     <span>Universal Media Theater</span>
-                    <button class="primary-btn" style="width: auto; padding: 8px 16px; font-size: 11px; background: #8b5cf6;" onclick="document.getElementById('menu-3d').classList.toggle('open')">👓 Anaglyph 3D Matrix</button>
                 </div>
 
                 <div class="cinema-viewport" id="cinema-viewport">
@@ -4937,6 +4936,20 @@ HTML_DASHBOARD = """
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLES</label>
                         <select id="pop-sub-select" class="pop-select" onchange="applySubtitleSelection()"></select>
 
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE STYLE</label>
+                        <div style="display: flex; gap: 6px; margin-bottom: 14px;">
+                            <select id="pop-sub-size" class="pop-select" style="margin-bottom: 0;" onchange="updateSubStyle()">
+                                <option value="16px">Small</option>
+                                <option value="20px" selected>Medium</option>
+                                <option value="28px">Large</option>
+                            </select>
+                            <select id="pop-sub-color" class="pop-select" style="margin-bottom: 0;" onchange="updateSubStyle()">
+                                <option value="#FFF,rgba(0,0,0,0.8)">White BG</option>
+                                <option value="#FFEB3B,rgba(0,0,0,0.8)">Yellow BG</option>
+                                <option value="#FFF,transparent">White (No BG)</option>
+                            </select>
+                        </div>
+
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
                         <select id="pop-aspect-select" class="pop-select" onchange="applyAspectRatio(this.value)">
                             <option value="contain">Fit (Default)</option>
@@ -4961,6 +4974,7 @@ HTML_DASHBOARD = """
                                 <span class="time-badge" id="hud-time">00:00 / 00:00</span>
                             </div>
                             <div class="ctrl-group">
+                                <button class="cinema-btn" onclick="document.getElementById('menu-3d').classList.toggle('open')" title="3D Matrix">👓</button>
                                 <button class="cinema-btn" onclick="toggleSettingsPopup()" title="Tracks & Aspect">⚙️</button>
                                 <button class="cinema-btn" onclick="toggleFullScreen()" title="Fullscreen">⛶</button>
                             </div>
@@ -6014,17 +6028,17 @@ HTML_DASHBOARD = """
             el.classList.add('active');
         }
 
-        // ⏱️ Auto-Hide HUD & Title Bar Logic (Fades after 5s)
+        // ⏱️ Auto-Hide HUD & Title Bar Logic
         let hudTimeout;
         function wakeHUD() {
             const vp = document.getElementById('cinema-viewport');
-            if (vp) {
-                vp.classList.remove('idle-hide');
-                clearTimeout(hudTimeout);
-                // Only start the hide timer if the video is currently playing
-                if (!document.getElementById('hidden-video').paused) {
-                    hudTimeout = setTimeout(() => vp.classList.add('idle-hide'), 5000);
-                }
+            if (!vp) return;
+            vp.classList.remove('idle-hide');
+            clearTimeout(hudTimeout);
+            const video = document.getElementById('hidden-video');
+            // Only auto-fade if the video has a source and is currently playing
+            if (video && !video.paused && video.readyState > 0) {
+                hudTimeout = setTimeout(() => vp.classList.add('idle-hide'), 3500);
             }
         }
         
@@ -6036,6 +6050,21 @@ HTML_DASHBOARD = """
             vpElement.addEventListener('click', wakeHUD);
         }
 
+        // --- Playback & OSD Logic ---
+        function togglePlayback() {
+            const video = document.getElementById('hidden-video');
+            if (!video.src) return;
+            
+            if (video.paused) {
+                video.play();
+            } else {
+                video.pause();
+            }
+            wakeHUD(); // Instantly update UI state
+        }
+
+        async function loadTheaterMedia() {
+        
         // --- Playback & OSD Logic ---
         async function loadTheaterMedia() {
             const link = document.getElementById('theater-stream-url').value.trim();
@@ -6098,16 +6127,26 @@ HTML_DASHBOARD = """
             const quality = document.getElementById('pop-quality-select').value || 'Original';
             const audioIdx = document.getElementById('pop-audio-select').value;
             const video = document.getElementById('hidden-video');
+            if (!activeMediaLink) return;
 
-            // FIX: Added cache buster (&t=...) so the browser actually reloads the new audio stream
             let streamUrl = `/api/stream?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&quality=${quality}&t=${Date.now()}`;
             if (audioIdx) streamUrl += `&audio_idx=${audioIdx}`;
 
             const curTime = video.currentTime || 0;
+            const wasPlaying = !video.paused;
+            
             video.src = streamUrl;
-            video.currentTime = curTime;
-            video.play();
-            document.getElementById('hud-play-btn').innerText = "⏸️";
+            
+            // Wait for new stream to buffer headers before applying current time!
+            video.addEventListener('loadedmetadata', function onMeta() {
+                video.currentTime = curTime;
+                if (wasPlaying) video.play();
+                video.removeEventListener('loadedmetadata', onMeta);
+            });
+            
+            // Sync HUD icons
+            document.getElementById('hud-play-btn').innerHTML = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
+            document.getElementById('big-play-overlay').innerHTML = `<svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
         }
 
         function applySubtitleSelection() {
@@ -6139,33 +6178,32 @@ HTML_DASHBOARD = """
         function applyAspectRatio(mode) {
             const canvas = document.getElementById('webgl-canvas');
             const video = document.getElementById('hidden-video');
-            const vp = document.getElementById('cinema-viewport'); // Apply constraints to the wrapper
+            const vp = document.getElementById('cinema-viewport'); 
             
             [canvas, video].forEach(el => {
-                el.style.width = '100%'; el.style.height = '100%'; 
-                el.style.maxWidth = 'none'; el.style.maxHeight = 'none';
-                el.style.aspectRatio = 'auto';
-
+                el.style.width = '100%'; el.style.height = '100%';
+                
                 if (mode === 'contain') { 
                     el.style.objectFit = 'contain'; 
-                    vp.style.aspectRatio = '16/9';
-                }
-                else if (mode === 'cover') { 
+                    el.style.transform = 'scale(1)';
+                } else if (mode === 'cover') { 
                     el.style.objectFit = 'cover'; 
-                    vp.style.aspectRatio = '16/9';
-                }
-                else if (mode === 'stretch') { 
+                    el.style.transform = 'scale(1)';
+                } else if (mode === 'stretch') { 
                     el.style.objectFit = 'fill'; 
-                    vp.style.aspectRatio = '16/9';
-                }
-                else {
-                    // Force WebGL and Video to fill the newly structured box
+                    el.style.transform = 'scale(1)';
+                } else {
                     el.style.objectFit = 'fill'; 
-                    if (mode === '16-9') vp.style.aspectRatio = '16/9';
-                    if (mode === '21-9') vp.style.aspectRatio = '21/9';
-                    if (mode === '4-3') vp.style.aspectRatio = '4/3';
                 }
             });
+            
+            // Only force viewport aspect ratio if we are NOT in fullscreen
+            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                if (mode === '16-9') vp.style.aspectRatio = '16/9';
+                else if (mode === '21-9') vp.style.aspectRatio = '21/9';
+                else if (mode === '4-3') vp.style.aspectRatio = '4/3';
+                else vp.style.aspectRatio = '16/9';
+            }
         }
 
         function skipPlayback(sec) {
@@ -6249,6 +6287,19 @@ HTML_DASHBOARD = """
             };
             document.getElementById('hud-time').innerText = `${fmt(cur)} / ${fmt(dur)}`;
         });
+
+        function updateSubStyle() {
+            const size = document.getElementById('pop-sub-size').value;
+            const colorBg = document.getElementById('pop-sub-color').value.split(',');
+            let style = document.getElementById('dynamic-sub-style');
+            if(!style) {
+                style = document.createElement('style');
+                style.id = 'dynamic-sub-style';
+                document.head.appendChild(style);
+            }
+            style.innerHTML = `::cue { font-size: ${size} !important; color: ${colorBg[0]} !important; background: ${colorBg[1]} !important; text-shadow: 2px 2px 4px #000 !important; font-family: sans-serif !important; }`;
+        }
+        document.addEventListener('DOMContentLoaded', updateSubStyle);
     </script>
 </body>
 </html>
