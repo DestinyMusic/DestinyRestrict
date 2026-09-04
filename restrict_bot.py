@@ -4405,6 +4405,24 @@ HTML_DASHBOARD = """
         .input-group label { display: block; font-size: 11px; color: var(--subtext); margin-bottom: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
         .input-group input, .input-group select { width: 100%; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); font-size: 14px; outline: none; transition: 0.2s; }
         .input-group input:focus { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
+        .chat-picker { position: relative; }
+        .chat-picker input { padding-right: 48px !important; }
+        .chat-picker-btn { position: absolute; right: 8px; top: 7px; width: 40px; height: 40px; border: 0; border-radius: 10px; background: transparent; color: var(--subtext); font-size: 22px; cursor: pointer; }
+        .chat-picker-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
+        .chat-picker-menu { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 20; display: none; max-height: 280px; overflow-y: auto; padding: 6px; border: 1px solid var(--card-border); border-radius: 14px; background: var(--card); box-shadow: 0 18px 40px rgba(0,0,0,0.55); }
+        .chat-picker-menu.show { display: block; }
+        .chat-option { display: flex; align-items: center; gap: 10px; width: 100%; padding: 11px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+        .chat-option:hover { background: rgba(59,130,246,0.12); }
+        .chat-option-main { min-width: 0; flex: 1; }
+        .chat-option-name { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .chat-option-id { margin-top: 2px; font-size: 10px; color: var(--subtext); }
+        .topic-box { margin-top: 10px; padding: 12px; border: 1px solid var(--card-border); border-radius: 14px; background: var(--bg); }
+        .topic-box-title { font-size: 11px; color: var(--subtext); font-weight: 700; text-transform: uppercase; margin-bottom: 8px; }
+        .topic-list { max-height: 220px; overflow-y: auto; display: grid; gap: 6px; }
+        .topic-option { width: 100%; padding: 10px 12px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--card); color: var(--text); text-align: left; cursor: pointer; }
+        .topic-option:hover, .topic-option.active { border-color: var(--accent); background: rgba(59,130,246,0.1); }
+        .topic-option-title { font-size: 12px; font-weight: 700; }
+        .topic-option-id { font-size: 10px; color: var(--subtext); margin-top: 2px; }
 
         .task-row { background: color-mix(in srgb, var(--card) var(--glass-bg, 100%), transparent); border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 15px; transition: 0.3s; }
         .task-kill { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.2); padding: 8px 16px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer; transition: 0.2s; }
@@ -4768,11 +4786,17 @@ HTML_DASHBOARD = """
                     <label>Telegram Source Link</label>
                     <input type="text" id="t-link" placeholder="https://t.me/channel/100 or 101-120" required>
                 </div>
-                <!-- 🟢 UPDATED: Destination now uses Datalist for Web Dropdown Search -->
                 <div class="input-group">
-                    <label>Destination Chat ID / Topic</label>
-                    <input type="text" id="t-dest" list="tg-chats-list" placeholder="Select your chat or enter ID (-100...)">
-                    <datalist id="tg-chats-list"></datalist>
+                    <label>Destination Chat / Topic</label>
+                    <div class="chat-picker" id="dest-picker">
+                        <input type="text" id="t-dest" autocomplete="off" placeholder="Search chat or enter ID (-100...)" oninput="handleDestInput()" onfocus="showDestChats()">
+                        <button type="button" class="chat-picker-btn" onclick="toggleDestChats()" aria-label="Show chats">⌄</button>
+                        <div id="dest-chat-menu" class="chat-picker-menu"></div>
+                    </div>
+                    <div id="dest-topic-box" class="topic-box" style="display:none;">
+                        <div class="topic-box-title">Destination topic</div>
+                        <div id="dest-topic-list" class="topic-list"></div>
+                    </div>
                 </div>
                 <div class="input-group" id="delay-group">
                     <label>Forward Delay (Seconds)</label>
@@ -5030,56 +5054,35 @@ HTML_DASHBOARD = """
             navigator.serviceWorker.register('/sw.js').catch(() => {});
         }
 
-        function openTaskModal() { document.getElementById('taskModal').classList.add('show'); }
-        function closeTaskModal() { document.getElementById('taskModal').classList.remove('show'); }
-        function toggleMode(val) { document.getElementById('delay-group').style.display = 'block'; }
-
         let allLoadedChats = [];
         let currentChatCat = 'All';
+        let selectedDestChat = null;
+        let selectedDestTopic = null;
 
         async function loadWebChats(force = false) {
             if (!currentUser) return;
             const container = document.getElementById('web-chats-list');
             const warnBox = document.getElementById('web-chats-warning');
             const refreshBtn = document.getElementById('refresh-chats-btn');
-            
+
             if (force) {
-                container.innerHTML = '<div style="color: var(--subtext);">⏳ Refreshing dialogs from Telegram... (Please wait)</div>';
-                if (refreshBtn) { refreshBtn.innerText = "⏳ Loading..."; refreshBtn.style.opacity = "0.5"; refreshBtn.style.pointerEvents = "none"; }
+                container.innerHTML = '<div style="color: var(--subtext);">Refreshing dialogs...</div>';
+                if (refreshBtn) { refreshBtn.innerText = 'Loading...'; refreshBtn.style.opacity = '0.5'; refreshBtn.style.pointerEvents = 'none'; }
             }
 
             try {
                 const res = await fetch(`/api/chats?user_id=${currentUser}`);
                 const data = await res.json();
-                
-                if (data.status === 'success') {
-                    warnBox.style.display = 'none';
-                    allLoadedChats = data.chats || [];
-                    
-                    // High-Performance datalist building
-                    const dl = document.getElementById('tg-chats-list');
-                    if (dl) {
-                        dl.innerHTML = '';
-                        const frag = document.createDocumentFragment();
-                        allLoadedChats.forEach(c => {
-                            const opt = document.createElement('option');
-                            opt.value = c.id;
-                            opt.text = c.name;
-                            frag.appendChild(opt);
-                        });
-                        dl.appendChild(frag);
-                    }
-
-                    renderFilteredChats();
-                } else {
-                    warnBox.style.display = 'block';
-                    container.innerHTML = '<div style="color: var(--subtext);">No chats available. Connect session first.</div>';
-                }
-            } catch(e) {
-                container.innerHTML = '<div style="color: var(--danger);">Failed to load dialogs.</div>';
+                if (data.status !== 'success') throw new Error(data.message || 'Failed to load dialogs');
+                warnBox.style.display = 'none';
+                allLoadedChats = data.chats || [];
+                renderFilteredChats();
+                renderDestChats();
+            } catch (e) {
+                if (!allLoadedChats.length) container.innerHTML = '<div style="color: var(--danger);">Failed to load dialogs.</div>';
+                if (warnBox) warnBox.style.display = 'block';
             } finally {
-                // Restore button instantly
-                if (refreshBtn) { refreshBtn.innerText = "🔄 Refresh"; refreshBtn.style.opacity = "1"; refreshBtn.style.pointerEvents = "auto"; }
+                if (refreshBtn) { refreshBtn.innerText = '🔄 Refresh'; refreshBtn.style.opacity = '1'; refreshBtn.style.pointerEvents = 'auto'; }
             }
         }
 
@@ -5090,53 +5093,159 @@ HTML_DASHBOARD = """
             renderFilteredChats();
         }
 
+        function getFilteredChats(query = '') {
+            query = query.toLowerCase().trim();
+            return allLoadedChats.filter(c => {
+                const matchesCat = currentChatCat === 'All' || c.type === currentChatCat;
+                return matchesCat && ((c.name || '').toLowerCase().includes(query) || String(c.id).includes(query));
+            });
+        }
+
         function renderFilteredChats() {
             const query = (document.getElementById('web-chat-search').value || '').toLowerCase();
             const listEl = document.getElementById('web-chats-list');
-            
-            const filtered = allLoadedChats.filter(c => {
-                let catMatchStr = '';
-                if (currentChatCat === 'Group') catMatchStr = '👥 group';
-                if (currentChatCat === 'Channel') catMatchStr = '📢 channel';
-                if (currentChatCat === 'Bot') catMatchStr = '🤖 bot';
-                if (currentChatCat === 'User') catMatchStr = '👤 user';
-
-                const matchesCat = currentChatCat === 'All' || c.name.toLowerCase().includes(catMatchStr);
-                const matchesQuery = c.name.toLowerCase().includes(query) || c.id.includes(query);
-                return matchesCat && matchesQuery;
-            });
-
+            const filtered = getFilteredChats(query);
             if (!filtered.length) {
                 listEl.innerHTML = '<div style="color: var(--subtext); padding: 12px 0;">No matching dialogs found.</div>';
                 return;
             }
-
-            // High-Performance DOM Rendering (NO innerHTML += in a loop!)
-            let htmlBuffer = "";
-            filtered.forEach(c => {
-                htmlBuffer += `
-                    <div class="task-row" style="margin-bottom: 8px;">
-                        <div>
-                            <div style="font-weight: 700; color: var(--text); font-size: 13px;">${c.name}</div>
-                            <div style="font-size: 11px; color: var(--accent); margin-top: 2px;">ID: <code>${c.id}</code></div>
-                        </div>
-                        <button class="task-kill" style="color: var(--accent); border-color: var(--card-border); background: var(--bg);" onclick="copyChatId('${c.id}')">📋 COPY ID</button>
+            listEl.innerHTML = filtered.map(c => `
+                <div class="task-row" style="margin-bottom:8px;">
+                    <div style="min-width:0;">
+                        <div style="font-weight:700; color:var(--text); font-size:13px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(c.name)}</div>
+                        <div style="font-size:11px; color:var(--accent); margin-top:2px;">ID: <code>${escapeHtml(c.id)}</code></div>
                     </div>
+                    <button class="task-kill" style="color:var(--accent); border-color:var(--card-border); background:var(--bg);" onclick="copyChatId('${escapeJs(c.id)}')">COPY ID</button>
+                </div>
+            `).join('');
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>'"]/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','\'':'&#39;','"':'&quot;'}[ch]));
+        }
+
+        function escapeJs(value) {
+            return String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+        }
+
+        function openTaskModal() {
+            document.getElementById('taskModal').classList.add('show');
+            if (!allLoadedChats.length) loadWebChats();
+        }
+
+        function closeTaskModal() {
+            document.getElementById('taskModal').classList.remove('show');
+            hideDestChats();
+        }
+
+        function toggleMode(val) {
+            document.getElementById('delay-group').style.display = 'block';
+        }
+
+        function showDestChats() {
+            renderDestChats();
+            document.getElementById('dest-chat-menu').classList.add('show');
+        }
+
+        function hideDestChats() {
+            const menu = document.getElementById('dest-chat-menu');
+            if (menu) menu.classList.remove('show');
+        }
+
+        function toggleDestChats() {
+            const menu = document.getElementById('dest-chat-menu');
+            if (menu.classList.contains('show')) hideDestChats();
+            else showDestChats();
+        }
+
+        function handleDestInput() {
+            selectedDestChat = null;
+            selectedDestTopic = null;
+            document.getElementById('dest-topic-box').style.display = 'none';
+            renderDestChats();
+            showDestChats();
+        }
+
+        function renderDestChats() {
+            const menu = document.getElementById('dest-chat-menu');
+            const input = document.getElementById('t-dest');
+            if (!menu || !input) return;
+            const query = input.value || '';
+            const chats = getFilteredChats(query);
+            if (!chats.length) {
+                menu.innerHTML = '<div style="padding:12px; color:var(--subtext); font-size:12px;">No chats found.</div>';
+                return;
+            }
+            menu.innerHTML = chats.map(c => `
+                <button type="button" class="chat-option" onclick="selectDestChat('${escapeJs(c.id)}')">
+                    <div class="chat-option-main">
+                        <div class="chat-option-name">${escapeHtml(c.name)}</div>
+                        <div class="chat-option-id">${escapeHtml(c.id)}</div>
+                    </div>
+                </button>
+            `).join('');
+        }
+
+        async function selectDestChat(id) {
+            const chat = allLoadedChats.find(c => String(c.id) === String(id));
+            if (!chat) return;
+            selectedDestChat = chat;
+            selectedDestTopic = null;
+            document.getElementById('t-dest').value = chat.id;
+            hideDestChats();
+
+            const topicBox = document.getElementById('dest-topic-box');
+            if (chat.type !== 'Group') {
+                topicBox.style.display = 'none';
+                return;
+            }
+
+            topicBox.style.display = 'block';
+            const topicList = document.getElementById('dest-topic-list');
+            topicList.innerHTML = '<div style="color:var(--subtext); font-size:12px; padding:6px 0;">Loading topics...</div>';
+
+            try {
+                const res = await fetch(`/api/chat_topics?user_id=${currentUser}&chat_id=${encodeURIComponent(chat.id)}`);
+                const data = await res.json();
+                if (data.status !== 'success') throw new Error(data.message || 'No topics');
+                const topics = data.topics || [];
+                topicList.innerHTML = `
+                    <button type="button" class="topic-option active" onclick="selectDestTopic(null, this)">
+                        <div class="topic-option-title">General</div>
+                        <div class="topic-option-id">Main group chat</div>
+                    </button>
+                    ${topics.map(t => `
+                        <button type="button" class="topic-option" onclick="selectDestTopic(${Number(t.id)}, this)">
+                            <div class="topic-option-title">${escapeHtml(t.title)}</div>
+                            <div class="topic-option-id">Topic ${Number(t.id)}</div>
+                        </button>
+                    `).join('')}
                 `;
-            });
-            
-            // Assign the massive string exactly once. Browser renders instantly.
-            listEl.innerHTML = htmlBuffer;
+            } catch (e) {
+                topicList.innerHTML = '<div style="color:var(--subtext); font-size:12px; padding:6px 0;">No forum topics found. General will be used.</div>';
+            }
+        }
+
+        function selectDestTopic(topicId, button) {
+            selectedDestTopic = topicId;
+            document.querySelectorAll('#dest-topic-list .topic-option').forEach(b => b.classList.remove('active'));
+            button.classList.add('active');
+            document.getElementById('t-dest').value = topicId == null ? String(selectedDestChat.id) : `${selectedDestChat.id}/${topicId}`;
         }
 
         function copyChatId(id) {
             navigator.clipboard.writeText(id);
-            alert("Copied ID: " + id);
+            alert('Copied ID: ' + id);
         }
 
         async function fetchChatsList() {
             await loadWebChats();
         }
+
+        document.addEventListener('click', event => {
+            const picker = document.getElementById('dest-picker');
+            if (picker && !picker.contains(event.target)) hideDestChats();
+        });
 
         async function fetchStats() {
             if (!currentUser) return;
@@ -5244,8 +5353,9 @@ HTML_DASHBOARD = """
             e.preventDefault();
             const mode = document.getElementById('m-type').value;
             const link = document.getElementById('t-link').value;
-            const dest = document.getElementById('t-dest').value;
+            const dest = document.getElementById('t-dest').value.trim();
             const delay = document.getElementById('t-delay').value;
+            if (!dest) { alert("Please select or enter a destination chat."); return; }
             
             const filtersArr = [];
             document.querySelectorAll('input[name="ftype"]:checked').forEach(cb => filtersArr.push(cb.value));
@@ -5748,12 +5858,13 @@ async def _api_chats_handler(request):
     count = 0
     try:
         # Limited to 500 so the API doesn't crash, and yields to the server every 25 chats so nothing freezes.
-        async for d in uclient.get_dialogs(limit=500):
+        async for d in uclient.get_dialogs(limit=0):
             name = d.chat.title or d.chat.first_name or "Unknown"
             c_type = d.chat.type
             
-            cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
-            chat_list.append({"id": str(d.chat.id), "name": f"[{cat}] {name}"})
+            cat = "User" if c_type == enums.ChatType.PRIVATE else ("Channel" if c_type == enums.ChatType.CHANNEL else ("Bot" if c_type == enums.ChatType.BOT else "Group"))
+            icon = {"User": "👤", "Channel": "📢", "Bot": "🤖", "Group": "👥"}[cat]
+            chat_list.append({"id": str(d.chat.id), "name": f"[{icon} {cat}] {name}", "type": cat, "title": name})
             
             count += 1
             if count % 25 == 0:
@@ -5762,6 +5873,46 @@ async def _api_chats_handler(request):
         return web.json_response({"status": "error", "message": str(e)})
         
     return web.json_response({"status": "success", "chats": chat_list})
+
+async def _api_chat_topics_handler(request):
+    try:
+        uid = int(request.query.get("user_id", 0))
+        chat_id = int(request.query.get("chat_id"))
+    except (TypeError, ValueError):
+        return web.json_response({"status": "error", "message": "Invalid chat ID"})
+
+    uclient = USER_CLIENTS.get(uid)
+    if not uclient or not uclient.is_connected:
+        session_str = await db.get_session(uid)
+        if not session_str:
+            return web.json_response({"status": "error", "message": "Telegram session not connected"})
+        try:
+            api_id = await db.get_api_id(uid) or API_ID
+            api_hash = await db.get_api_hash(uid) or API_HASH
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            await uclient.start()
+            USER_CLIENTS[uid] = uclient
+        except Exception as e:
+            return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
+
+    try:
+        chat = await uclient.get_chat(chat_id)
+        if getattr(chat, "type", None) not in (enums.ChatType.GROUP, enums.ChatType.SUPERGROUP):
+            return web.json_response({"status": "success", "topics": []})
+        if not getattr(chat, "is_forum", False):
+            return web.json_response({"status": "success", "topics": []})
+
+        topics = []
+        if hasattr(uclient, "get_forum_topics"):
+            async for topic in uclient.get_forum_topics(chat_id):
+                topic_id = getattr(topic, "id", None)
+                title = getattr(topic, "title", None)
+                if topic_id is not None and title:
+                    topics.append({"id": int(topic_id), "title": str(title)})
+        return web.json_response({"status": "success", "topics": topics})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
 
 async def _api_speedtest_handler(request):
     try:
@@ -5884,6 +6035,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/stats", _api_stats_handler)
     app_web.router.add_get("/api/logs", _api_logs_handler)
     app_web.router.add_get("/api/chats", _api_chats_handler)
+    app_web.router.add_get("/api/chat_topics", _api_chat_topics_handler)
     app_web.router.add_get("/api/speedtest", _api_speedtest_handler)
     app_web.router.add_get("/api/sos", _api_sos_handler)
     app_web.router.add_get("/api/logs/download", _api_download_log_handler)
