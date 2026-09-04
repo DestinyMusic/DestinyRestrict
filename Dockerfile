@@ -11,15 +11,16 @@ ENV DEBIAN_FRONTEND=noninteractive
 # 4. Set Working Directory
 WORKDIR /app
 
-# 5. Install system dependencies
-# (Note: Changed '7zip' to 'p7zip-full' to ensure the '7z' command maps correctly in Debian)
+# 5. Install system dependencies (ADDED FFMPEG & SOX)
 RUN apt-get update -qq && \
     apt-get install -yqq --no-install-recommends \
     p7zip-full \
     coreutils \
     build-essential \
     python3-dev \
-    mediainfo && \
+    mediainfo \
+    ffmpeg \
+    sox && \
     rm -rf /var/lib/apt/lists/*
 
 # 6. Change ownership of the app directory to the new Hugging Face user
