@@ -491,16 +491,23 @@ db = Database(DB_URI, DB_NAME)
 # --- CLIENT & GLOBAL STATE ---
 # ==============================================================================
 
-app = Client(
-    "RestrictedBot",
-    api_id=API_ID,
-    api_hash=API_HASH,
-    bot_token=BOT_TOKEN,
-    workers=min(32, (os.cpu_count() or 2) * 8), # Increased workers
-    max_concurrent_transmissions=10,            # <--- NATIVE PARALLEL CHUNKING
-    sleep_threshold=20,
-    ipv6=False                    
-)
+import inspect
+
+client_kwargs = {
+    "name": "RestrictedBot",
+    "api_id": API_ID,
+    "api_hash": API_HASH,
+    "bot_token": BOT_TOKEN,
+    "workers": min(32, (os.cpu_count() or 2) * 8),
+    "sleep_threshold": 20,
+    "ipv6": False
+}
+
+# Only apply Kurigram-specific features if the installed fork supports them
+if "max_concurrent_transmissions" in inspect.signature(Client.__init__).parameters:
+    client_kwargs["max_concurrent_transmissions"] = 10
+
+app = Client(**client_kwargs)
 
 import random
 
@@ -1495,11 +1502,16 @@ async def speedtest_handler(client: Client, message: Message):
     
     def run_speedtest_sync():
         try:
-            st = speedtest.Speedtest()
+            # secure=True forces HTTPS to bypass datacenter port blocks
+            st = speedtest.Speedtest(secure=True)
             st.get_best_server()
             st.download()
             st.upload()
-            st.results.share() # Generates the image link
+            try:
+                # Silently ignore image generation if Speedtest blocks the datacenter IP
+                st.results.share() 
+            except Exception:
+                pass 
             return st.results.dict(), None
         except Exception as e:
             return None, str(e)
@@ -3453,17 +3465,22 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 api_id = await db.get_api_id(user_id) or API_ID
                 api_hash = await db.get_api_hash(user_id) or API_HASH
                 
-                acc = Client(
-                    ":memory:", 
-                    session_string=user_data, 
-                    api_hash=api_hash, 
-                    api_id=api_id, 
-                    no_updates=True,
-                    workers=8,                              # <--- Give it more async threads
-                    max_concurrent_transmissions=10,        # <--- NATIVE PARALLEL CHUNKING
-                    sleep_threshold=60,
-                    ipv6=False
-                )
+                acc_kwargs = {
+                    "name": ":memory:",
+                    "session_string": user_data,
+                    "api_hash": api_hash,
+                    "api_id": api_id,
+                    "no_updates": True,
+                    "workers": 8,
+                    "sleep_threshold": 60,
+                    "ipv6": False
+                }
+                
+                import inspect
+                if "max_concurrent_transmissions" in inspect.signature(Client.__init__).parameters:
+                    acc_kwargs["max_concurrent_transmissions"] = 10
+
+                acc = Client(**acc_kwargs)
                 await acc.start()
                 is_temp_acc = True
             
@@ -6068,11 +6085,14 @@ async def _api_speedtest_handler(request):
 
     def run_speedtest_sync():
         try:
-            st = speedtest.Speedtest()
+            st = speedtest.Speedtest(secure=True)
             st.get_best_server()
             st.download()
             st.upload()
-            st.results.share()
+            try:
+                st.results.share()
+            except Exception:
+                pass
             return st.results.dict(), None
         except Exception as e:
             return None, str(e)
