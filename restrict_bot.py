@@ -4583,6 +4583,71 @@ HTML_DASHBOARD = """
         .theme-pill .dot { width: 6px; height: 6px; border-radius: 50%; box-shadow: 0 0 4px currentColor; }
         .theme-pill .pill-label { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
         .theme-pill .check { font-size: 10px; margin-left: 2px; }
+
+        /* ==========================================================================
+           CINEMA THEATER & 3D WEBGL ENGINE STYLES (NETFLIX / JIOHOTSTAR INSPIRED)
+           ========================================================================== */
+        .cinema-viewport {
+            position: relative; width: 100%; aspect-ratio: 16/9; background: #000;
+            border-radius: 24px; overflow: hidden; box-shadow: 0 30px 80px rgba(0,0,0,0.9), 0 0 50px var(--glow);
+            border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent);
+            display: flex; align-items: center; justify-content: center;
+        }
+        #webgl-canvas { width: 100%; height: 100%; object-fit: contain; display: block; }
+        .hidden-video-feed { display: none; }
+
+        /* Floating Netflix-Style OSD HUD */
+        .cinema-hud {
+            position: absolute; bottom: 0; left: 0; right: 0; padding: 25px 30px;
+            background: linear-gradient(to top, rgba(0,0,0,0.95) 0%, rgba(0,0,0,0.6) 60%, transparent 100%);
+            display: flex; flex-direction: column; gap: 12px; opacity: 0; transition: opacity 0.3s ease;
+            z-index: 25; pointer-events: none;
+        }
+        .cinema-viewport:hover .cinema-hud, .cinema-hud.active { opacity: 1; pointer-events: auto; }
+
+        .cinema-scrubber-bar {
+            position: relative; width: 100%; height: 6px; background: rgba(255,255,255,0.25);
+            border-radius: 999px; cursor: pointer; transition: height 0.15s ease;
+        }
+        .cinema-scrubber-bar:hover { height: 10px; }
+        .scrubber-fill { height: 100%; background: var(--accent); border-radius: 999px; width: 0%; position: relative; }
+        .scrubber-fill::after {
+            content: ''; position: absolute; right: -6px; top: 50%; transform: translateY(-50%);
+            width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px var(--accent);
+        }
+
+        .cinema-controls-row { display: flex; justify-content: space-between; align-items: center; }
+        .ctrl-group { display: flex; align-items: center; gap: 16px; }
+        .cinema-btn { background: none; border: none; color: #fff; cursor: pointer; font-size: 18px; display: flex; align-items: center; justify-content: center; transition: transform 0.2s, color 0.2s; }
+        .cinema-btn:hover { color: var(--accent); transform: scale(1.15); }
+        .time-badge { font-size: 12px; font-family: monospace; color: #cbd5e1; font-weight: 600; }
+
+        /* Settings Floating Popups */
+        .settings-popup {
+            position: absolute; bottom: 85px; right: 30px; background: color-mix(in srgb, var(--card) 95%, transparent);
+            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--card-border);
+            border-radius: 20px; padding: 20px; width: 320px; display: none; z-index: 30;
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+        }
+        .settings-popup.open { display: block; }
+        .pop-title { font-size: 14px; font-weight: 800; margin-bottom: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
+        .pop-select { width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; color: #fff; font-size: 12px; margin-bottom: 14px; outline: none; }
+
+        /* 3D Matrix Menu (Exact Layout from Image) */
+        .matrix-3d-menu {
+            position: absolute; top: 0; right: -360px; width: 340px; height: 100%;
+            background: color-mix(in srgb, #050505 92%, transparent); backdrop-filter: blur(25px);
+            border-left: 1px solid var(--card-border); transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1);
+            padding: 24px; overflow-y: auto; z-index: 40;
+        }
+        .matrix-3d-menu.open { right: 0; }
+        .matrix-header { font-size: 18px; font-weight: 800; text-align: center; margin-bottom: 24px; color: #fff; }
+        .matrix-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+        .matrix-column-title { font-size: 12px; color: var(--subtext); text-transform: uppercase; font-weight: 700; margin-bottom: 16px; letter-spacing: 0.5px; }
+        .matrix-option { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; cursor: pointer; font-size: 13px; color: var(--text); }
+        .matrix-radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--subtext); display: flex; align-items: center; justify-content: center; transition: 0.2s; }
+        .matrix-option.active .matrix-radio { border-color: #a3e635; }
+        .matrix-option.active .matrix-radio::after { content: ''; width: 8px; height: 8px; background: #a3e635; border-radius: 50%; }
     </style>
 </head>
 <body>
@@ -4632,6 +4697,7 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('logs', 'Logs')">📋 System Logs</div>
             <div class="menu-item" onclick="switchView('mediainfo', 'Media Inspector')">🔍 Media Inspector</div>
             <div class="menu-item" onclick="switchView('spectrogram', 'Audio Spectrogram')">📉 Audio Spectrogram</div>
+            <div class="menu-item" onclick="switchView('theater', 'Media Theater')">🍿 Media Theater</div>             
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
 
@@ -4733,6 +4799,99 @@ HTML_DASHBOARD = """
                 </div>
             </div>
 
+            <!-- ========================================== -->
+            <!-- NETFLIX / HOTSTAR STYLE THEATER VIEW       -->
+            <!-- ========================================== -->
+            <div id="view-theater" class="view-section">
+                <div class="section-title">
+                    <span>Universal Media Theater</span>
+                    <button class="primary-btn" style="width: auto; padding: 8px 16px; font-size: 11px; background: #8b5cf6;" onclick="document.getElementById('menu-3d').classList.toggle('open')">👓 Anaglyph 3D Matrix</button>
+                </div>
+
+                <div class="cinema-viewport" id="cinema-viewport">
+                    <canvas id="webgl-canvas"></canvas>
+                    <video id="hidden-video" class="hidden-video-feed" playsinline crossorigin="anonymous"></video>
+
+                    <!-- 3D Over-Under / SBS Matrix Menu (Matches Provided UI) -->
+                    <div id="menu-3d" class="matrix-3d-menu">
+                        <div class="matrix-header">Anaglyph 3D</div>
+                        <div class="matrix-grid">
+                            <div>
+                                <div class="matrix-column-title">In Format</div>
+                                <div class="matrix-option" onclick="setMatrix3DIn('lr', this)">Left/Right <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DIn('tb', this)">Top/Bottom <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DIn('ci', this)">Column Interleaved <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DIn('ri', this)">Row Interleaved <div class="matrix-radio"></div></div>
+                                <div class="matrix-option active" onclick="setMatrix3DIn('none', this)">None <div class="matrix-radio"></div></div>
+                            </div>
+                            <div>
+                                <div class="matrix-column-title">Out Format</div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('gm', this)">Green/Magenta <div class="matrix-radio"></div></div>
+                                <div class="matrix-option active" onclick="setMatrix3DOut('rc', this)">Red/Cyan <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('ba', this)">Blue/Amber <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('lf', this)">Left Frame First <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('rf', this)">Right Frame First <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('vr', this)">VR <div class="matrix-radio"></div></div>
+                                <div class="matrix-option" onclick="setMatrix3DOut('2d', this)">2D <div class="matrix-radio"></div></div>
+                            </div>
+                        </div>
+                        <button class="primary-btn" style="margin-top: 30px;" onclick="document.getElementById('menu-3d').classList.remove('open')">Close Menu</button>
+                    </div>
+
+                    <!-- Quick Settings Popup (Audio / Quality / Subtitles / Aspect) -->
+                    <div id="media-settings-popup" class="settings-popup">
+                        <div class="pop-title">Stream Settings</div>
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">VIDEO QUALITY</label>
+                        <select id="pop-quality-select" class="pop-select" onchange="applyTrackSelection()"></select>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">AUDIO STREAM</label>
+                        <select id="pop-audio-select" class="pop-select" onchange="applyTrackSelection()"></select>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLES</label>
+                        <select id="pop-sub-select" class="pop-select" onchange="applySubtitleSelection()"></select>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
+                        <select id="pop-aspect-select" class="pop-select" onchange="applyAspectRatio(this.value)">
+                            <option value="contain">Fit (Default)</option>
+                            <option value="16-9">16:9 Standard</option>
+                            <option value="21-9">21:9 Cinemascope</option>
+                            <option value="4-3">4:3 Retro / IMAX</option>
+                            <option value="cover">Zoom / Fill</option>
+                            <option value="stretch">Stretch</option>
+                        </select>
+                    </div>
+
+                    <!-- HUD Overlay -->
+                    <div class="cinema-hud" id="cinema-hud">
+                        <div class="cinema-scrubber-bar" id="cinema-scrubber" onclick="seekPlayback(event)">
+                            <div class="scrubber-fill" id="scrubber-fill"></div>
+                        </div>
+                        <div class="cinema-controls-row">
+                            <div class="ctrl-group">
+                                <button class="cinema-btn" id="hud-play-btn" onclick="togglePlayback()">▶</button>
+                                <button class="cinema-btn" onclick="skipPlayback(-10)">↺ 10s</button>
+                                <button class="cinema-btn" onclick="skipPlayback(10)">10s ↻</button>
+                                <span class="time-badge" id="hud-time">00:00 / 00:00</span>
+                            </div>
+                            <div class="ctrl-group">
+                                <button class="cinema-btn" onclick="toggleSettingsPopup()">⚙️ Tracks & Aspect</button>
+                                <button class="cinema-btn" onclick="toggleFullScreen()">⛶ Fullscreen</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 20px;">
+                    <div class="input-group">
+                        <label>Load Stream (Telegram Post Link or Direct Video/Audio URL)</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="theater-stream-url" placeholder="https://t.me/c/123/456 or https://domain.com/movie.mkv" style="flex: 1;">
+                            <button class="primary-btn" style="width: auto; padding: 0 24px;" onclick="loadTheaterMedia()">Load & Play</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
             <div id="view-downloads" class="view-section">
                 <div class="section-title">
                     <span>Downloads & Forwarding Tasks</span>
@@ -5621,6 +5780,262 @@ HTML_DASHBOARD = """
                 btn.disabled = false;
             }
         }
+
+        // ==========================================================================
+        // --- WEBGL 3D ANAGLYPH SHADER PIPELINE & MEDIA THEATER ENGINE ---
+        // ==========================================================================
+        let matrix3DIn = 'none';
+        let matrix3DOut = 'rc';
+        let isRightFirst = false;
+        let activeMediaLink = "";
+        let gl, glProgram, glTexture;
+
+        const vsSource = `
+            attribute vec2 a_position;
+            varying vec2 v_uv;
+            void main() {
+                v_uv = (a_position + 1.0) * 0.5;
+                v_uv.y = 1.0 - v_uv.y; // Flip Y for WebGL Texture coord
+                gl_Position = vec4(a_position, 0.0, 1.0);
+            }
+        `;
+
+        const fsSource = `
+            precision mediump float;
+            uniform sampler2D u_image;
+            uniform int u_in_mode;   // 0:None, 1:LR, 2:TB, 3:CI, 4:RI
+            uniform int u_out_mode;  // 0:RC, 1:GM, 2:BA, 3:VR, 4:2D
+            uniform bool u_swap;
+            varying vec2 v_uv;
+
+            void main() {
+                vec2 uvL = v_uv;
+                vec2 uvR = v_uv;
+
+                if (u_in_mode == 1) { // Left / Right (SBS)
+                    uvL = vec2(v_uv.x * 0.5, v_uv.y);
+                    uvR = vec2(0.5 + v_uv.x * 0.5, v_uv.y);
+                } else if (u_in_mode == 2) { // Top / Bottom (OU)
+                    uvL = vec2(v_uv.x, v_uv.y * 0.5);
+                    uvR = vec2(v_uv.x, 0.5 + v_uv.y * 0.5);
+                } else if (u_in_mode == 3) { // Column Interleaved
+                    float col = mod(gl_FragCoord.x, 2.0);
+                    if (col < 1.0) { uvR = uvL; } else { uvL = uvR; }
+                } else if (u_in_mode == 4) { // Row Interleaved
+                    float row = mod(gl_FragCoord.y, 2.0);
+                    if (row < 1.0) { uvR = uvL; } else { uvL = uvR; }
+                }
+
+                if (u_swap) {
+                    vec2 tmp = uvL; uvL = uvR; uvR = tmp;
+                }
+
+                vec4 cL = texture2D(u_image, uvL);
+                vec4 cR = texture2D(u_image, uvR);
+
+                if (u_in_mode == 0 || u_out_mode == 4) {
+                    gl_FragColor = cL; // Pure 2D
+                } else if (u_out_mode == 0) { // Red / Cyan
+                    gl_FragColor = vec4(cL.r, cR.g, cR.b, 1.0);
+                } else if (u_out_mode == 1) { // Green / Magenta
+                    gl_FragColor = vec4(cR.r, cL.g, cR.b, 1.0);
+                } else if (u_out_mode == 2) { // Blue / Amber
+                    gl_FragColor = vec4(cR.r, cR.g, cL.b, 1.0);
+                } else if (u_out_mode == 3) { // VR Side-by-Side
+                    if (v_uv.x < 0.5) gl_FragColor = texture2D(u_image, vec2(v_uv.x * 2.0, v_uv.y));
+                    else gl_FragColor = texture2D(u_image, vec2((v_uv.x - 0.5) * 2.0, v_uv.y));
+                }
+            }
+        `;
+
+        function initWebGL() {
+            const canvas = document.getElementById('webgl-canvas');
+            gl = canvas.getContext('webgl');
+            if (!gl) return;
+
+            function compileShader(type, src) {
+                const s = gl.createShader(type);
+                gl.shaderSource(s, src);
+                gl.compileShader(s);
+                return s;
+            }
+
+            const vs = compileShader(gl.VERTEX_SHADER, vsSource);
+            const fs = compileShader(gl.FRAGMENT_SHADER, fsSource);
+            glProgram = gl.createProgram();
+            gl.attachShader(glProgram, vs);
+            gl.attachShader(glProgram, fs);
+            gl.linkProgram(glProgram);
+            gl.useProgram(glProgram);
+
+            const buf = gl.createBuffer();
+            gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+            gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([
+                -1, -1,  1, -1, -1,  1,
+                -1,  1,  1, -1,  1,  1
+            ]), gl.STATIC_DRAW);
+
+            const pos = gl.getAttribLocation(glProgram, "a_position");
+            gl.enableVertexAttribArray(pos);
+            gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0);
+
+            glTexture = gl.createTexture();
+            gl.bindTexture(gl.TEXTURE_2D, glTexture);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+            requestAnimationFrame(renderWebGLFrame);
+        }
+
+        function renderWebGLFrame() {
+            const video = document.getElementById('hidden-video');
+            const canvas = document.getElementById('webgl-canvas');
+
+            if (video.readyState >= video.HAVE_CURRENT_DATA) {
+                canvas.width = video.videoWidth || 1280;
+                canvas.height = video.videoHeight || 720;
+                gl.viewport(0, 0, canvas.width, canvas.height);
+
+                gl.bindTexture(gl.TEXTURE_2D, glTexture);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+
+                const inMap = { 'none': 0, 'lr': 1, 'tb': 2, 'ci': 3, 'ri': 4 };
+                const outMap = { 'rc': 0, 'gm': 1, 'ba': 2, 'vr': 3, '2d': 4 };
+
+                gl.uniform1i(gl.getUniformLocation(glProgram, "u_in_mode"), inMap[matrix3DIn] || 0);
+                gl.uniform1i(gl.getUniformLocation(glProgram, "u_out_mode"), outMap[matrix3DOut] || 0);
+                gl.uniform1i(gl.getUniformLocation(glProgram, "u_swap"), isRightFirst ? 1 : 0);
+
+                gl.drawArrays(gl.TRIANGLES, 0, 6);
+            }
+            requestAnimationFrame(renderWebGLFrame);
+        }
+
+        function setMatrix3DIn(val, el) {
+            matrix3DIn = val;
+            el.parentElement.querySelectorAll('.matrix-option').forEach(o => o.classList.remove('active'));
+            el.classList.add('active');
+        }
+
+        function setMatrix3DOut(val, el) {
+            if (val === 'lf') { isRightFirst = false; }
+            else if (val === 'rf') { isRightFirst = true; }
+            else { matrix3DOut = val; }
+            el.parentElement.querySelectorAll('.matrix-option').forEach(o => o.classList.remove('active'));
+            el.classList.add('active');
+        }
+
+        // --- Playback & OSD Logic ---
+        async function loadTheaterMedia() {
+            const link = document.getElementById('theater-stream-url').value.trim();
+            if (!link) return alert("Provide a valid Telegram or HTTP media link!");
+            activeMediaLink = link;
+
+            // Probe available streams (tracks & resolutions)
+            try {
+                const probeRes = await fetch(`/api/media_probe?user_id=${currentUser}&link=${encodeURIComponent(link)}`);
+                const pdata = await probeRes.json();
+                if (pdata.status === 'success') {
+                    const qSelect = document.getElementById('pop-quality-select');
+                    qSelect.innerHTML = pdata.qualities.map(q => `<option value="${q}">${q}</option>`).join('');
+
+                    const aSelect = document.getElementById('pop-audio-select');
+                    aSelect.innerHTML = pdata.audio_tracks.map(a => `<option value="${a.index}">${a.label} (${a.codec})</option>`).join('');
+
+                    const sSelect = document.getElementById('pop-sub-select');
+                    sSelect.innerHTML = '<option value="off">Off</option>' + pdata.subtitles.map(s => `<option value="${s.index}">${s.label}</option>`).join('');
+                }
+            } catch(e) {}
+
+            applyTrackSelection();
+            if (!gl) initWebGL();
+        }
+
+        function applyTrackSelection() {
+            const quality = document.getElementById('pop-quality-select').value || 'Original';
+            const audioIdx = document.getElementById('pop-audio-select').value;
+            const video = document.getElementById('hidden-video');
+
+            let streamUrl = `/api/stream?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&quality=${quality}`;
+            if (audioIdx) streamUrl += `&audio_idx=${audioIdx}`;
+
+            const curTime = video.currentTime || 0;
+            video.src = streamUrl;
+            video.currentTime = curTime;
+            video.play();
+            document.getElementById('hud-play-btn').innerText = "❚❚";
+        }
+
+        function applySubtitleSelection() {
+            const subIdx = document.getElementById('pop-sub-select').value;
+            const video = document.getElementById('hidden-video');
+            video.querySelectorAll('track').forEach(t => t.remove());
+
+            if (subIdx !== 'off') {
+                const track = document.createElement('track');
+                track.kind = 'subtitles';
+                track.label = 'Active Subtitles';
+                track.srclang = 'en';
+                track.src = `/api/subtitles?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${subIdx}`;
+                track.default = true;
+                video.appendChild(track);
+            }
+        }
+
+        function applyAspectRatio(mode) {
+            const canvas = document.getElementById('webgl-canvas');
+            if (mode === '16-9') { canvas.style.objectFit = 'fill'; canvas.parentElement.style.aspectRatio = '16/9'; }
+            else if (mode === '21-9') { canvas.style.objectFit = 'fill'; canvas.parentElement.style.aspectRatio = '21/9'; }
+            else if (mode === '4-3') { canvas.style.objectFit = 'fill'; canvas.parentElement.style.aspectRatio = '4/3'; }
+            else if (mode === 'cover') { canvas.style.objectFit = 'cover'; }
+            else if (mode === 'stretch') { canvas.style.objectFit = 'fill'; }
+            else { canvas.style.objectFit = 'contain'; }
+        }
+
+        function togglePlayback() {
+            const video = document.getElementById('hidden-video');
+            if (video.paused) { video.play(); document.getElementById('hud-play-btn').innerText = "❚❚"; }
+            else { video.pause(); document.getElementById('hud-play-btn').innerText = "▶"; }
+        }
+
+        function skipPlayback(sec) {
+            const video = document.getElementById('hidden-video');
+            video.currentTime += sec;
+        }
+
+        function seekPlayback(e) {
+            const video = document.getElementById('hidden-video');
+            const rect = document.getElementById('cinema-scrubber').getBoundingClientRect();
+            const pos = (e.clientX - rect.left) / rect.width;
+            video.currentTime = pos * video.duration;
+        }
+
+        function toggleSettingsPopup() {
+            document.getElementById('media-settings-popup').classList.toggle('open');
+        }
+
+        function toggleFullScreen() {
+            const vp = document.getElementById('cinema-viewport');
+            if (!document.fullscreenElement) vp.requestFullscreen();
+            else document.exitFullscreen();
+        }
+
+        // Sync Time & Scrubber
+        const vidElem = document.getElementById('hidden-video');
+        vidElem.addEventListener('timeupdate', () => {
+            const cur = vidElem.currentTime || 0;
+            const dur = vidElem.duration || 1;
+            document.getElementById('scrubber-fill').style.width = (cur / dur * 100) + '%';
+            
+            const fmt = (s) => {
+                const m = Math.floor(s / 60);
+                const sec = Math.floor(s % 60);
+                return `${m < 10 ? '0' : ''}${m}:${sec < 10 ? '0' : ''}${sec}`;
+            };
+            document.getElementById('hud-time').innerText = `${fmt(cur)} / ${fmt(dur)}`;
+        });
     </script>
 </body>
 </html>
@@ -6462,6 +6877,245 @@ async def _api_spectrogram_web_handler(request):
         import shutil
         try: shutil.rmtree(str(temp_dir), ignore_errors=True)
         except: pass
+
+# ==============================================================================
+# --- HIGH-PERFORMANCE STREAMING, TRANSCODING & PROBE ENGINE ---
+# ==============================================================================
+
+async def _api_media_probe_handler(request):
+    """Probes media to discover available video resolutions, audio streams, and subtitles."""
+    user_id = int(request.query.get("user_id", 0))
+    link = request.query.get("link", "").strip()
+    if not link:
+        return web.json_response({"status": "error", "message": "Link required"}, status=400)
+
+    uclient = USER_CLIENTS.get(user_id, app)
+    target_path = None
+    temp_dir = None
+
+    try:
+        if "t.me" in link:
+            parsed = _parse_source_link(link)
+            chat_id = parsed.get("chat_id")
+            msg_id = parsed.get("msg_id")
+            msg = await uclient.get_messages(chat_id, msg_id)
+            media = msg.document or msg.video or msg.audio
+            if not media:
+                return web.json_response({"status": "error", "message": "No media found in message"})
+
+            temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            target_path = temp_dir / "probe_chunk.dat"
+            await partial_download_tg(uclient, msg, target_path, limit_mb=10)
+        else:
+            temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            target_path = temp_dir / "probe_chunk.dat"
+            await partial_download_http(link, target_path, limit_mb=10)
+
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "stream=index,codec_type,codec_name,width,height:stream_tags=language,title",
+            "-of", "json", str(target_path)
+        ]
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await proc.communicate()
+        probe_data = json.loads(stdout.decode("utf-8", errors="ignore"))
+
+        streams = probe_data.get("streams", [])
+        video_streams = [s for s in streams if s.get("codec_type") == "video"]
+        audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+        sub_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
+
+        width = video_streams[0].get("width", 1920) if video_streams else 1920
+        height = video_streams[0].get("height", 1080) if video_streams else 1080
+
+        qualities = ["Original"]
+        if height >= 2160 or width >= 3840: qualities.extend(["4K", "1080p", "720p", "480p", "360p"])
+        elif height >= 1080 or width >= 1920: qualities.extend(["1080p", "720p", "480p", "360p"])
+        elif height >= 720: qualities.extend(["720p", "480p", "360p"])
+        elif height >= 480: qualities.extend(["480p", "360p"])
+        else: qualities.append("360p")
+
+        return web.json_response({
+            "status": "success",
+            "qualities": list(OrderedDict.fromkeys(qualities)),
+            "audio_tracks": [
+                {
+                    "index": s.get("index"),
+                    "codec": s.get("codec_name"),
+                    "label": s.get("tags", {}).get("title") or s.get("tags", {}).get("language") or f"Track {i+1}"
+                } for i, s in enumerate(audio_streams)
+            ],
+            "subtitles": [
+                {
+                    "index": s.get("index"),
+                    "codec": s.get("codec_name"),
+                    "label": s.get("tags", {}).get("title") or s.get("tags", {}).get("language") or f"Subtitle {i+1}"
+                } for i, s in enumerate(sub_streams)
+            ]
+        })
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)}, status=500)
+    finally:
+        if temp_dir and temp_dir.exists():
+            shutil.rmtree(temp_dir, ignore_errors=True)
+
+async def _api_stream_handler(request):
+    """Direct HTTP 206 Partial Content range streamer & dynamic FFmpeg transcoder."""
+    user_id = int(request.query.get("user_id", 0))
+    link = request.query.get("link", "")
+    quality = request.query.get("quality", "Original")
+    audio_idx = request.query.get("audio_idx", None)
+
+    if not link:
+        return web.Response(status=400, text="No media link provided")
+
+    uclient = USER_CLIENTS.get(user_id, app)
+
+    if "t.me" in link:
+        parsed = _parse_source_link(link)
+        chat_id = parsed.get("chat_id")
+        msg_id = parsed.get("msg_id")
+
+        try:
+            msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
+            media = msg.document or msg.video or msg.audio
+            if not media:
+                return web.Response(status=404, text="Media not found")
+
+            file_size = media.file_size
+            mime_type = media.mime_type or "video/mp4"
+            filename = getattr(media, "file_name", "video.mp4").lower()
+            is_mkv_avi = filename.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv"))
+
+            # Native direct streaming with HTTP 206 seeking (Zero Transcoding CPU overhead)
+            if quality == "Original" and audio_idx is None and not is_mkv_avi and "mp4" in mime_type:
+                range_header = request.headers.get("Range", "")
+                start_byte = 0
+                end_byte = file_size - 1
+
+                if range_header:
+                    match = re.match(r"bytes=(\d+)-(.*)", range_header)
+                    if match:
+                        start_byte = int(match.group(1))
+                        if match.group(2):
+                            end_byte = int(match.group(2))
+
+                chunk_len = (end_byte - start_byte) + 1
+                response = web.StreamResponse(
+                    status=206 if range_header else 200,
+                    headers={
+                        "Content-Range": f"bytes {start_byte}-{end_byte}/{file_size}",
+                        "Accept-Ranges": "bytes",
+                        "Content-Length": str(chunk_len),
+                        "Content-Type": mime_type,
+                        "Access-Control-Allow-Origin": "*"
+                    }
+                )
+                await response.prepare(request)
+
+                async for chunk in uclient.stream_media(msg, offset=start_byte, limit=chunk_len):
+                    await response.write(chunk)
+                await response.write_eof()
+                return response
+
+            # Transcoding / Format Bridge (On-The-Fly via FFmpeg)
+            res_scale_map = {
+                "4K": "3840:-2", "1080p": "1920:-2", "720p": "1280:-2", "480p": "854:-2", "360p": "640:-2"
+            }
+            scale_filter = res_scale_map.get(quality, None)
+
+            ffmpeg_cmd = ["ffmpeg", "-re", "-i", "pipe:0"]
+            if scale_filter:
+                ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
+
+            if audio_idx is not None:
+                ffmpeg_cmd.extend(["-map", "0:v:0", "-map", f"0:{audio_idx}"])
+            else:
+                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
+
+            ffmpeg_cmd.extend([
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                "-c:a", "aac", "-b:a", "192k",
+                "-f", "mp4", "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+                "pipe:1"
+            ])
+
+            proc = await asyncio.create_subprocess_exec(
+                *ffmpeg_cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL
+            )
+
+            response = web.StreamResponse(
+                status=200,
+                headers={"Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*"}
+            )
+            await response.prepare(request)
+
+            async def pipe_tg_to_ffmpeg():
+                try:
+                    async for chunk in uclient.stream_media(msg):
+                        if proc.stdin.is_closing(): break
+                        proc.stdin.write(chunk)
+                        await proc.stdin.drain()
+                except Exception:
+                    pass
+                finally:
+                    try: proc.stdin.close()
+                    except: pass
+
+            async def pipe_ffmpeg_to_response():
+                try:
+                    while True:
+                        buf = await proc.stdout.read(64 * 1024)
+                        if not buf: break
+                        await response.write(buf)
+                    await response.write_eof()
+                except Exception:
+                    pass
+
+            await asyncio.gather(pipe_tg_to_ffmpeg(), pipe_ffmpeg_to_response())
+            return response
+        except Exception as e:
+            return web.Response(status=500, text=str(e))
+    else:
+        # Generic HTTP Web Link Direct Redirect / Proxy
+        raise web.HTTPFound(link)
+
+async def _api_subtitles_handler(request):
+    """Dynamically extracts embedded subtitle tracks and returns WebVTT on-the-fly."""
+    user_id = int(request.query.get("user_id", 0))
+    link = request.query.get("link", "")
+    sub_idx = request.query.get("sub_idx", "0")
+    uclient = USER_CLIENTS.get(user_id, app)
+
+    if not link or "t.me" not in link:
+        return web.Response(status=400, text="Invalid Link")
+
+    parsed = _parse_source_link(link)
+    msg = await uclient.get_messages(parsed["chat_id"], parsed["msg_id"])
+
+    cmd = ["ffmpeg", "-i", "pipe:0", "-map", f"0:{sub_idx}", "-f", "webvtt", "pipe:1"]
+    proc = await asyncio.create_subprocess_exec(
+        *cmd, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+    )
+
+    async def feed():
+        try:
+            async for chunk in uclient.stream_media(msg, limit=10):
+                proc.stdin.write(chunk)
+                await proc.stdin.drain()
+        except: pass
+        finally:
+            try: proc.stdin.close()
+            except: pass
+
+    asyncio.create_task(feed())
+    vtt_content, _ = await proc.communicate()
+    return web.Response(text=vtt_content.decode("utf-8", errors="ignore"), content_type="text/vtt")
         
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
@@ -6491,6 +7145,9 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_post("/api/watcher/add", _api_add_watcher)
     app_web.router.add_post("/api/watcher/cancel", _api_cancel_watcher)
     app_web.router.add_post("/api/spectrogram", _api_spectrogram_web_handler)
+    app_web.router.add_get("/api/media_probe", _api_media_probe_handler)
+    app_web.router.add_get("/api/stream", _api_stream_handler)
+    app_web.router.add_get("/api/subtitles", _api_subtitles_handler)
     
     runner = web.AppRunner(app_web)
     await runner.setup()
