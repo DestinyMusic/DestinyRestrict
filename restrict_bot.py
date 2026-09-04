@@ -5737,7 +5737,8 @@ HTML_DASHBOARD = """
 
         async function saveWorkerTokens() {
             const raw = document.getElementById('worker-tokens-input').value;
-            const tokens = raw.split(/[\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
+            // The extra backslash prevents Python from breaking the regex
+            const tokens = raw.split(/[\\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
             try {
                 const res = await fetch('/api/settings/tokens', {
                     method: 'POST',
