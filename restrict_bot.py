@@ -34,7 +34,13 @@ if not hasattr(enums, "ButtonStyle"):
     enums.ButtonStyle = DummyButtonStyle
 # ----------------------------------------------
 
-import pyromod.listen
+# --- UNIVERSAL FORK COMPATIBILITY PATCH ---
+# WZGram, Pyrofork, and Kurigram natively have .ask() built-in.
+# Importing pyromod on top of them crashes the bot with "ListenerRegistry object is not subscriptable".
+if not hasattr(Client, "ask"):
+    import pyromod.listen
+# ------------------------------------------
+
 from pyrogram.errors import (
     FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant,
     InviteHashExpired, UsernameNotOccupied, FileReferenceExpired, UserNotParticipant,
@@ -1887,7 +1893,18 @@ async def confirm_logout_cb(client, query):
     except Exception: pass
 
 from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
-from pyromod.exceptions import ListenerStopped
+
+# --- UNIVERSAL LISTENER EXCEPTION MAPPING ---
+try:
+    from pyromod.exceptions import ListenerStopped
+except ImportError:
+    class ListenerStopped(Exception): pass
+
+try:
+    from pyrogram.errors import ListenerCanceled as NativeListenerStopped
+except ImportError:
+    class NativeListenerStopped(Exception): pass
+# --------------------------------------------
 
 @app.on_callback_query(filters.regex("^cancel_login$"))
 async def cancel_login_cb(client, query):
@@ -2066,8 +2083,8 @@ async def login_handler(bot: Client, message: Message):
         await bot.send_message(user_id, success_msg, parse_mode=enums.ParseMode.HTML)
 
     # --- ERROR HANDLERS ---
-    except ListenerStopped:
-        # Silently caught when Cancel button is pressed
+    except (ListenerStopped, NativeListenerStopped, asyncio.CancelledError):
+        # Silently caught when Cancel button is pressed or task is natively cancelled by the fork
         if client_auth and client_auth.is_connected:
             try: await client_auth.disconnect()
             except: pass
