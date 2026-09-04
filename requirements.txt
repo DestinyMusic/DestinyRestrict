@@ -9,6 +9,7 @@ uvloop
 telegraph
 python-dotenv
 speedtest-cli
+pyromod
 numpy
 scipy
 Pillow
