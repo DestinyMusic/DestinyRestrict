@@ -4405,26 +4405,6 @@ HTML_DASHBOARD = """
         .input-group label { display: block; font-size: 11px; color: var(--subtext); margin-bottom: 6px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
         .input-group input, .input-group select { width: 100%; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); font-size: 14px; outline: none; transition: 0.2s; }
         .input-group input:focus { border-color: var(--accent); box-shadow: 0 0 10px var(--glow); }
-        .chat-picker { position: relative; }
-        .chat-picker input { padding-right: 48px !important; }
-        .chat-picker-btn { position: absolute; right: 8px; top: 7px; width: 40px; height: 40px; border: 0; border-radius: 10px; background: transparent; color: var(--subtext); font-size: 22px; cursor: pointer; }
-        .chat-picker-btn:hover { color: var(--text); background: rgba(255,255,255,0.05); }
-        .chat-picker-menu { position: absolute; left: 0; right: 0; top: calc(100% + 6px); z-index: 220; display: none; max-height: 300px; overflow-y: auto; padding: 6px; border: 1px solid var(--card-border); border-radius: 14px; background: var(--card); box-shadow: 0 18px 40px rgba(0,0,0,0.55); }
-        .chat-picker-menu.show { display: block; }
-        .chat-option { display: flex; width: 100%; padding: 11px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
-        .chat-option:hover { background: rgba(59,130,246,0.12); }
-        .chat-option-main { min-width: 0; flex: 1; }
-        .chat-option-name { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .chat-option-id { margin-top: 2px; font-size: 10px; color: var(--subtext); }
-        .topic-box { margin-top: 10px; padding: 12px; border: 1px solid var(--card-border); border-radius: 14px; background: var(--bg); }
-        .topic-box-title { font-size: 11px; color: var(--subtext); font-weight: 700; text-transform: uppercase; margin-bottom: 8px; }
-        .topic-list { max-height: 220px; overflow-y: auto; display: grid; gap: 6px; }
-        .topic-option { width: 100%; padding: 10px 12px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--card); color: var(--text); text-align: left; cursor: pointer; }
-        .topic-option:hover, .topic-option.active { border-color: var(--accent); background: rgba(59,130,246,0.1); }
-        .topic-option-title { font-size: 12px; font-weight: 700; }
-        .topic-option-id { font-size: 10px; color: var(--subtext); margin-top: 2px; }
-        .mi-result { margin-top: 18px; padding: 14px; border: 1px solid var(--card-border); border-radius: 14px; background: var(--bg); max-height: 60vh; overflow: auto; font-size: 12px; line-height: 1.4; }
-        .mi-result pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
 
         .task-row { background: color-mix(in srgb, var(--card) var(--glass-bg, 100%), transparent); border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); border-radius: 16px; padding: 16px; margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center; gap: 15px; transition: 0.3s; }
         .task-kill { background: rgba(239, 68, 68, 0.1); color: var(--danger); border: 1px solid rgba(239, 68, 68, 0.2); padding: 8px 16px; border-radius: 10px; font-size: 12px; font-weight: 700; cursor: pointer; transition: 0.2s; }
@@ -4496,10 +4476,10 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('downloads', 'Downloads')">📥 Downloads</div>
             <div class="menu-item" onclick="switchView('watchers', 'Watchers')">📡 Watchers</div>
             <div class="menu-item" onclick="switchView('chats', 'Chats & IDs')">💬 Chats & IDs</div>
-            <div class="menu-item" onclick="switchView('mediainfo', 'MediaInfo')">🎞 MediaInfo</div>
             <div class="menu-item" onclick="switchView('speedtest', 'Speedtest')">🚀 Speedtest</div>
             <div class="menu-item" onclick="switchView('sos', 'System SOS')">🖥 System SOS</div>
             <div class="menu-item" onclick="switchView('logs', 'Logs')">📋 System Logs</div>
+            <div class="menu-item" onclick="switchView('mediainfo', 'Media Inspector')">🔍 Media Inspector</div>
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
 
@@ -4648,19 +4628,6 @@ HTML_DASHBOARD = """
             </div>
 
             <!-- SPEEDTEST VIEW -->
-            <div id="view-mediainfo" class="view-section">
-                <div class="section-title"><span>MediaInfo</span></div>
-                <div class="card">
-                    <div class="input-group">
-                        <label>Media Link</label>
-                        <input type="text" id="mi-link" placeholder="Direct URL or Telegram message link">
-                    </div>
-                    <button type="button" class="primary-btn" id="mi-btn" onclick="runWebMediaInfo()">Analyze Media</button>
-                    <div id="mi-status" style="margin-top:15px;color:var(--subtext);font-size:12px;"></div>
-                    <div id="mi-result" class="mi-result" style="display:none;"></div>
-                </div>
-            </div>
-
             <div id="view-speedtest" class="view-section">
                 <div class="section-title">
                     <span>Network Speed Diagnostic</span>
@@ -4720,6 +4687,20 @@ HTML_DASHBOARD = """
                 <div style="background: #000; border: 1px solid var(--card-border); border-radius: 16px; padding: 16px; font-family: monospace; font-size: 11px; color: #38bdf8; height: 400px; overflow-y: auto; white-space: pre-wrap; word-break: break-all;" id="log-terminal">Loading logs...</div>
             </div>
 
+            <div id="view-mediainfo" class="view-section">
+                <div class="section-title">MediaInfo Inspector</div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="input-group">
+                        <label>Telegram File Link or Direct URL</label>
+                        <input type="text" id="mi-link" placeholder="https://t.me/c/123/456 or http://...">
+                    </div>
+                    <button class="primary-btn" id="mi-btn" style="background: #8b5cf6;" onclick="runWebMediaInfo()">Analyze File</button>
+                </div>
+                <div class="card" id="mi-results-card" style="display: none;">
+                    <div id="mi-results-content" style="font-family: monospace; font-size: 13px; color: var(--text); overflow-x: auto; white-space: pre-wrap; line-height: 1.5;"></div>
+                </div>
+            </div>
+            
             <div id="view-settings" class="view-section">
                 
                 <div class="section-title">Interface Settings</div>
@@ -4802,17 +4783,32 @@ HTML_DASHBOARD = """
                     <label>Telegram Source Link</label>
                     <input type="text" id="t-link" placeholder="https://t.me/channel/100 or 101-120" required>
                 </div>
-                <!-- 🟢 UPDATED: Destination now uses Datalist for Web Dropdown Search -->
                 <div class="input-group">
-                    <label>Destination Chat / Topic</label>
-                    <div class="chat-picker" id="dest-picker">
-                        <input type="text" id="t-dest" autocomplete="off" placeholder="Search chat or enter ID (-100...)" oninput="handleDestInput()" onfocus="showDestChats()">
-                        <button type="button" class="chat-picker-btn" onclick="toggleDestChats()" aria-label="Show chats">⌄</button>
-                        <div id="dest-chat-menu" class="chat-picker-menu"></div>
+                    <label>Destination Chat ID / Topic</label>
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="t-dest" placeholder="Enter ID or click Browse ->" style="flex: 1;" required>
+                        <button type="button" class="primary-btn" style="width: auto; padding: 0 15px;" onclick="openChatSelector()">Browse</button>
                     </div>
-                    <div id="dest-topic-box" class="topic-box" style="display:none;">
-                        <div class="topic-box-title">Destination topic</div>
-                        <div id="dest-topic-list" class="topic-list"></div>
+                </div>
+
+                <!-- Chat Selector Modal -->
+                <div class="modal" id="chatSelectorModal" style="z-index: 310;">
+                    <div class="modal-content" style="max-width: 400px; padding: 20px;">
+                        <h3 style="margin-top: 0; color: #fff; font-size: 16px;">Select Destination</h3>
+                        <input type="text" id="chat-search-input" placeholder="Search chats..." oninput="filterSelectorChats()" style="width: 100%; padding: 12px; margin-bottom: 12px; border-radius: 12px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); outline: none;">
+                        <div id="chat-selector-list" style="max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;"></div>
+                        <button type="button" class="btn-cancel" style="margin-top: 12px; width: 100%;" onclick="closeChatSelector()">Close</button>
+                    </div>
+                </div>
+
+                <!-- Topic Selector Modal -->
+                <div class="modal" id="topicSelectorModal" style="z-index: 320;">
+                    <div class="modal-content" style="max-width: 400px; padding: 20px;">
+                        <h3 style="margin-top: 0; color: #fff; font-size: 16px;">Select Topic</h3>
+                        <div id="topic-selector-list" style="max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 6px;">
+                            <div style="color: var(--subtext);">Loading topics...</div>
+                        </div>
+                        <button type="button" class="btn-cancel" style="margin-top: 12px; width: 100%;" onclick="closeTopicSelector()">Cancel</button>
                     </div>
                 </div>
                 <div class="input-group" id="delay-group">
@@ -4841,25 +4837,13 @@ HTML_DASHBOARD = """
     </div>
 
     <script>
-        function storageGet(key, fallback = null) {
-            try { return localStorage.getItem(key) ?? fallback; } catch (_) { return fallback; }
-        }
-
-        function storageSet(key, value) {
-            try { localStorage.setItem(key, value); } catch (_) {}
-        }
-
-        function storageRemove(key) {
-            try { localStorage.removeItem(key); } catch (_) {}
-        }
-
-        let currentUser = null;
+        let currentUser = localStorage.getItem('tg_uid') || null;
         let chatsLoaded = false;
 
         function applyLiquidUI(val) {
             document.getElementById('liquid-val').innerText = val;
             document.documentElement.style.setProperty('--liquid-width', val + '%');
-            storageSet('liquid_ui_val', val);
+            localStorage.setItem('liquid_ui_val', val);
         }
 
         function applyLiquidGlass(val) {
@@ -4879,97 +4863,88 @@ HTML_DASHBOARD = """
             document.documentElement.style.setProperty('--blob-opacity', blobOpacity);
             document.documentElement.style.setProperty('--glass-shadow', shadowAlpha);
             
-            storageSet('liquid_glass_val', val);
+            localStorage.setItem('liquid_glass_val', val);
         }
 
-        async function restoreWebSession() {
-            try {
-                const res = await fetch('/api/auth/me', {credentials: 'same-origin'});
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok || data.status !== 'success') return;
-                currentUser = String(data.user_id);
-                showApp();
-            } catch (_) {}
-        }
-
-        function showApp() {
+        if (currentUser) {
             document.getElementById('login-view').style.display = 'none';
             document.getElementById('app-view').style.display = 'block';
-            document.getElementById('profile-id').innerText = 'ID: ' + currentUser;
-            const savedLiquid = storageGet('liquid_ui_val', '50');
-            const savedGlass = storageGet('liquid_glass_val', '0');
+            document.getElementById('profile-id').innerText = "ID: " + currentUser;
+            
+            // Apply Liquid UI Settings instantly on load
+            const savedLiquid = localStorage.getItem('liquid_ui_val') || "50";
             applyLiquidUI(savedLiquid);
+            
+            const savedGlass = localStorage.getItem('liquid_glass_val') || "0";
             applyLiquidGlass(savedGlass);
-            setTimeout(() => {
-                const liquid = document.getElementById('liquid-slider');
-                const glass = document.getElementById('glass-slider');
-                if (liquid) liquid.value = savedLiquid;
-                if (glass) glass.value = savedGlass;
+
+            setTimeout(() => { 
+                if (document.getElementById('liquid-slider')) document.getElementById('liquid-slider').value = savedLiquid; 
+                if (document.getElementById('glass-slider')) document.getElementById('glass-slider').value = savedGlass; 
             }, 100);
+
             fetchStats();
-            loadWebChats();
+            setInterval(fetchStats, 5000);
         }
 
         async function handleLogin(e) {
             e.preventDefault();
-            const form = e.currentTarget || e.target;
-            const uid = document.getElementById('login-uid').value.trim();
+            const uid = document.getElementById('login-uid').value;
             const pwd = document.getElementById('login-pwd').value;
-            if (!uid || !pwd) return;
-
-            const btn = form.querySelector('button[type="submit"]');
-            if (!btn || btn.disabled) return;
+            
+            const btn = e.target.querySelector('button');
             const originalText = btn.innerText;
-            btn.disabled = true;
-            btn.innerText = 'Authenticating...';
+            btn.innerText = "Authenticating...";
+            btn.style.opacity = "0.7";
+            
             try {
                 const res = await fetch('/api/auth/login', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    credentials: 'same-origin',
                     body: JSON.stringify({user_id: uid, password: pwd})
                 });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Login failed.');
-                currentUser = String(data.user_id || uid);
-                storageSet('tg_uid', currentUser);
-                showApp();
-            } catch (err) {
-                alert('Login Failed: ' + (err.message || 'Unable to connect to server.'));
+                const data = await res.json();
+                if (data.status === 'success') {
+                    localStorage.setItem('tg_uid', uid);
+                    currentUser = uid;
+                    document.getElementById('login-view').style.display = 'none';
+                    document.getElementById('app-view').style.display = 'block';
+                    document.getElementById('profile-id').innerText = "ID: " + uid;
+                    fetchStats();
+                } else {
+                    alert("Login Failed: " + data.message);
+                }
             } finally {
-                btn.disabled = false;
                 btn.innerText = originalText;
+                btn.style.opacity = "1";
             }
         }
 
         async function forgotPassword(e) {
             e.preventDefault();
-            const uid = document.getElementById('login-uid').value.trim();
-            if (!uid) return alert('Please enter your Telegram User ID first!');
-            const link = e.currentTarget || e.target;
-            if (link.dataset.busy === '1') return;
-            link.dataset.busy = '1';
-            link.innerText = 'Sending to Telegram PM...';
+            const uid = document.getElementById('login-uid').value;
+            if (!uid) return alert("Please enter your Telegram User ID first!");
+            
+            const link = e.target;
+            link.innerText = "Sending to Telegram PM...";
+            
             try {
                 const res = await fetch('/api/auth/forgot', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({user_id: uid})
                 });
-                const data = await res.json().catch(() => ({}));
-                alert(data.message || (res.ok ? 'Done.' : 'Password recovery failed.'));
-            } catch (err) {
-                alert('Error connecting to server.');
+                const data = await res.json();
+                alert(data.message);
+            } catch(err) {
+                alert("Error connecting to server.");
             } finally {
-                link.dataset.busy = '0';
-                link.innerText = 'Forgot Password?';
+                link.innerText = "Forgot Password?";
             }
         }
 
-        async function logout() {
-            try { await fetch('/api/auth/logout', {method:'POST', credentials:'same-origin'}); } catch (_) {}
-            currentUser = null;
-            storageRemove('tg_uid');
+        function logout() {
+            localStorage.removeItem('tg_uid');
             location.reload();
         }
 
@@ -5050,10 +5025,10 @@ HTML_DASHBOARD = """
             });
             el.classList.add('active');
             el.insertAdjacentHTML('beforeend', '<span class="check">✓</span>');
-            storageSet('app_theme', themeName);
+            localStorage.setItem('app_theme', themeName);
         }
 
-        const savedTheme = storageGet('app_theme', 'amoled');
+        const savedTheme = localStorage.getItem('app_theme') || 'amoled';
         document.documentElement.setAttribute('data-theme', savedTheme);
         document.querySelectorAll('.theme-pill').forEach(b => {
             const oc = b.getAttribute('onclick') || '';
@@ -5117,20 +5092,6 @@ HTML_DASHBOARD = """
                 if (data.status === 'success') {
                     warnBox.style.display = 'none';
                     allLoadedChats = data.chats || [];
-                    
-                    // High-Performance datalist building
-                    const dl = document.getElementById('tg-chats-list');
-                    if (dl) {
-                        dl.innerHTML = '';
-                        const frag = document.createDocumentFragment();
-                        allLoadedChats.forEach(c => {
-                            const opt = document.createElement('option');
-                            opt.value = c.id;
-                            opt.text = c.name;
-                            frag.appendChild(opt);
-                        });
-                        dl.appendChild(frag);
-                    }
 
                     renderFilteredChats();
                 } else {
@@ -5200,104 +5161,6 @@ HTML_DASHBOARD = """
             await loadWebChats();
         }
 
-        function escapeHtml(value) {
-            return String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
-        }
-
-        function escapeJs(value) {
-            return String(value ?? '').replace(/\/g, '\\').replace(/'/g, "\'");
-        }
-
-        function getDestinationChats(query = '') {
-            const q = query.toLowerCase().trim();
-            return allLoadedChats.filter(c => {
-                const name = String(c.title || c.name || '').toLowerCase();
-                const id = String(c.id || '');
-                return !q || name.includes(q) || id.includes(q);
-            });
-        }
-
-        function showDestChats() {
-            renderDestChats();
-            document.getElementById('dest-chat-menu')?.classList.add('show');
-            if (!chatsLoaded && currentUser) loadWebChats(true);
-        }
-
-        function hideDestChats() {
-            document.getElementById('dest-chat-menu')?.classList.remove('show');
-        }
-
-        function toggleDestChats() {
-            const menu = document.getElementById('dest-chat-menu');
-            if (!menu) return;
-            menu.classList.toggle('show');
-            if (menu.classList.contains('show')) showDestChats();
-        }
-
-        function handleDestInput() {
-            selectedDestChat = null;
-            selectedDestTopic = null;
-            const box = document.getElementById('dest-topic-box');
-            if (box) box.style.display = 'none';
-            showDestChats();
-        }
-
-        function renderDestChats() {
-            const menu = document.getElementById('dest-chat-menu');
-            if (!menu) return;
-            const query = document.getElementById('t-dest')?.value || '';
-            const filtered = getDestinationChats(query);
-            if (!filtered.length) {
-                menu.innerHTML = `<div style="padding:12px;color:var(--subtext);font-size:12px;">${allLoadedChats.length ? 'No matching chats.' : 'Connect Telegram to load your chats.'}</div>`;
-                return;
-            }
-            menu.innerHTML = filtered.map(c => `
-                <button type="button" class="chat-option" onclick="selectDestChat('${escapeJs(c.id)}')">
-                    <div class="chat-option-main">
-                        <div class="chat-option-name">${escapeHtml(c.title || c.name)}</div>
-                        <div class="chat-option-id">${escapeHtml(c.id)}</div>
-                    </div>
-                </button>
-            `).join('');
-        }
-
-        async function selectDestChat(id) {
-            const chat = allLoadedChats.find(c => String(c.id) === String(id));
-            if (!chat) return;
-            selectedDestChat = chat;
-            selectedDestTopic = null;
-            document.getElementById('t-dest').value = String(chat.id);
-            hideDestChats();
-            const topicBox = document.getElementById('dest-topic-box');
-            const topicList = document.getElementById('dest-topic-list');
-            if (topicBox) topicBox.style.display = 'none';
-            if (chat.type !== 'Group') return;
-            if (topicBox) topicBox.style.display = 'block';
-            if (topicList) topicList.innerHTML = '<div style="color:var(--subtext);font-size:12px;padding:6px 0;">Loading topics...</div>';
-            try {
-                const res = await fetch(`/api/chat_topics?user_id=${encodeURIComponent(currentUser)}&chat_id=${encodeURIComponent(chat.id)}`, {credentials:'same-origin'});
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok || data.status !== 'success') throw new Error(data.message || 'Could not load topics.');
-                const topics = Array.isArray(data.topics) ? data.topics : [];
-                topicList.innerHTML = '<button type="button" class="topic-option active" onclick="selectDestTopic(null, this)"><div class="topic-option-title">General</div><div class="topic-option-id">Default group discussion</div></button>' + topics.map(t => `<button type="button" class="topic-option" onclick="selectDestTopic(${Number(t.id)}, this)"><div class="topic-option-title">${escapeHtml(t.title)}</div><div class="topic-option-id">Topic ${Number(t.id)}</div></button>`).join('');
-            } catch (_) {
-                topicList.innerHTML = '<button type="button" class="topic-option active" onclick="selectDestTopic(null, this)"><div class="topic-option-title">General</div></button>';
-            }
-        }
-
-        function selectDestTopic(topicId, button) {
-            if (!selectedDestChat) return;
-            selectedDestTopic = topicId;
-            document.querySelectorAll('#dest-topic-list .topic-option').forEach(b => b.classList.remove('active'));
-            if (button) button.classList.add('active');
-            document.getElementById('t-dest').value = topicId == null ? String(selectedDestChat.id) : `${selectedDestChat.id}/${topicId}`;
-        }
-
-        document.addEventListener('click', event => {
-            const picker = document.getElementById('dest-picker');
-            if (picker && !picker.contains(event.target)) hideDestChats();
-        });
-
         async function fetchStats() {
             if (!currentUser) return;
             try {
@@ -5359,37 +5222,6 @@ HTML_DASHBOARD = """
                     `;
                 });
             } catch(e) {}
-        }
-
-        async function runWebMediaInfo() {
-            const input = document.getElementById('mi-link');
-            const btn = document.getElementById('mi-btn');
-            const status = document.getElementById('mi-status');
-            const result = document.getElementById('mi-result');
-            const link = input.value.trim();
-            if (!link) return alert('Enter a direct URL or Telegram message link.');
-            btn.disabled = true;
-            status.innerText = 'Analyzing media...';
-            result.style.display = 'none';
-            result.innerHTML = '';
-            try {
-                const res = await fetch('/api/mediainfo', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    credentials: 'same-origin',
-                    body: JSON.stringify({user_id: currentUser, link})
-                });
-                const data = await res.json().catch(() => ({}));
-                if (!res.ok || data.status !== 'success') throw new Error(data.message || 'MediaInfo failed.');
-                status.innerText = `${data.file_name || 'Media'} • ${data.file_size || 'Unknown size'}`;
-                result.innerHTML = data.html || `<pre>${escapeHtml(data.raw_output || '')}</pre>`;
-                result.style.display = 'block';
-            } catch (err) {
-                status.innerText = '';
-                alert('MediaInfo Error: ' + (err.message || 'Unable to analyze media.'));
-            } finally {
-                btn.disabled = false;
-            }
         }
 
         async function tgSendCode() {
@@ -5495,53 +5327,100 @@ HTML_DASHBOARD = """
             if (isChecked) { fetchLogs(); liveLogInterval = setInterval(fetchLogs, 3000); } 
             else clearInterval(liveLogInterval);
         }
-        restoreWebSession();
+
+        // --- CHAT & TOPIC SELECTOR MODAL LOGIC ---
+        function openChatSelector() {
+            document.getElementById('chatSelectorModal').classList.add('show');
+            if(allLoadedChats.length === 0) loadWebChats();
+            renderSelectorChats(allLoadedChats);
+        }
+        function closeChatSelector() { document.getElementById('chatSelectorModal').classList.remove('show'); }
+        function closeTopicSelector() { document.getElementById('topicSelectorModal').classList.remove('show'); }
+
+        function renderSelectorChats(chats) {
+            const list = document.getElementById('chat-selector-list');
+            list.innerHTML = chats.map(c => `
+                <div style="padding: 12px; background: color-mix(in srgb, var(--card) 50%, transparent); border: 1px solid var(--card-border); border-radius: 12px; cursor: pointer; transition: 0.2s;" onclick="handleChatSelect('${c.id}', ${c.is_forum})">
+                    <div style="font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 4px;">${c.name}</div>
+                    <div style="font-size: 11px; color: var(--accent);">${c.id}</div>
+                </div>
+            `).join('');
+        }
+
+        function filterSelectorChats() {
+            const q = document.getElementById('chat-search-input').value.toLowerCase();
+            renderSelectorChats(allLoadedChats.filter(c => c.name.toLowerCase().includes(q) || c.id.includes(q)));
+        }
+
+        async function handleChatSelect(chatId, isForum) {
+            closeChatSelector();
+            if (isForum) {
+                document.getElementById('topicSelectorModal').classList.add('show');
+                const list = document.getElementById('topic-selector-list');
+                list.innerHTML = '<div style="color: var(--accent); font-weight: bold;">⏳ Fetching topics from Telegram...</div>';
+                try {
+                    const res = await fetch(`/api/topics?user_id=${currentUser}&chat_id=${chatId}`);
+                    const data = await res.json();
+                    if (data.status === 'success' && data.topics.length > 0) {
+                        let html = `<div style="padding: 12px; background: var(--card); border: 1px solid var(--card-border); border-radius: 12px; cursor: pointer; margin-bottom: 4px;" onclick="confirmDestination('${chatId}')"><div style="font-size: 13px; font-weight: 700; color: #fff;">General (Root Group)</div></div>`;
+                        html += data.topics.map(t => `
+                            <div style="padding: 12px; background: var(--bg); border: 1px solid var(--card-border); border-radius: 12px; cursor: pointer;" onclick="confirmDestination('${chatId}/${t.id}')">
+                                <div style="font-size: 13px; font-weight: 700; color: var(--text);">${t.title}</div>
+                                <div style="font-size: 11px; color: var(--subtext); margin-top: 2px;">Topic ID: ${t.id}</div>
+                            </div>
+                        `).join('');
+                        list.innerHTML = html;
+                    } else {
+                        confirmDestination(chatId);
+                        closeTopicSelector();
+                    }
+                } catch(e) {
+                    confirmDestination(chatId);
+                    closeTopicSelector();
+                }
+            } else {
+                confirmDestination(chatId);
+            }
+        }
+
+        function confirmDestination(destStr) {
+            document.getElementById('t-dest').value = destStr;
+            closeTopicSelector();
+        }
+
+        // --- MEDIAINFO LOGIC ---
+        async function runWebMediaInfo() {
+            const link = document.getElementById('mi-link').value;
+            if(!link) return alert("Please enter a link!");
+            const btn = document.getElementById('mi-btn');
+            btn.innerText = "⏳ Downloading & Analyzing (Please wait)...";
+            btn.disabled = true;
+            document.getElementById('mi-results-card').style.display = 'none';
+            
+            try {
+                const res = await fetch('/api/mediainfo', {
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: currentUser, link: link})
+                });
+                const data = await res.json();
+                if(data.status === 'success') {
+                    document.getElementById('mi-results-card').style.display = 'block';
+                    document.getElementById('mi-results-content').innerHTML = data.html;
+                } else {
+                    alert("Error: " + data.message);
+                }
+            } catch(e) {
+                alert("Network error.");
+            } finally {
+                btn.innerText = "Analyze File";
+                btn.disabled = false;
+            }
+        }        
     </script>
 </body>
 </html>
 """
-
-WEB_SESSIONS = {}
-WEB_SESSION_TTL = 7 * 24 * 60 * 60
-
-
-def _web_session_response(data, status=200):
-    return web.json_response(data, status=status)
-
-
-def _get_web_session_uid(request):
-    token = request.cookies.get("web_session")
-    if not token:
-        return None
-    session = WEB_SESSIONS.get(token)
-    if not session:
-        return None
-    if session.get("expires", 0) <= time.time():
-        WEB_SESSIONS.pop(token, None)
-        return None
-    session["expires"] = time.time() + WEB_SESSION_TTL
-    return int(session["user_id"])
-
-
-def _require_web_uid(request, supplied=None):
-    uid = _get_web_session_uid(request)
-    if uid is None:
-        raise PermissionError("Web session expired. Please sign in again.")
-    if supplied is not None and int(supplied) != uid:
-        raise PermissionError("This account does not match the current web session.")
-    return uid
-
-
-async def web_auth_middleware(request, handler):
-    if request.path.startswith("/api/"):
-        public_paths = {"/api/auth/login", "/api/auth/forgot", "/api/auth/me"}
-        if request.path not in public_paths:
-            uid = _get_web_session_uid(request)
-            if uid is None:
-                return web.json_response({"status": "error", "message": "Web session expired. Please sign in again."}, status=401)
-            request["web_user_id"] = uid
-    return await handler(request)
-
 
 async def _dashboard_ui_handler(request):
     return web.Response(text=HTML_DASHBOARD, content_type='text/html', status=200)
@@ -5550,44 +5429,24 @@ async def _api_login_handler(request):
     try:
         data = await request.json()
         user_id = int(data.get("user_id"))
-        password = str(data.get("password", ""))
-        if not password:
-            return web.json_response({"status": "error", "message": "Password is required."}, status=400)
-
+        password = data.get("password")
+        
         user = await db.col.find_one({"id": user_id})
         if not user:
             return web.json_response({"status": "error", "message": "Account not found! Please go to Telegram and send /start to the bot first."})
 
         stored_pwd = user.get("web_password")
         if not stored_pwd:
+            # First time web signup for an existing bot user
             await db.col.update_one({"id": user_id}, {"$set": {"web_password": password}})
-        elif stored_pwd != password:
+            return web.json_response({"status": "success"})
+        
+        if stored_pwd == password:
+            return web.json_response({"status": "success"})
+        else:
             return web.json_response({"status": "error", "message": "Incorrect password!"})
-
-        token = uuid.uuid4().hex + uuid.uuid4().hex
-        now = time.time()
-        WEB_SESSIONS[token] = {"user_id": user_id, "expires": now + WEB_SESSION_TTL}
-        response = web.json_response({"status": "success", "user_id": user_id})
-        response.set_cookie("web_session", token, max_age=WEB_SESSION_TTL, httponly=True, samesite="Lax", secure=bool(request.secure), path="/")
-        return response
-    except (TypeError, ValueError):
-        return web.json_response({"status": "error", "message": "Invalid Telegram User ID."}, status=400)
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=400)
-
-async def _api_auth_me_handler(request):
-    uid = _get_web_session_uid(request)
-    if uid is None:
-        return web.json_response({"status": "error", "message": "Not signed in."}, status=401)
-    return web.json_response({"status": "success", "user_id": uid})
-
-async def _api_auth_logout_handler(request):
-    token = request.cookies.get("web_session")
-    if token:
-        WEB_SESSIONS.pop(token, None)
-    response = web.json_response({"status": "success"})
-    response.del_cookie("web_session", path="/")
-    return response
 
 async def _api_forgot_password_handler(request):
     try:
@@ -5617,22 +5476,16 @@ async def _api_forgot_password_handler(request):
 async def _api_password_handler(request):
     try:
         data = await request.json()
-        user_id = _require_web_uid(request, data.get("user_id"))
-        password = str(data.get("password", "")).strip()
-        if not password:
-            return web.json_response({"status": "error", "message": "Password is required."}, status=400)
+        user_id = int(data.get("user_id"))
+        password = data.get("password")
         await db.col.update_one({"id": user_id}, {"$set": {"web_password": password}})
         return web.json_response({"status": "success"})
-    except PermissionError as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=401)
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=400)
+    except Exception:
+        return web.json_response({"status": "error"}, status=400)
 
 async def _api_stats_handler(request):
     try:
-        user_id = _require_web_uid(request, request.query.get("user_id", 0))
-    except PermissionError as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=401)
+        user_id = int(request.query.get("user_id", 0))
     except:
         user_id = 0
 
@@ -5699,7 +5552,7 @@ async def _api_stats_handler(request):
 async def _api_add_task(request):
     try:
         data = await request.json()
-        user_id = _require_web_uid(request, data.get("user_id"))
+        user_id = int(data.get("user_id"))
         link = data.get("link")
         dest_str = data.get("dest", "")
         delay = max(3, min(int(data.get("delay", 3)), 3600))
@@ -5717,7 +5570,7 @@ async def _api_add_task(request):
         if dest_str:
             dest_chat_id, dest_thread_id = _parse_chat_target(dest_str)
             # 🟢 Auto-Resolve Destination & Topic for Web Tasks
-            uclient = await _get_web_user_client(user_id) or app
+            uclient = USER_CLIENTS.get(user_id, app)
             try:
                 d_chat = await uclient.get_chat(dest_chat_id)
                 dest_title = d_chat.title or d_chat.first_name or str(dest_chat_id)
@@ -5772,7 +5625,7 @@ async def _api_cancel_task(request):
     try:
         data = await request.json()
         task_id = data.get("task_id")
-        user_id = _require_web_uid(request, data.get("user_id", 0))
+        user_id = int(data.get("user_id", 0))
         if task_id:
             CANCEL_FLAGS[task_id] = True
             try: await db.remove_active_task(task_id)
@@ -5784,7 +5637,7 @@ async def _api_cancel_task(request):
 async def _api_add_watcher(request):
     try:
         data = await request.json()
-        user_id = _require_web_uid(request, data.get("user_id"))
+        user_id = int(data.get("user_id"))
         link = data.get("link")
         dest_str = data.get("dest", "")
         delay = max(3, min(int(data.get("delay", 3)), 3600))
@@ -5868,7 +5721,7 @@ async def _api_cancel_watcher(request):
     try:
         data = await request.json()
         watcher_id = data.get("watcher_id")
-        user_id = _require_web_uid(request, data.get("user_id", 0))
+        user_id = int(data.get("user_id", 0))
         if watcher_id:
             await db.db.watchers.delete_one({"_id": ObjectId(watcher_id), "user_id": user_id})
             return web.json_response({"status": "success"})
@@ -5898,28 +5751,6 @@ async def _api_download_log_handler(request):
         return web.Response(text="Error downloading logs.", status=500)
 
 WEB_AUTH_CACHE = {}
-
-WEB_CLIENT_LOCKS = defaultdict(asyncio.Lock)
-
-async def _get_web_user_client(uid):
-    uclient = USER_CLIENTS.get(uid)
-    if uclient and uclient.is_connected:
-        return uclient
-    async with WEB_CLIENT_LOCKS[uid]:
-        uclient = USER_CLIENTS.get(uid)
-        if uclient and uclient.is_connected:
-            return uclient
-        session_str = await db.get_session(uid)
-        if not session_str:
-            return None
-        api_id = await db.get_api_id(uid) or API_ID
-        api_hash = await db.get_api_hash(uid) or API_HASH
-        uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-        uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
-        await uclient.start()
-        USER_CLIENTS[uid] = uclient
-        return uclient
-
 
 async def _api_tg_send_code(request):
     data = await request.json()
@@ -5985,7 +5816,7 @@ async def _api_tg_verify_2fa(request):
 
 async def _api_tg_logout(request):
     data = await request.json()
-    uid = _require_web_uid(request, data.get("user_id", 0))
+    uid = int(data.get("user_id", 0))
     
     uclient = USER_CLIENTS.pop(uid, None)
     if uclient:
@@ -6007,33 +5838,44 @@ async def _api_tg_logout(request):
     return web.json_response({"status": "success"})
 
 async def _api_chats_handler(request):
-    try:
-        uid = _require_web_uid(request, request.query.get("user_id", 0))
-    except PermissionError as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=401)
-    except (TypeError, ValueError):
-        return web.json_response({"status": "error", "message": "Invalid user ID"}, status=400)
+    uid = int(request.query.get("user_id", 0))
+    uclient = USER_CLIENTS.get(uid)
+    
+    # 🟢 DYNAMIC WAKE-UP FOR WEB DASHBOARD
+    if not uclient or not uclient.is_connected:
+        session_str = await db.get_session(uid)
+        if not session_str:
+            return web.json_response({"status": "error", "message": "Not connected to Telegram. Please login."})
+        
+        try:
+            api_id = await db.get_api_id(uid) or API_ID
+            api_hash = await db.get_api_hash(uid) or API_HASH
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            await uclient.start()
+            USER_CLIENTS[uid] = uclient
+        except Exception as e:
+            return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
+    chat_list = []
+    count = 0
     try:
-        uclient = await _get_web_user_client(uid)
-        if not uclient:
-            return web.json_response({"status": "error", "message": "Not connected to Telegram. Please login."}, status=401)
-        chat_list = []
+        # Limited to 500 so the API doesn't crash, and yields to the server every 25 chats so nothing freezes.
         async for d in uclient.get_dialogs(limit=500):
-            name = d.chat.title or d.chat.first_name or d.chat.username or "Unknown"
+            name = d.chat.title or d.chat.first_name or "Unknown"
             c_type = d.chat.type
-            if c_type == enums.ChatType.PRIVATE:
-                cat, icon = "User", "👤"
-            elif c_type == enums.ChatType.CHANNEL:
-                cat, icon = "Channel", "📢"
-            elif c_type == enums.ChatType.BOT:
-                cat, icon = "Bot", "🤖"
-            else:
-                cat, icon = "Group", "👥"
-            chat_list.append({"id": str(d.chat.id), "name": f"[{icon} {cat}] {name}", "title": name, "type": cat})
-        return web.json_response({"status": "success", "chats": chat_list})
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)}, status=400)
+            
+            cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
+            is_forum = getattr(d.chat, "is_forum", False)
+            chat_list.append({"id": str(d.chat.id), "name": f"[{cat}] {name}", "is_forum": is_forum})
+            
+            count += 1
+            if count % 25 == 0:
+                await asyncio.sleep(0) # This tells the server to breathe!
+    except Exception as e: 
+        return web.json_response({"status": "error", "message": str(e)})
+        
+    return web.json_response({"status": "success", "chats": chat_list})
 
 async def _api_speedtest_handler(request):
     try:
@@ -6145,10 +5987,89 @@ async def _sw_handler(request):
     sw_code = "self.addEventListener('fetch', function(e) {});"
     return web.Response(text=sw_code, content_type='application/javascript')
 
+async def _api_topics_handler(request):
+    uid = int(request.query.get("user_id", 0))
+    chat_id = request.query.get("chat_id", "")
+    try: chat_id = int(chat_id)
+    except: pass
+    
+    uclient = USER_CLIENTS.get(uid)
+    if not uclient or not uclient.is_connected:
+        return web.json_response({"status": "error", "message": "Telegram session not active"})
+    
+    topics = []
+    try:
+        async for topic in uclient.get_forum_topics(chat_id):
+            topics.append({"id": topic.id, "title": topic.title})
+    except Exception as e:
+        pass 
+    return web.json_response({"status": "success", "topics": topics})
+
+async def _api_mediainfo_web_handler(request):
+    data = await request.json()
+    uid = int(data.get("user_id", 0))
+    url = data.get("link", "")
+    if not url: return web.json_response({"status": "error", "message": "No link provided"})
+    
+    file_path = Path(os.getcwd()) / f"web_mi_{uid}_{int(time.time())}.dat"
+    file_name_display = "Unknown_File"
+    file_size_display = 0
+    
+    try:
+        if url.startswith("http"):
+            file_size_display, detected_name = await partial_download_http(url, file_path, limit_mb=15)
+            file_name_display = detected_name
+        elif "t.me" in url:
+            parsed = _parse_source_link(url)
+            chat_id = parsed.get("chat_id")
+            msg_id = parsed.get("msg_id")
+            
+            uclient = USER_CLIENTS.get(uid)
+            if not uclient or not uclient.is_connected:
+                return web.json_response({"status": "error", "message": "Telegram session not active. Connect in Settings."})
+                
+            msg = await uclient.get_messages(chat_id, msg_id)
+            if msg.empty: return web.json_response({"status": "error", "message": "Message not found or inaccessible"})
+            
+            media_obj = msg.document or msg.video or msg.audio or msg.photo
+            if not media_obj: return web.json_response({"status": "error", "message": "No media found in the provided link"})
+            
+            file_name_display = getattr(media_obj, 'file_name', 'Telegram_Media')
+            file_size_display = getattr(media_obj, 'file_size', 0)
+            
+            await partial_download_tg(uclient, msg, file_path, limit_mb=15)
+        else:
+            return web.json_response({"status": "error", "message": "Invalid link format"})
+            
+        real_ext = Path(file_name_display).suffix
+        if real_ext:
+            new_path = file_path.with_suffix(real_ext)
+            file_path.rename(new_path)
+            file_path = new_path
+            
+        cmd = ["mediainfo", str(file_path)]
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await process.communicate()
+        raw_output = stdout.decode('utf-8', errors='ignore').strip()
+        
+        if not raw_output:
+            return web.json_response({"status": "error", "message": "Could not read media metadata"})
+            
+        raw_output = raw_output.replace(str(file_path), file_name_display).replace(str(file_path.absolute()), file_name_display)
+        html_formatted = f"<div style='color:var(--accent); font-weight:bold; font-size:15px;'>📌 {html.escape(file_name_display)}</div><br>" + parseinfo(raw_output, file_size_display)
+        
+        return web.json_response({"status": "success", "html": html_formatted})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
+    finally:
+        if file_path.exists():
+            try: os.remove(file_path)
+            except: pass
+            
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
-    app_web = web.Application(middlewares=[web_auth_middleware])
+    app_web = web.Application()
     app_web.router.add_get("/manifest.json", _manifest_handler)
     app_web.router.add_get("/sw.js", _sw_handler)
     app_web.router.add_get("/", _dashboard_ui_handler)
@@ -6156,14 +6077,12 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/stats", _api_stats_handler)
     app_web.router.add_get("/api/logs", _api_logs_handler)
     app_web.router.add_get("/api/chats", _api_chats_handler)
-    app_web.router.add_get("/api/chat_topics", _api_chat_topics_handler)
-    app_web.router.add_post("/api/mediainfo", _api_mediainfo_handler)
+    app_web.router.add_get("/api/topics", _api_topics_handler)
+    app_web.router.add_post("/api/mediainfo", _api_mediainfo_web_handler)
     app_web.router.add_get("/api/speedtest", _api_speedtest_handler)
     app_web.router.add_get("/api/sos", _api_sos_handler)
     app_web.router.add_get("/api/logs/download", _api_download_log_handler)
     app_web.router.add_post("/api/auth/login", _api_login_handler)
-    app_web.router.add_get("/api/auth/me", _api_auth_me_handler)
-    app_web.router.add_post("/api/auth/logout", _api_auth_logout_handler)
     app_web.router.add_post("/api/auth/forgot", _api_forgot_password_handler)
     app_web.router.add_post("/api/auth/password", _api_password_handler)
     app_web.router.add_post("/api/tg/send_code", _api_tg_send_code)
