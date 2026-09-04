@@ -8073,7 +8073,7 @@ async def _api_stream_handler(request):
 
 
 async def _api_subtitles_handler(request):
-    """Instant Subtitle Extraction using HTTP Range Requests."""
+    """Instant Subtitle Extraction using HTTP Range Requests (Real-Time Streaming)."""
     user_id = int(request.query.get("user_id", 0))
     link = request.query.get("link", "")
     sub_idx = request.query.get("sub_idx", "0")
@@ -8096,8 +8096,8 @@ async def _api_subtitles_handler(request):
         "-headers", "User-Agent: Mozilla/5.0\r\n",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-probesize", "32M", "-analyzeduration", "32M", 
-        "-discard", "v",  # 🟢 FIX: Drop video packets at demuxer level instantly
-        "-discard", "a",  # 🟢 FIX: Drop audio packets at demuxer level instantly
+        "-discard", "v",  # Drop video packets instantly
+        "-discard", "a",  # Drop audio packets instantly
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
         "-c:s", "webvtt",
@@ -8106,12 +8106,34 @@ async def _api_subtitles_handler(request):
 
     try:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        vtt_content, stderr_data = await proc.communicate()
 
-        if proc.returncode != 0:
-            return web.Response(status=500, text="Subtitle extraction failed")
+        # 🟢 THE FIX: Stream the WebVTT text to the frontend IN REAL TIME
+        response = web.StreamResponse(status=200, headers={
+            "Content-Type": "text/vtt",
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "no-store"
+        })
+        await response.prepare(request)
 
-        return web.Response(body=vtt_content, content_type="text/vtt", headers={"Access-Control-Allow-Origin": "*", "Cache-Control": "no-store"})
+        try:
+            # Continuously read FFmpeg's output and stream it directly to the browser
+            while True:
+                buf = await proc.stdout.read(4096)
+                if not buf:
+                    break
+                await response.write(buf)
+            await response.write_eof()
+        except Exception:
+            pass # Handle client disconnects gracefully
+        finally:
+            # Ensure the FFmpeg process is cleanly killed when done
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
+
+        return response
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
@@ -8201,15 +8223,19 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     CHUNK_SIZE = 1048576
     aligned_offset = (offset // CHUNK_SIZE) * CHUNK_SIZE
     skip_bytes = offset - aligned_offset
-    aligned_limit = limit + skip_bytes
+    target_bytes = skip_bytes + limit
     
     for attempt in range(4):
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
-            async for chunk in client.stream_media(msg, offset=aligned_offset, limit=aligned_limit):
+            
+            # 🟢 FIX: Removed limit=... to prevent Pyrogram OFFSET_INVALID math bugs
+            async for chunk in client.stream_media(msg, offset=aligned_offset):
                 data.extend(chunk)
-                
+                if len(data) >= target_bytes:
+                    break
+                    
             if not data: 
                 raise ValueError("EOF Reached or Empty Chunk")
                 
@@ -8233,7 +8259,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     working_pool = []
     is_user_session = False
     
-    # Primary: Check the Main Bot and Worker Bots
     for c in ([app] + MULTI_BOT_CLIENTS):
         try:
             if await get_client_msg(c, chat_id, test_msg_id):
@@ -8241,7 +8266,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         except Exception:
             pass
             
-    # Fallback: If no bots have access, switch to the User Session
     if not working_pool and fallback_client:
         try:
             if await get_client_msg(fallback_client, chat_id, test_msg_id):
@@ -8250,7 +8274,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         except Exception:
             pass
 
-    # Ultimate Failsafe
     if not working_pool:
         working_pool = [fallback_client or app]
         is_user_session = bool(fallback_client)
@@ -8267,8 +8290,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     # ==========================================
     # 🟢 THE FIX: FAST-PATH FOR SINGLE CLIENTS
     # ==========================================
-    # If we only have 1 client, DO NOT spam 1MB chunk requests! 
-    # Stream it in one continuous, smooth pipe to prevent Telegram from dropping the connection.
     if safe_concurrency == 1:
         client = working_pool[0]
         bytes_needed = total_length
@@ -8282,18 +8303,21 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 
                 aligned_offset = (internal_offset // chunk_size) * chunk_size
                 skip_bytes = internal_offset - aligned_offset
-                aligned_limit = internal_limit + skip_bytes
                 
                 try:
                     msg = await get_client_msg(client, chat_id, part["msg_id"])
                     bytes_yielded_this_part = 0
                     
-                    # Call stream_media EXACTLY ONCE per file part!
-                    async for chunk in client.stream_media(msg, offset=aligned_offset, limit=aligned_limit):
+                    # 🟢 FIX: Removed limit=... and added bulletproof skip_bytes logic
+                    async for chunk in client.stream_media(msg, offset=aligned_offset):
                         if skip_bytes > 0:
-                            chunk = chunk[skip_bytes:]
-                            skip_bytes = 0
-                            
+                            if len(chunk) <= skip_bytes:
+                                skip_bytes -= len(chunk)
+                                continue
+                            else:
+                                chunk = chunk[skip_bytes:]
+                                skip_bytes = 0
+                                
                         if not chunk: continue
                         
                         chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
@@ -8310,6 +8334,57 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                     logger.error(f"Fast-path stream failed: {e}")
                     raise e
         return
+
+    # ==========================================
+    # MULTI-BOT PARALLEL PATH (Worker Bots Only)
+    # ==========================================
+    end_byte = start_byte + total_length
+    first_block = start_byte // chunk_size
+    last_block = end_byte // chunk_size
+    
+    current_block = first_block
+    bytes_yielded = 0
+
+    while current_block <= last_block:
+        tasks = []
+        batch_count = min(safe_concurrency, (last_block - current_block) + 1)
+        
+        for i in range(batch_count):
+            block_idx = current_block + i
+            block_offset = block_idx * chunk_size
+            
+            part = next((p for p in msg_parts if p["start"] <= block_offset < p["end"]), None)
+            if not part: continue
+            
+            internal_offset = block_offset - part["start"]
+            internal_limit = min(chunk_size, part["size"] - internal_offset)
+            
+            worker_client = working_pool[i % len(working_pool)]
+            tasks.append(asyncio.create_task(
+                fetch_single_chunk(worker_client, chat_id, part["msg_id"], internal_offset, internal_limit)
+            ))
+            
+        if not tasks: break
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        for i, res in enumerate(results):
+            if isinstance(res, Exception): 
+                raise res 
+            
+            block_idx = current_block + i
+            block_offset = block_idx * chunk_size
+            valid_data = res
+            
+            if block_idx == first_block:
+                skip = start_byte - block_offset
+                valid_data = valid_data[skip:]
+                
+            yield_len = min(len(valid_data), total_length - bytes_yielded)
+            if yield_len > 0:
+                yield valid_data[:yield_len]
+                bytes_yielded += yield_len
+                
+        current_block += batch_count
 
     # ==========================================
     # MULTI-BOT PARALLEL PATH (Worker Bots Only)
