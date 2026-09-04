@@ -12,7 +12,7 @@ import gc
 import datetime
 import uuid
 from pathlib import Path
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 import motor.motor_asyncio
 from pyrogram import Client, filters, enums, idle
 import pyromod.listen
@@ -316,7 +316,7 @@ class Database:
         dest_id,
         source_thread=None,
         dest_thread=None,
-        delay=0,
+        delay=3,
         is_restricted=False,
         source_title=None,
         dest_title=None,
@@ -480,6 +480,8 @@ batch_temp.ACTIVE_TASKS = defaultdict(int)
 batch_temp.IS_BATCH = defaultdict(bool)
 batch_temp.SKIP_IDS = defaultdict(set) # ALBUM BATCHING TRACKER
 WATCHER_MEDIA_GROUPS = {}              # ALBUM WATCHER TRACKER
+WATCHER_DEDUPE_CACHE = defaultdict(OrderedDict)  # bounded per-watcher event dedupe
+WATCHER_DEDUPE_LIMIT = 2000
 
 SERVER_UPLOAD_LIMIT = asyncio.Semaphore(int(os.environ.get("SERVER_UPLOAD_LIMIT", 30))) 
 USER_SEMAPHORE_LIMIT = 3 
@@ -2742,7 +2744,7 @@ async def filter_start_cb(client, query):
         PENDING_TASKS[user_id] = task_data 
         return await query.answer("❌ Select at least one type!", show_alert=True)
         
-    delay = task_data.get("delay", 3)
+    delay = max(3, min(int(task_data.get("delay", 3) or 3), 3600))
     if task_data.get("mode") == "WATCHER":
         await finalize_watcher_setup(client, query.message, task_data, delay, user_id=user_id)
     else:
@@ -2809,8 +2811,7 @@ async def ask_for_speed(message_or_query):
 
     buttons = []
     if mode == "WATCHER":
-        buttons.append([InlineKeyboardButton("⚡ Instant (0s)", callback_data="speed_0")])
-        buttons.append([InlineKeyboardButton("⏳ Default (3s)", callback_data="speed_3")])
+                buttons.append([InlineKeyboardButton("⏳ Default (3s)", callback_data="speed_3")])
     else:
         buttons.append([InlineKeyboardButton("⚡ Default (3s)", callback_data="speed_3")])
         
@@ -2846,11 +2847,6 @@ async def speed_callback(client: Client, query):
         except Exception: pass
         return
 
-    if choice == "speed_0":
-        PENDING_TASKS[user_id]["delay"] = 0
-        await show_filter_menu(query, user_id)
-        return
-        
     if choice in ["speed_3", "speed_default"]:
         PENDING_TASKS[user_id]["delay"] = 3
         await show_filter_menu(query, user_id)
@@ -2861,12 +2857,13 @@ async def process_speed_input(client: Client, message: Message):
     text = message.text.strip()
     if not text.isdigit(): return await message.reply("❌ Numbers only.")
     
-    delay = max(0, min(int(text), 3600)) 
+    delay = max(3, min(int(text), 3600)) 
     if user_id in PENDING_TASKS:
         PENDING_TASKS[user_id]["delay"] = delay
         await show_filter_menu(message, user_id)
 
 async def finalize_watcher_setup(client, message, data, delay, user_id=None):
+    delay = max(3, min(int(delay or 3), 3600))
     if user_id is None:
         user_id = message.from_user.id if message.from_user else message.chat.id
     src_link = data["link"]
@@ -2922,8 +2919,6 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
                 
             source_id = chat.id
             source_title = chat.title or str(source_id)
-            try: await user_client.join_chat(parsed["join_target"])
-            except: pass
 
         else:
             chat = await user_client.get_chat(source_id)
@@ -4218,6 +4213,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         v_w = getattr(msg_fresh.video, "width", 0) if getattr(msg_fresh, "video", None) else 0
                         v_h = getattr(msg_fresh.video, "height", 0) if getattr(msg_fresh, "video", None) else 0
 
+                        sent = False
                         try:
                             if msg_type == "Document": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
                             elif msg_type == "Video": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_video, video=file_path, duration=v_dur, width=v_w, height=v_h, progress=p_func, progress_args=p_args, **kwargs)
@@ -4226,6 +4222,9 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                             elif msg_type == "Voice": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
                             elif msg_type == "Animation": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_animation, animation=file_path, **kwargs)
                             elif msg_type == "Sticker": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_sticker, chat_id=dest_chat_id, sticker=file_path, message_thread_id=dest_thread_id)
+                            else:
+                                raise ValueError(f"Unsupported upload type: {msg_type}")
+                            sent = True
                         except Exception:
                             if acc:
                                 if msg_type == "Document": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
@@ -4235,9 +4234,13 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                                 elif msg_type == "Voice": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
                                 elif msg_type == "Animation": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_animation, animation=file_path, **kwargs)
                                 elif msg_type == "Sticker": await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_sticker, chat_id=dest_chat_id, sticker=file_path, message_thread_id=dest_thread_id)
-                        
-                        upload_success = True
-                        break 
+                                else:
+                                    raise ValueError(f"Unsupported upload type: {msg_type}")
+                                sent = True
+
+                        if sent:
+                            upload_success = True
+                            break
                     except FloodWait as e:
                         if e.value > 300: raise e
                         USER_FLOOD_LOCKS[user_id].set_lock(e.value + 5) 
@@ -4773,7 +4776,7 @@ HTML_DASHBOARD = """
                 </div>
                 <div class="input-group" id="delay-group">
                     <label>Forward Delay (Seconds)</label>
-                    <input type="number" id="t-delay" value="3" min="0">
+                    <input type="number" id="t-delay" value="3" min="3">
                 </div>
                 <div class="input-group">
                     <label>Media Filters (Allowed Types)</label>
@@ -5439,8 +5442,11 @@ async def _api_add_task(request):
         user_id = int(data.get("user_id"))
         link = data.get("link")
         dest_str = data.get("dest", "")
-        delay = int(data.get("delay", 3))
+        delay = max(3, min(int(data.get("delay", 3)), 3600))
         allowed_types = data.get("filters", ["Video", "Document"])
+        if not isinstance(allowed_types, list):
+            allowed_types = ["Video", "Document"]
+        allowed_types = [t for t in allowed_types if t in ALL_MSG_TYPES]
 
         if not link: return web.json_response({"status": "error", "message": "No link provided"})
 
@@ -5521,8 +5527,11 @@ async def _api_add_watcher(request):
         user_id = int(data.get("user_id"))
         link = data.get("link")
         dest_str = data.get("dest", "")
-        delay = int(data.get("delay", 0))
+        delay = max(3, min(int(data.get("delay", 3)), 3600))
         allowed_types = data.get("filters", ["Video", "Document"])
+        if not isinstance(allowed_types, list):
+            allowed_types = ["Video", "Document"]
+        allowed_types = [t for t in allowed_types if t in ALL_MSG_TYPES]
 
         dest_chat_id = user_id
         dest_thread_id = None
@@ -6169,7 +6178,9 @@ WATCHER_QUEUES = defaultdict(asyncio.Queue)
 WATCHER_WORKERS = {}
 
 async def start_watcher_worker(wid_str):
-    if wid_str not in WATCHER_WORKERS:
+    """Ensure exactly one live worker task exists for this watcher."""
+    task = WATCHER_WORKERS.get(wid_str)
+    if task is None or task.done() or task.cancelled():
         WATCHER_WORKERS[wid_str] = asyncio.create_task(watcher_worker_loop(wid_str))
 
 async def watcher_worker_loop(wid_str):
@@ -6188,7 +6199,7 @@ async def watcher_worker_loop(wid_str):
             source_thread = watcher.get("source_thread")
             dest_id = watcher["dest_id"]
             dest_thread = watcher.get("dest_thread")
-            delay = watcher.get("delay", 0)
+            delay = max(3, min(int(watcher.get("delay", 3)), 3600))
             is_restricted = watcher.get("is_restricted", False)
             allowed_types = watcher.get("allowed_types", ["Video", "Document"])
 
@@ -6450,6 +6461,10 @@ async def watcher_worker_loop(wid_str):
 async def process_watcher_message(client, message):
     chat_id = message.chat.id
     topic_id = getattr(message, "message_thread_id", None)
+    if topic_id is None:
+        topic_id = getattr(message, "reply_to_top_message_id", None)
+    if topic_id is None:
+        topic_id = getattr(message, "reply_to_message_id", None)
 
     cursor = await db.get_watchers_for_source(chat_id, topic_id)
     watchers = await cursor.to_list(length=100)
@@ -6461,17 +6476,21 @@ async def process_watcher_message(client, message):
         watchers.extend(await cursor_global.to_list(length=100))
 
     # 🟢 Live Listener ONLY pushes IDs to the queue now!
-    if not hasattr(batch_temp, "WATCHER_LAST_MSG"):
-        batch_temp.WATCHER_LAST_MSG = {}
-
+    # Use a bounded recent-event cache rather than remembering only the last
+    # event. Bot/user updates can arrive interleaved, so a one-entry cache can
+    # still enqueue the same message twice.
     for w in watchers:
         wid = str(w["_id"])
-        
-        # Prevent Bot and User Session from duplicating the same message
-        dedupe_key = (message.chat.id, getattr(message, "message_thread_id", None), message.id)
-        if batch_temp.WATCHER_LAST_MSG.get(wid) == dedupe_key:
+
+        dedupe_key = (message.chat.id, topic_id, message.id)
+
+        cache = WATCHER_DEDUPE_CACHE[wid]
+        if dedupe_key in cache:
+            cache.move_to_end(dedupe_key)
             continue
-        batch_temp.WATCHER_LAST_MSG[wid] = dedupe_key
+        cache[dedupe_key] = time.time()
+        while len(cache) > WATCHER_DEDUPE_LIMIT:
+            cache.popitem(last=False)
 
         await WATCHER_QUEUES[wid].put(message.id)
         await start_watcher_worker(wid)
