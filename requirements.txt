@@ -9,4 +9,8 @@ telegraph
 python-dotenv
 speedtest-cli
 pyromod
-uvloop
+numpy
+scipy
+Pillow
+pyloudnorm
+mutagen
