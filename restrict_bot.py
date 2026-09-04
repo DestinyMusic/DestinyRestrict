@@ -6474,11 +6474,22 @@ HTML_DASHBOARD = """
                 user_id: String(currentUser || ''),
                 link: activeMediaLink,
                 quality,
+                transcode: playerRequiresTranscode ? '1' : '0',
                 t: String(Date.now())
             });
             if (audioIdx !== '') params.set('audio_idx', audioIdx);
             if (Number.isFinite(startTime) && startTime > 0) params.set('start', String(startTime));
             return `/api/stream?${params.toString()}`;
+        }
+
+        function openExternalPlayer(appType) {
+            if (!activeMediaLink) return alert("Please load a stream first!");
+            const streamUrl = window.location.origin + buildStreamUrl();
+            if (appType === 'vlc') {
+                window.location.href = `vlc://${streamUrl}`;
+            } else if (appType === 'mx') {
+                window.location.href = `intent:${streamUrl}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;end`;
+            }
         }
 
         async function applyTrackSelection() {
@@ -7859,17 +7870,31 @@ async def _api_stream_handler(request):
     # DIRECT HTTP SOURCE — proxy instead of 302 so WebGL gets CORS-safe bytes.
     # ======================================================================
     
-    # Intercept unsupported HTTP containers or audio-track switches for FFmpeg bridge
+    transcode_param = request.query.get("transcode", "")
+    force_transcode = transcode_param in ("1", "true")
+    
     lower_link = link.lower()
-    needs_ffmpeg = (quality != "Original" or audio_idx is not None or 
-                    bool(re.search(r"\.(mkv|avi|flv|vob|wmv|ts|m3u8|mpd)(?:$|[?#])", lower_link)))
+    is_native_mp4 = bool(re.search(r"\.(mp4|webm)(?:$|[?#])", lower_link))
+    
+    # If the URL is extensionless (like hashed links) or an MKV/AVI, route through FFmpeg
+    needs_ffmpeg = (
+        force_transcode or
+        quality != "Original" or
+        (audio_idx is not None and str(audio_idx).strip() != "") or
+        not is_native_mp4
+    )
 
     if needs_ffmpeg:
         res_scale_map = {"4K": "3840:-2", "1080p": "1920:-2", "720p": "1280:-2", "480p": "854:-2", "360p": "640:-2"}
         scale_filter = res_scale_map.get(quality)
-        ffmpeg_cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
         
-        # Fast input seek for HTTP links
+        ffmpeg_cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n",
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+            "-probesize", "10M", "-analyzeduration", "5M"
+        ]
+        
         if start_time is not None:
             try:
                 start_float = max(0.0, float(start_time))
@@ -7887,13 +7912,10 @@ async def _api_stream_handler(request):
         else:
             ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
 
-        ffmpeg_cmd.extend(["-sn"])
-        if quality == "Original":
-            ffmpeg_cmd.extend(["-c:v", "copy"])
-        else:
-            ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"])
-
         ffmpeg_cmd.extend([
+            "-sn",
+            "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+            "-crf", "22", "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "192k",
             "-movflags", "frag_keyframe+empty_moov+default_base_moof",
             "-f", "mp4", "pipe:1"
@@ -7902,19 +7924,32 @@ async def _api_stream_handler(request):
         proc = await asyncio.create_subprocess_exec(
             *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
-        response = web.StreamResponse(status=200, headers={"Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*", "Accept-Ranges": "none", "Cache-Control": "no-store"})
+        response = web.StreamResponse(
+            status=200, 
+            headers={
+                "Content-Type": "video/mp4", 
+                "Access-Control-Allow-Origin": "*", 
+                "Accept-Ranges": "none", 
+                "Cache-Control": "no-store"
+            }
+        )
         await response.prepare(request)
 
-        async def pipe_ffmpeg_to_response():
+        try:
+            while True:
+                buf = await proc.stdout.read(64 * 1024)
+                if not buf:
+                    break
+                await response.write(buf)
+            await response.write_eof()
+        except Exception:
+            pass
+        finally:
             try:
-                while True:
-                    buf = await proc.stdout.read(64 * 1024)
-                    if not buf: break
-                    await response.write(buf)
-                await response.write_eof()
-            except Exception: pass
-
-        await asyncio.create_task(pipe_ffmpeg_to_response())
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
         return response
 
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -7991,6 +8026,7 @@ async def _api_subtitles_handler(request):
 
     is_tg = "t.me" in link
     msg = None
+
     if is_tg:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
@@ -8004,13 +8040,23 @@ async def _api_subtitles_handler(request):
         except Exception as e:
             return web.Response(status=500, text=str(e))
 
+    cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+    if not is_tg:
+        cmd.extend([
+            "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64)\r\n",
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+            "-i", link
+        ])
+    else:
+        cmd.extend(["-i", "pipe:0"])
+
+    cmd.extend([
+        "-map", f"0:{sub_idx}",
+        "-c:s", "webvtt",
+        "-f", "webvtt", "pipe:1"
+    ])
+
     try:
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-i", "pipe:0" if is_tg else link,
-            "-map", f"0:{sub_idx}",
-            "-f", "webvtt", "pipe:1"
-        ]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdin=asyncio.subprocess.PIPE if is_tg else None,
@@ -8018,25 +8064,21 @@ async def _api_subtitles_handler(request):
             stderr=asyncio.subprocess.PIPE
         )
 
-        async def feed():
-            if not is_tg or not msg: return
-            try:
-                media_stream = msg.document or msg.video or msg.audio
-                if not media_stream: return
-                async for chunk in uclient.stream_media(msg):
-                    if proc.stdin.is_closing(): break
-                    proc.stdin.write(chunk)
-                    await proc.stdin.drain()
-            except Exception as e:
-                logger.debug(f"[Subtitles] input feed ended: {e}")
-            finally:
-                try: proc.stdin.close()
-                except: pass
+        if is_tg and msg:
+            async def feed():
+                try:
+                    async for chunk in uclient.stream_media(msg):
+                        if proc.stdin.is_closing(): break
+                        proc.stdin.write(chunk)
+                        await proc.stdin.drain()
+                except Exception as e:
+                    logger.debug(f"[Subtitles] input feed ended: {e}")
+                finally:
+                    try: proc.stdin.close()
+                    except: pass
+            asyncio.create_task(feed())
 
-        feed_task = asyncio.create_task(feed())
         vtt_content, stderr_data = await proc.communicate()
-        try: await feed_task
-        except Exception: pass
 
         if proc.returncode not in (0, None):
             err = stderr_data.decode("utf-8", errors="ignore")
