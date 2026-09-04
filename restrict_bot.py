@@ -6053,6 +6053,7 @@ HTML_DASHBOARD = """
         let playerStreamGeneration = 0;
         let playerTotalDuration = 0;
         let activeSubtitleIndex = 'off';
+        let isTranscodeSeeking = false;
         let subtitleCues = [];
         let subtitleAbortController = null;
         let hudTimeout;
@@ -6336,13 +6337,13 @@ HTML_DASHBOARD = """
             const target = Math.max(0, Math.min(dur, current + Number(sec || 0)));
             wakeHUD();
 
-            // 🟢 FIX: Optimistically move the scrubber bar instantly on double-tap skip
             const fill = document.getElementById('scrubber-fill');
             if (fill && dur > 0 && dur !== Infinity) {
                 fill.style.width = `${(target / dur) * 100}%`;
             }
 
             if (playerRequiresTranscode) {
+                isTranscodeSeeking = true;
                 restartStreamAt(target);
                 return;
             }
@@ -6367,17 +6368,18 @@ HTML_DASHBOARD = """
             const target = pos * dur;
             wakeHUD();
             
-            // 🟢 FIX: Optimistically move the scrubber bar instantly on click/drag
             const fill = document.getElementById('scrubber-fill');
             if (fill) fill.style.width = `${pos * 100}%`;
             
-            if (playerRequiresTranscode) restartStreamAt(target);
-            else {
+            if (playerRequiresTranscode) {
+                isTranscodeSeeking = true;
+                restartStreamAt(target);
+            } else {
                 video.currentTime = target;
                 renderCurrentSubtitle(target);
             }
         }
-        
+
         function toggleSettingsPopup() {
             const popup = document.getElementById('media-settings-popup');
             if (!popup) return;
@@ -6704,6 +6706,7 @@ HTML_DASHBOARD = """
             const onMetadata = async () => {
                 if (generation !== playerStreamGeneration) return;
                 video.removeEventListener('loadedmetadata', onMetadata);
+                isTranscodeSeeking = false; // 🟢 FIX: Unlock the scrubber bar!
                 updateViewportBox();
                 resizePlayerSurface();
                 try {
@@ -6896,7 +6899,6 @@ HTML_DASHBOARD = """
                 let cur = vidElem.currentTime || 0;
                 let dur = Number.isFinite(vidElem.duration) && vidElem.duration > 0 ? vidElem.duration : 0;
 
-                // Sync live pipes to the global timeline so it behaves like a standard VOD
                 if (playerRequiresTranscode && playerTotalDuration > 0) {
                     cur = playerTimelineOffset + cur;
                     dur = playerTotalDuration;
@@ -6906,19 +6908,23 @@ HTML_DASHBOARD = """
                 cur = Math.min(cur, dur);
 
                 const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
-                const fill = document.getElementById('scrubber-fill');
                 const time = document.getElementById('hud-time');
-                if (fill) fill.style.width = `${percent}%`;
-
-                const fmt = (s) => {
-                    if (!Number.isFinite(s) || s < 0) return '00:00';
-                    const h = Math.floor(s / 3600);
-                    const m = Math.floor((s % 3600) / 60);
-                    const sec = Math.floor(s % 60);
-                    const hh = h > 0 ? `${String(h).padStart(2, '0')}:` : '';
-                    return `${hh}${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
-                };
-                if (time) time.innerText = `${fmt(cur)} / ${fmt(dur)}`;
+                
+                // 🟢 FIX: Do not visually reset the bar to 0:00 while the browser is buffering the new seek!
+                if (!isTranscodeSeeking && !vidElem.seeking) {
+                    const fill = document.getElementById('scrubber-fill');
+                    if (fill) fill.style.width = `${percent}%`;
+                    
+                    const fmt = (s) => {
+                        if (!Number.isFinite(s) || s < 0) return '00:00';
+                        const h = Math.floor(s / 3600);
+                        const m = Math.floor((s % 3600) / 60);
+                        const sec = Math.floor(s % 60);
+                        const hh = h > 0 ? `${String(h).padStart(2, '0')}:` : '';
+                        return `${hh}${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
+                    };
+                    if (time) time.innerText = `${fmt(cur)} / ${fmt(dur)}`;
+                }
                 renderCurrentSubtitle(cur);
             });
             vidElem.addEventListener('error', () => {
@@ -8230,19 +8236,20 @@ async def get_client_msg(client, chat_id, msg_id):
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     """Fetches a chunk strictly. Retries on transient errors with clean byte skipping."""
-    CHUNK_SIZE = 1048576
-    chunk_index = offset // CHUNK_SIZE
+    # 🟢 FIX: Align strictly to 4096 bytes (4 KB) as required by Telegram API
+    ALIGNMENT = 4096
+    aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
     target_bytes = limit
     
     for attempt in range(4):
         # MUST reset skip_bytes on every retry loop to prevent data corruption
-        skip_bytes = offset % CHUNK_SIZE  
+        skip_bytes = offset - aligned_offset
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
-            # Pass the CHUNK INDEX to Pyrogram, not the byte offset
-            async for chunk in client.stream_media(msg, offset=chunk_index):
+            # Pass the 4096-aligned byte offset
+            async for chunk in client.stream_media(msg, offset=aligned_offset):
                 if skip_bytes > 0:
                     if len(chunk) <= skip_bytes:
                         skip_bytes -= len(chunk)
@@ -8270,10 +8277,10 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             
     raise TimeoutError("Exceeded max retries for chunk")
 
+
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
-    """Distributes HTTP range requests evenly. Includes a Fast-Path for single clients to prevent FloodWaits."""
+    """Distributes HTTP range requests evenly. Includes a Fast-Path for single clients."""
     
-    # 1. Filter the pool safely: Bots FIRST, User Session LAST
     test_msg_id = msg_parts[0]["msg_id"]
     working_pool = []
     is_user_session = False
@@ -8297,7 +8304,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         working_pool = [fallback_client or app]
         is_user_session = bool(fallback_client)
         
-    # 2. Prevent Single-Account Ban & FloodWaits!
     if is_user_session:
         safe_concurrency = 1
     else:
@@ -8313,6 +8319,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         client = working_pool[0]
         bytes_needed = total_length
         current_offset = start_byte
+        ALIGNMENT = 4096
         
         for part in msg_parts:
             if bytes_needed <= 0: break
@@ -8320,15 +8327,15 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 internal_offset = current_offset - part["start"]
                 internal_limit = min(bytes_needed, part["size"] - internal_offset)
                 
-                # Convert byte offset to Pyrogram's expected chunk index
-                chunk_index = internal_offset // chunk_size
+                # 🟢 FIX: Align strictly to 4096 bytes (4 KB)
+                aligned_offset = (internal_offset // ALIGNMENT) * ALIGNMENT
                 
                 try:
                     msg = await get_client_msg(client, chat_id, part["msg_id"])
                     bytes_yielded_this_part = 0
-                    skip_bytes = internal_offset % chunk_size
+                    skip_bytes = internal_offset - aligned_offset
                     
-                    async for chunk in client.stream_media(msg, offset=chunk_index):
+                    async for chunk in client.stream_media(msg, offset=aligned_offset):
                         if skip_bytes > 0:
                             if len(chunk) <= skip_bytes:
                                 skip_bytes -= len(chunk)
@@ -8344,7 +8351,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                             yield chunk_to_yield
                             bytes_yielded_this_part += len(chunk_to_yield)
                             
-                        # Python manually breaks the pipe the precise millisecond we have enough bytes
                         if bytes_yielded_this_part >= internal_limit:
                             break
                             
