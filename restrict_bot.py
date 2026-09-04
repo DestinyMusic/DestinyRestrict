@@ -8226,10 +8226,7 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     raise TimeoutError("Exceeded max retries for chunk")
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
-    """Distributes HTTP range requests evenly across the Bot Pool. Prevents single-account bans."""
-    end_byte = start_byte + total_length
-    first_block = start_byte // chunk_size
-    last_block = end_byte // chunk_size
+    """Distributes HTTP range requests evenly. Includes a Fast-Path for single clients to prevent FloodWaits."""
     
     # 1. Filter the pool safely: Bots FIRST, User Session LAST
     test_msg_id = msg_parts[0]["msg_id"]
@@ -8259,7 +8256,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         is_user_session = bool(fallback_client)
         
     # 2. Prevent Single-Account Ban & FloodWaits!
-    # CRITICAL: If using the User Session, force strictly 1 connection.
     if is_user_session:
         safe_concurrency = 1
     else:
@@ -8268,6 +8264,60 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     if safe_concurrency < 1: 
         safe_concurrency = 1
 
+    # ==========================================
+    # 🟢 THE FIX: FAST-PATH FOR SINGLE CLIENTS
+    # ==========================================
+    # If we only have 1 client, DO NOT spam 1MB chunk requests! 
+    # Stream it in one continuous, smooth pipe to prevent Telegram from dropping the connection.
+    if safe_concurrency == 1:
+        client = working_pool[0]
+        bytes_needed = total_length
+        current_offset = start_byte
+        
+        for part in msg_parts:
+            if bytes_needed <= 0: break
+            if part["start"] <= current_offset < part["end"]:
+                internal_offset = current_offset - part["start"]
+                internal_limit = min(bytes_needed, part["size"] - internal_offset)
+                
+                aligned_offset = (internal_offset // chunk_size) * chunk_size
+                skip_bytes = internal_offset - aligned_offset
+                aligned_limit = internal_limit + skip_bytes
+                
+                try:
+                    msg = await get_client_msg(client, chat_id, part["msg_id"])
+                    bytes_yielded_this_part = 0
+                    
+                    # Call stream_media EXACTLY ONCE per file part!
+                    async for chunk in client.stream_media(msg, offset=aligned_offset, limit=aligned_limit):
+                        if skip_bytes > 0:
+                            chunk = chunk[skip_bytes:]
+                            skip_bytes = 0
+                            
+                        if not chunk: continue
+                        
+                        chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
+                        if chunk_to_yield:
+                            yield chunk_to_yield
+                            bytes_yielded_this_part += len(chunk_to_yield)
+                            
+                        if bytes_yielded_this_part >= internal_limit:
+                            break
+                            
+                    current_offset += internal_limit
+                    bytes_needed -= internal_limit
+                except Exception as e:
+                    logger.error(f"Fast-path stream failed: {e}")
+                    raise e
+        return
+
+    # ==========================================
+    # MULTI-BOT PARALLEL PATH (Worker Bots Only)
+    # ==========================================
+    end_byte = start_byte + total_length
+    first_block = start_byte // chunk_size
+    last_block = end_byte // chunk_size
+    
     current_block = first_block
     bytes_yielded = 0
 
@@ -8295,7 +8345,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         
         for i, res in enumerate(results):
             if isinstance(res, Exception): 
-                logger.error(f"Chunk fetch failed: {res}")
                 raise res 
             
             block_idx = current_block + i
