@@ -5954,6 +5954,19 @@ HTML_DASHBOARD = """
             if (!link) return alert("Provide a valid Telegram or HTTP media link!");
             activeMediaLink = link;
 
+            const btn = document.querySelector('button[onclick="loadTheaterMedia()"]');
+            let origText = "Load & Play";
+            if (btn) {
+                origText = btn.innerText;
+                btn.innerText = "⏳ Probing Media...";
+                btn.disabled = true;
+            }
+
+            // FIX: Set robust default fallbacks immediately so menus are never empty
+            document.getElementById('pop-quality-select').innerHTML = '<option value="Original">Original</option><option value="1080p">1080p</option><option value="720p">720p</option><option value="480p">480p</option><option value="360p">360p</option>';
+            document.getElementById('pop-audio-select').innerHTML = '<option value="">Default Audio</option><option value="0">Track 1</option><option value="1">Track 2</option>';
+            document.getElementById('pop-sub-select').innerHTML = '<option value="off">Off</option><option value="0">Subtitle 1</option>';
+
             // Probe available streams (tracks & resolutions)
             try {
                 const probeRes = await fetch(`/api/media_probe?user_id=${currentUser}&link=${encodeURIComponent(link)}`);
@@ -5963,12 +5976,22 @@ HTML_DASHBOARD = """
                     qSelect.innerHTML = pdata.qualities.map(q => `<option value="${q}">${q}</option>`).join('');
 
                     const aSelect = document.getElementById('pop-audio-select');
-                    aSelect.innerHTML = pdata.audio_tracks.map(a => `<option value="${a.index}">${a.label} (${a.codec})</option>`).join('');
+                    aSelect.innerHTML = (pdata.audio_tracks.length ? '' : '<option value="">Default Audio</option>') + 
+                        pdata.audio_tracks.map(a => `<option value="${a.index}">${a.label} (${a.codec})</option>`).join('');
 
                     const sSelect = document.getElementById('pop-sub-select');
                     sSelect.innerHTML = '<option value="off">Off</option>' + pdata.subtitles.map(s => `<option value="${s.index}">${s.label}</option>`).join('');
+                } else {
+                    console.warn("Probe failed: ", pdata.message);
                 }
-            } catch(e) {}
+            } catch(e) {
+                console.warn("Probe fetch error: ", e);
+            } finally {
+                if (btn) {
+                    btn.innerText = origText;
+                    btn.disabled = false;
+                }
+            }
 
             applyTrackSelection();
             if (!gl) initWebGL();
@@ -6007,12 +6030,35 @@ HTML_DASHBOARD = """
 
         function applyAspectRatio(mode) {
             const canvas = document.getElementById('webgl-canvas');
-            if (mode === '16-9') { canvas.style.objectFit = 'fill'; canvas.parentElement.style.aspectRatio = '16/9'; }
-            else if (mode === '21-9') { canvas.style.objectFit = 'fill'; canvas.parentElement.style.aspectRatio = '21/9'; }
-            else if (mode === '4-3') { canvas.style.objectFit = 'fill'; canvas.parentElement.style.aspectRatio = '4/3'; }
-            else if (mode === 'cover') { canvas.style.objectFit = 'cover'; }
-            else if (mode === 'stretch') { canvas.style.objectFit = 'fill'; }
-            else { canvas.style.objectFit = 'contain'; }
+            
+            // FIX: Reset all sizes to bypass fullscreen wrapper constraints
+            canvas.style.width = '100%'; 
+            canvas.style.height = '100%'; 
+            canvas.style.maxWidth = 'none'; 
+            canvas.style.maxHeight = 'none';
+            canvas.style.aspectRatio = 'auto';
+
+            if (mode === 'contain') { 
+                canvas.style.objectFit = 'contain'; 
+            }
+            else if (mode === 'cover') { 
+                canvas.style.objectFit = 'cover'; 
+            }
+            else if (mode === 'stretch') { 
+                canvas.style.objectFit = 'fill'; 
+            }
+            else {
+                // 16:9, 21:9, 4:3 Modes (Flex Auto-Sizing)
+                canvas.style.width = 'auto'; 
+                canvas.style.height = 'auto'; 
+                canvas.style.maxWidth = '100%'; 
+                canvas.style.maxHeight = '100%';
+                canvas.style.objectFit = 'fill';
+                
+                if (mode === '16-9') canvas.style.aspectRatio = '16/9';
+                if (mode === '21-9') canvas.style.aspectRatio = '21/9';
+                if (mode === '4-3') canvas.style.aspectRatio = '4/3';
+            }
         }
 
         function togglePlayback() {
@@ -6950,7 +6996,11 @@ async def _api_media_probe_handler(request):
             parsed = _parse_source_link(link)
             chat_id = parsed.get("chat_id")
             msg_id = parsed.get("msg_id")
-            msg = await uclient.get_messages(chat_id, msg_id)
+            
+            # FIX: Safely cast chat_id to integer for private channels/groups
+            chat_id_clean = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
+            
+            msg = await uclient.get_messages(chat_id_clean, msg_id)
             media = msg.document or msg.video or msg.audio
             if not media:
                 return web.json_response({"status": "error", "message": "No media found in message"})
@@ -6958,7 +7008,8 @@ async def _api_media_probe_handler(request):
             temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
             temp_dir.mkdir(parents=True, exist_ok=True)
             target_path = temp_dir / "probe_chunk.dat"
-            await partial_download_tg(uclient, msg, target_path, limit_mb=10)
+            # FIX: Reduced chunk to 5MB so the UI doesn't timeout
+            await partial_download_tg(uclient, msg, target_path, limit_mb=5)
         else:
             temp_dir = Path(f"./probe_temp_{user_id}_{int(time.time())}")
             temp_dir.mkdir(parents=True, exist_ok=True)
