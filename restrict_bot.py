@@ -5730,7 +5730,6 @@ HTML_DASHBOARD = """
                 const data = await res.json();
                 if (data.status === 'success' && data.tokens) {
                     const el = document.getElementById('worker-tokens-input');
-                    // Use a double backslash so Python passes the raw '\n' to JavaScript
                     if (el) el.value = data.tokens.join('\\n');
                 }
             } catch (_) {}
@@ -5738,7 +5737,6 @@ HTML_DASHBOARD = """
 
         async function saveWorkerTokens() {
             const raw = document.getElementById('worker-tokens-input').value;
-            // The extra backslash prevents Python from breaking the regex
             const tokens = raw.split(/[\\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
             try {
                 const res = await fetch('/api/settings/tokens', {
