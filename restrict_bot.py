@@ -6016,19 +6016,76 @@ async def _api_mediainfo_web_handler(request):
     file_size_display = 0
     
     try:
-        if url.startswith("http"):
-            file_size_display, detected_name = await partial_download_http(url, file_path, limit_mb=15)
-            file_name_display = detected_name
-        elif "t.me" in url:
+        # 🟢 FIX: Prioritize Telegram links FIRST so they don't get trapped by the HTTP downloader
+        if "t.me" in url or "telegram.me" in url:
             parsed = _parse_source_link(url)
             chat_id = parsed.get("chat_id")
             msg_id = parsed.get("msg_id")
             
+            # 🟢 DYNAMIC WAKE-UP: Automatically reconnect session if it fell asleep
             uclient = USER_CLIENTS.get(uid)
             if not uclient or not uclient.is_connected:
-                return web.json_response({"status": "error", "message": "Telegram session not active. Connect in Settings."})
+                session_str = await db.get_session(uid)
+                if not session_str:
+                    return web.json_response({"status": "error", "message": "Telegram session not active. Connect in Settings."})
+                try:
+                    api_id = await db.get_api_id(uid) or API_ID
+                    api_hash = await db.get_api_hash(uid) or API_HASH
+                    uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+                    uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+                    await uclient.start()
+                    USER_CLIENTS[uid] = uclient
+                except Exception as e:
+                    return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
                 
-            msg = await uclient.get_messages(chat_id, msg_id)
+            try:
+                msg = await uclient.get_messages(chat_id, msg_id)
+            except Exception as e:
+                return web.json_response({"status": "error", "message": f"Failed to fetch message: {e}"})
+                
+            if not msg or msg.empty: return web.json_response({"status": "error", "message": "Message not found or inaccessible"})
+            
+            media_obj = msg.document or msg.video or msg.audio or msg.photo
+            if not media_obj: return web.json_response({"status": "error", "message": "No media found in the provided link"})
+            
+            file_name_display = getattr(media_obj, 'file_name', 'Telegram_Media')
+            file_size_display = getattr(media_obj, 'file_size', 0)
+            
+            await partial_download_tg(uclient, msg, file_path, limit_mb=15)
+
+        elif url.startswith("http"):
+            file_size_display, detected_name = await partial_download_http(url, file_path, limit_mb=15)
+            file_name_display = detected_name
+        else:
+            return web.json_response({"status": "error", "message": "Invalid link format"})
+            
+        real_ext = Path(file_name_display).suffix
+        if real_ext:
+            new_path = file_path.with_suffix(real_ext)
+            file_path.rename(new_path)
+            file_path = new_path
+            
+        cmd = ["mediainfo", str(file_path)]
+        process = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        stdout, _ = await process.communicate()
+        raw_output = stdout.decode('utf-8', errors='ignore').strip()
+        
+        if not raw_output:
+            return web.json_response({"status": "error", "message": "Could not read media metadata. File might be empty or invalid."})
+            
+        raw_output = raw_output.replace(str(file_path), file_name_display).replace(str(file_path.absolute()), file_name_display)
+        html_formatted = f"<div style='color:var(--accent); font-weight:bold; font-size:15px;'>📌 {html.escape(file_name_display)}</div><br>" + parseinfo(raw_output, file_size_display)
+        
+        return web.json_response({"status": "success", "html": html_formatted})
+        
+    except Exception as e:
+        # 🟢 FIX: Force empty string errors to print their raw representation so the popup is never blank
+        err_msg = str(e) if str(e).strip() else repr(e)
+        return web.json_response({"status": "error", "message": f"Processing error: {err_msg}"})
+    finally:
+        if 'file_path' in locals() and file_path.exists():
+            try: os.remove(file_path)
+            except: pass
             if msg.empty: return web.json_response({"status": "error", "message": "Message not found or inaccessible"})
             
             media_obj = msg.document or msg.video or msg.audio or msg.photo
