@@ -20,7 +20,7 @@ RUN apt-get update -qq && \
     python3-dev \
     mediainfo \
     ffmpeg \
-    sox && \
+    sox \
     fonts-freefont-ttf && \
     rm -rf /var/lib/apt/lists/*
 
