@@ -4423,7 +4423,7 @@ HTML_DASHBOARD = """
 <html lang="en" data-theme="amoled">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <title>Destiny TG Forwarder</title>
 
     <!-- PWA Web App Meta Tags -->
@@ -4598,12 +4598,15 @@ HTML_DASHBOARD = """
         .cinema-viewport:fullscreen, .cinema-viewport:-webkit-full-screen {
             border-radius: 0 !important; border: none !important; aspect-ratio: auto !important; 
             width: 100vw !important; height: 100vh !important;
+            max-width: 100vw !important; max-height: 100vh !important;
+            position: fixed !important; top: 0 !important; left: 0 !important; z-index: 9999 !important;
+            padding: 0 !important; margin: 0 !important; background: #000 !important;
         }
         .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud {
-            padding: 40px 30px; padding-bottom: max(30px, env(safe-area-inset-bottom));
+            padding: 40px 30px; padding-bottom: max(40px, env(safe-area-inset-bottom));
         }
         .cinema-viewport:fullscreen .cinema-title-bar, .cinema-viewport:-webkit-full-screen .cinema-title-bar {
-            padding: 30px 30px; font-size: 18px;
+            padding: max(30px, env(safe-area-inset-top)) 30px; font-size: 18px;
         }
         .cinema-viewport:fullscreen .cinema-btn, .cinema-viewport:-webkit-full-screen .cinema-btn { font-size: 28px; }
         .cinema-viewport:fullscreen .time-badge, .cinema-viewport:-webkit-full-screen .time-badge { font-size: 16px; }
@@ -4612,7 +4615,19 @@ HTML_DASHBOARD = """
         
         /* MAGIC SUBTITLE TRICK: Keep video invisible but active over canvas to render native Cues */
         .hidden-video-feed { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; opacity: 0.001; pointer-events: none; z-index: 5; }
-        ::cue { background: rgba(0,0,0,0.7); color: #fff; font-size: 18px; text-shadow: 1px 1px 2px #000; }
+        ::cue { background: rgba(0,0,0,0.8); color: #fff; font-size: 20px; text-shadow: 2px 2px 4px #000; }
+
+        /* Center Skip Buttons (Visible UI) */
+        .center-controls {
+            position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 40px;
+            z-index: 20; pointer-events: none; opacity: 1; transition: opacity 0.4s ease;
+        }
+        .center-btn {
+            width: 60px; height: 60px; background: rgba(0,0,0,0.6); border-radius: 50%; border: 1px solid rgba(255,255,255,0.2);
+            color: #fff; font-size: 20px; display: flex; align-items: center; justify-content: center;
+            cursor: pointer; pointer-events: auto; backdrop-filter: blur(4px); transition: transform 0.1s, background 0.2s;
+        }
+        .center-btn:active { transform: scale(0.9); background: var(--accent); }
 
         /* Floating Netflix-Style OSD HUD */
         .cinema-hud {
@@ -4850,14 +4865,16 @@ HTML_DASHBOARD = """
                     <!-- Video Title Bar -->
                     <div class="cinema-title-bar" id="cinema-title">No Media Loaded</div>
 
-                    <!-- Double-Tap Seek Zones -->
-                    <div class="seek-zone left" ondblclick="skipPlayback(-15)">⏪ 15s</div>
-                    <div class="seek-zone right" ondblclick="skipPlayback(15)">15s ⏩</div>
-
-                    <!-- Big Play Overlay -->
-                    <div id="big-play-overlay" style="position: absolute; inset: 0; display: none; align-items: center; justify-content: center; z-index: 20; background: rgba(0,0,0,0.5); cursor: pointer;" onclick="togglePlayback()">
-                        <div style="width: 80px; height: 80px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 36px; color: #fff; box-shadow: 0 0 30px var(--glow); padding-left: 6px;">▶</div>
+                    <!-- Center Visible Controls (Play & 15s Skips) -->
+                    <div class="center-controls" id="center-controls">
+                        <div class="center-btn" onclick="skipPlayback(-15)" title="Rewind 15s">⏪</div>
+                        <div class="center-btn" id="big-play-overlay" onclick="togglePlayback()" style="width: 80px; height: 80px; font-size: 32px; background: var(--accent); border: none; box-shadow: 0 0 30px var(--glow);">▶</div>
+                        <div class="center-btn" onclick="skipPlayback(15)" title="Forward 15s">⏩</div>
                     </div>
+
+                    <!-- Double-Tap Seek Zones (Invisible Overlay for Mobile Swipes) -->
+                    <div class="seek-zone left" ondblclick="skipPlayback(-15)"></div>
+                    <div class="seek-zone right" ondblclick="skipPlayback(15)"></div>
 
                     <!-- 3D Over-Under / SBS Matrix Menu -->
                     <div id="menu-3d" class="matrix-3d-menu">
@@ -6132,14 +6149,15 @@ HTML_DASHBOARD = """
             const audioIdx = document.getElementById('pop-audio-select').value;
             const video = document.getElementById('hidden-video');
 
-            let streamUrl = `/api/stream?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&quality=${quality}`;
+            // FIX: Added cache buster (&t=...) so the browser actually reloads the new audio stream
+            let streamUrl = `/api/stream?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&quality=${quality}&t=${Date.now()}`;
             if (audioIdx) streamUrl += `&audio_idx=${audioIdx}`;
 
             const curTime = video.currentTime || 0;
             video.src = streamUrl;
             video.currentTime = curTime;
             video.play();
-            document.getElementById('hud-play-btn').innerText = "❚❚";
+            document.getElementById('hud-play-btn').innerText = "⏸️";
         }
 
         function applySubtitleSelection() {
@@ -6152,9 +6170,19 @@ HTML_DASHBOARD = """
                 track.kind = 'subtitles';
                 track.label = 'Active Subtitles';
                 track.srclang = 'en';
-                track.src = `/api/subtitles?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${subIdx}`;
+                // Cache buster for subtitles
+                track.src = `/api/subtitles?user_id=${currentUser}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${subIdx}&t=${Date.now()}`;
                 track.default = true;
                 video.appendChild(track);
+                
+                // FIX: Force the browser to render the track immediately
+                setTimeout(() => {
+                    if (video.textTracks && video.textTracks.length > 0) {
+                        for (let i = 0; i < video.textTracks.length; i++) {
+                            video.textTracks[i].mode = 'showing';
+                        }
+                    }
+                }, 500);
             }
         }
 
@@ -6184,6 +6212,7 @@ HTML_DASHBOARD = """
         function skipPlayback(sec) {
             const video = document.getElementById('hidden-video');
             video.currentTime += sec;
+            wakeHUD();
         }
 
         function seekPlayback(e) {
@@ -6191,10 +6220,12 @@ HTML_DASHBOARD = """
             const rect = document.getElementById('cinema-scrubber').getBoundingClientRect();
             const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
             if (video.duration) { video.currentTime = pos * video.duration; }
+            wakeHUD();
         }
 
         function toggleSettingsPopup() {
             document.getElementById('media-settings-popup').classList.toggle('open');
+            wakeHUD();
         }
 
         // 📱 Fix for iOS/Safari & Android Fullscreen
@@ -6202,55 +6233,58 @@ HTML_DASHBOARD = """
             const vp = document.getElementById('cinema-viewport');
             if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                 if (vp.requestFullscreen) { vp.requestFullscreen(); }
-                else if (vp.webkitRequestFullscreen) { vp.webkitRequestFullscreen(); } // Safari
+                else if (vp.webkitRequestFullscreen) { vp.webkitRequestFullscreen(); }
             } else {
                 if (document.exitFullscreen) { document.exitFullscreen(); }
                 else if (document.webkitExitFullscreen) { document.webkitExitFullscreen(); }
             }
         }
 
-        // Sync Time, Scrubber, and Big Play Overlay State
+        // Sync Time, Scrubber, and Center Overlay State
         const vidElem = document.getElementById('hidden-video');
+        const centerCtrls = document.getElementById('center-controls');
         const bigPlay = document.getElementById('big-play-overlay');
         const hudPlay = document.getElementById('hud-play-btn');
 
-        // Automatically show/hide the Big Play Overlay based on real browser state
         vidElem.addEventListener('play', () => {
-            bigPlay.style.display = 'none';
             hudPlay.innerText = "⏸️";
+            bigPlay.innerHTML = '⏸️';
+            wakeHUD();
         });
         vidElem.addEventListener('pause', () => {
-            bigPlay.style.display = 'flex';
             hudPlay.innerText = "▶️";
+            bigPlay.innerHTML = '▶';
+            wakeHUD();
         });
         vidElem.addEventListener('waiting', () => {
-            bigPlay.style.display = 'flex';
-            bigPlay.innerHTML = '<div style="color:#fff; font-size:24px;">⏳</div>'; // Loading indicator
+            bigPlay.innerHTML = '⏳';
         });
         vidElem.addEventListener('playing', () => {
-            bigPlay.style.display = 'none';
-            bigPlay.innerHTML = '<div style="width: 80px; height: 80px; background: var(--accent); border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 36px; color: #fff; box-shadow: 0 0 30px var(--glow); padding-left: 6px;">▶</div>';
+            bigPlay.innerHTML = '⏸️';
         });
+
+        // Add auto-hide class to the center controls as well
+        document.getElementById('cinema-viewport').classList.add('idle-hide'); // hide on init
 
         vidElem.addEventListener('timeupdate', () => {
             const cur = vidElem.currentTime || 0;
             const dur = vidElem.duration || 1;
             document.getElementById('scrubber-fill').style.width = (cur / dur * 100) + '%';
             
+            // FIX: Correct HH:MM:SS logic ensuring padded zeros
             const fmt = (s) => {
                 if (isNaN(s) || !isFinite(s)) return "00:00";
                 const h = Math.floor(s / 3600);
                 const m = Math.floor((s % 3600) / 60);
                 const sec = Math.floor(s % 60);
-                const mmss = `${m < 10 ? '0' : ''}${m}:${sec < 10 ? '0' : ''}${sec}`;
-                return h > 0 ? `${h}:${mmss}` : mmss;
+                
+                const hh = h > 0 ? `${h < 10 ? '0' : ''}${h}:` : '';
+                const mm = `${m < 10 ? '0' : ''}${m}:`;
+                const ss = `${sec < 10 ? '0' : ''}${sec}`;
+                return `${hh}${mm}${ss}`;
             };
             document.getElementById('hud-time').innerText = `${fmt(cur)} / ${fmt(dur)}`;
         });
-
-        // Ensure UI wakes up when playback state changes
-        vidElem.addEventListener('pause', wakeHUD);
-        vidElem.addEventListener('play', wakeHUD);
     </script>
 </body>
 </html>
