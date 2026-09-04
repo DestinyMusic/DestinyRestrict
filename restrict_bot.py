@@ -7789,15 +7789,21 @@ async def _api_stream_handler(request):
                 if start_float > 0:
                     ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
 
+            ffmpeg_cmd.extend(["-sn"])
+            
+            if quality == "Original":
+                # FAST PLAYBACK: Instantly copies video stream instead of CPU-heavy re-encoding
+                ffmpeg_cmd.extend(["-c:v", "copy"])
+            else:
+                ffmpeg_cmd.extend([
+                    "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"
+                ])
+
             ffmpeg_cmd.extend([
-                "-sn",
-                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
-                "-pix_fmt", "yuv420p",
                 "-c:a", "aac", "-b:a", "192k",
                 "-movflags", "frag_keyframe+empty_moov+default_base_moof",
                 "-f", "mp4", "pipe:1"
             ])
-
             proc = await asyncio.create_subprocess_exec(
                 *ffmpeg_cmd,
                 stdin=asyncio.subprocess.PIPE,
@@ -7852,6 +7858,65 @@ async def _api_stream_handler(request):
     # ======================================================================
     # DIRECT HTTP SOURCE — proxy instead of 302 so WebGL gets CORS-safe bytes.
     # ======================================================================
+    
+    # Intercept unsupported HTTP containers or audio-track switches for FFmpeg bridge
+    lower_link = link.lower()
+    needs_ffmpeg = (quality != "Original" or audio_idx is not None or 
+                    bool(re.search(r"\.(mkv|avi|flv|vob|wmv|ts|m3u8|mpd)(?:$|[?#])", lower_link)))
+
+    if needs_ffmpeg:
+        res_scale_map = {"4K": "3840:-2", "1080p": "1920:-2", "720p": "1280:-2", "480p": "854:-2", "360p": "640:-2"}
+        scale_filter = res_scale_map.get(quality)
+        ffmpeg_cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error"]
+        
+        # Fast input seek for HTTP links
+        if start_time is not None:
+            try:
+                start_float = max(0.0, float(start_time))
+                if start_float > 0:
+                    ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
+            except: pass
+            
+        ffmpeg_cmd.extend(["-i", link])
+
+        if scale_filter:
+            ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
+
+        if audio_idx is not None and str(audio_idx).strip() != "":
+            ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
+        else:
+            ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
+
+        ffmpeg_cmd.extend(["-sn"])
+        if quality == "Original":
+            ffmpeg_cmd.extend(["-c:v", "copy"])
+        else:
+            ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"])
+
+        ffmpeg_cmd.extend([
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
+            "-f", "mp4", "pipe:1"
+        ])
+
+        proc = await asyncio.create_subprocess_exec(
+            *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        )
+        response = web.StreamResponse(status=200, headers={"Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*", "Accept-Ranges": "none", "Cache-Control": "no-store"})
+        await response.prepare(request)
+
+        async def pipe_ffmpeg_to_response():
+            try:
+                while True:
+                    buf = await proc.stdout.read(64 * 1024)
+                    if not buf: break
+                    await response.write(buf)
+                await response.write_eof()
+            except Exception: pass
+
+        await asyncio.create_task(pipe_ffmpeg_to_response())
+        return response
+
     headers = {"User-Agent": "Mozilla/5.0"}
     if request.headers.get("Range"):
         headers["Range"] = request.headers["Range"]
@@ -7921,39 +7986,43 @@ async def _api_subtitles_handler(request):
     sub_idx = request.query.get("sub_idx", "0")
     uclient = USER_CLIENTS.get(user_id, app)
 
-    if not link or "t.me" not in link:
+    if not link:
         return web.Response(status=400, text="Invalid Link")
 
-    parsed = _parse_source_link(link)
-    chat_id = parsed.get("chat_id")
-    msg_id = parsed.get("msg_id")
-    if chat_id is None or msg_id is None:
-        return web.Response(status=400, text="Invalid Telegram media link")
+    is_tg = "t.me" in link
+    msg = None
+    if is_tg:
+        parsed = _parse_source_link(link)
+        chat_id = parsed.get("chat_id")
+        msg_id = parsed.get("msg_id")
+        if chat_id is None or msg_id is None:
+            return web.Response(status=400, text="Invalid Telegram media link")
+        try:
+            msg = await uclient.get_messages(chat_id, msg_id)
+            if not msg:
+                return web.Response(status=404, text="Media not found")
+        except Exception as e:
+            return web.Response(status=500, text=str(e))
 
     try:
-        msg = await uclient.get_messages(chat_id, msg_id)
-        if not msg:
-            return web.Response(status=404, text="Media not found")
-
-        # Do NOT use a 10 MB Telegram limit here: subtitle packets can occur much later.
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-i", "pipe:0",
+            "-i", "pipe:0" if is_tg else link,
             "-map", f"0:{sub_idx}",
             "-f", "webvtt", "pipe:1"
         ]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
-            stdin=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE if is_tg else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
 
         async def feed():
+            if not is_tg or not msg: return
             try:
                 media_stream = msg.document or msg.video or msg.audio
-                if not media_stream:
-                    return
+                if not media_stream: return
                 async for chunk in uclient.stream_media(msg):
                     if proc.stdin.is_closing(): break
                     proc.stdin.write(chunk)
