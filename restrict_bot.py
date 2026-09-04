@@ -6161,7 +6161,7 @@ async def _api_spectrogram_web_handler(request):
     output_img = temp_dir / "spectrogram.png"
     
     try:
-        # 1. DOWNLOAD CHUNK
+        # 1. DOWNLOAD FULL FILE
         if "t.me" in url or "telegram.me" in url:
             parsed = _parse_source_link(url)
             chat_id = parsed.get("chat_id")
@@ -6173,9 +6173,9 @@ async def _api_spectrogram_web_handler(request):
                 
             msg = await uclient.get_messages(chat_id, msg_id)
             if msg.empty: return web.json_response({"status": "error", "message": "Message not found or inaccessible"})
-            await download_audio_snippet_tg(uclient, msg, original_file, limit_mb=10)
+            await uclient.download_media(msg, file_name=str(original_file))
         elif url.startswith("http"):
-            await download_audio_snippet_http(url, original_file, limit_mb=10)
+            await full_download_http(url, original_file)
         else:
             return web.json_response({"status": "error", "message": "Invalid link format"})
 
@@ -6404,6 +6404,16 @@ async def download_audio_snippet_http(url, file_path, limit_mb=15):
                     if current_bytes >= limit_mb * 1024 * 1024:
                         break
 
+async def full_download_http(url, file_path):
+    """Full HTTP download for Spectrogram analysis."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            resp.raise_for_status()
+            with open(file_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(1024 * 1024):
+                    f.write(chunk)
+                    
 @app.on_message(filters.command(["mediainfo", "mi"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def mediainfo_handler(client: Client, message: Message):
     url = None
@@ -6760,7 +6770,7 @@ async def tg_spectrogram_cmd(client: Client, message: Message):
     output_img = temp_dir / "spectrogram.png"
 
     try:
-        # 1. DOWNLOAD LOGIC
+        # 1. DOWNLOAD LOGIC (FULL FILE)
         if url:
             if "t.me" in url or "telegram.me" in url:
                 parsed = _parse_source_link(url)
@@ -6773,11 +6783,11 @@ async def tg_spectrogram_cmd(client: Client, message: Message):
                     
                 msg = await uclient.get_messages(chat_id, msg_id)
                 if msg.empty: return await status_msg.edit_text("❌ Message not found or inaccessible.")
-                await download_audio_snippet_tg(uclient, msg, original_file, limit_mb=10)
+                await uclient.download_media(msg, file_name=str(original_file))
             else:
-                await download_audio_snippet_http(url, original_file, limit_mb=10)
+                await full_download_http(url, original_file)
         else:
-            await download_audio_snippet_tg(client, media_msg, original_file, limit_mb=10)
+            await client.download_media(media_msg, file_name=str(original_file))
 
         # 2. CONVERSION
         await status_msg.edit_text("📉 <b>Running DSP Mathematics...</b>", parse_mode=enums.ParseMode.HTML)
