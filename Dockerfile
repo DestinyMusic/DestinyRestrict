@@ -21,6 +21,7 @@ RUN apt-get update -qq && \
     mediainfo \
     ffmpeg \
     sox && \
+    fonts-freefont-ttf && \
     rm -rf /var/lib/apt/lists/*
 
 # 6. Change ownership of the app directory to the new Hugging Face user
