@@ -2,9 +2,25 @@
 import os
 import psutil
 import time
-import uvloop
-uvloop.install()
 import asyncio
+import uvloop
+
+# --- 1. EVENT LOOP INITIALIZATION (FOR PYROFORK/WZGRAM) ---
+uvloop.install()
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+# ----------------------------------------------------------
+
+# --- 2. BULLETPROOF KURIGRAM CRASH FIX ---
+import pyrogram.enums
+if not hasattr(pyrogram.enums, "ButtonStyle"):
+    class DummyButtonStyle:
+        DEFAULT = 0
+    pyrogram.enums.ButtonStyle = DummyButtonStyle
+# -----------------------------------------
+
 import re
 import shutil
 import subprocess
@@ -14,7 +30,45 @@ import uuid
 from pathlib import Path
 from collections import defaultdict, OrderedDict
 import motor.motor_asyncio
+
 from pyrogram import Client, filters, enums, idle
+
+# --- UNIVERSAL FORK & PYROMOD SUBSCRIPTABLE PATCH ---
+# This bridges the gap between Pyromod's dictionary expectations 
+# and modern Telegram forks' custom ListenerRegistry objects.
+try:
+    from pyrogram.dispatcher import ListenerRegistry
+    
+    if not hasattr(ListenerRegistry, "__getitem__"):
+        def _reg_getitem(self, key):
+            for attr in ["registry", "_registry", "data", "_data", "listeners"]:
+                val = getattr(self, attr, None)
+                if isinstance(val, dict):
+                    return val[key]
+            return getattr(self, key, {})
+        ListenerRegistry.__getitem__ = _reg_getitem
+
+    if not hasattr(ListenerRegistry, "__setitem__"):
+        def _reg_setitem(self, key, value):
+            for attr in ["registry", "_registry", "data", "_data", "listeners"]:
+                val = getattr(self, attr, None)
+                if isinstance(val, dict):
+                    val[key] = value
+                    return
+            setattr(self, key, value)
+        ListenerRegistry.__setitem__ = _reg_setitem
+
+    if not hasattr(ListenerRegistry, "get"):
+        def _reg_get(self, key, default=None):
+            try:
+                return self[key]
+            except (KeyError, TypeError):
+                return default
+        ListenerRegistry.get = _reg_get
+except ImportError:
+    pass
+# --------------------------------------------------
+
 from pyrogram.errors import (
     FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant,
     InviteHashExpired, UsernameNotOccupied, FileReferenceExpired, UserNotParticipant,
@@ -37,6 +91,18 @@ import logging
 from telegraph import Telegraph
 from bson.objectid import ObjectId      # <-- REQUIRED FOR UNIQUE ROUTING
 import speedtest                        # <-- REQUIRED FOR SPEEDTEST
+import numpy as np
+from scipy.io import wavfile
+from scipy.signal import welch, stft
+from PIL import Image, ImageDraw, ImageFont
+from mutagen import File as MutagenFile
+import base64
+
+try:
+    import pyloudnorm as pyln
+    HAS_PYLN = True
+except ImportError:
+    HAS_PYLN = False
 
 # --- MASTER LOGGING SETUP ---
 logging.basicConfig(
@@ -425,15 +491,38 @@ db = Database(DB_URI, DB_NAME)
 # --- CLIENT & GLOBAL STATE ---
 # ==============================================================================
 
+import inspect
+import os
+
+def get_transmission_kwargs(workers: int = 8) -> dict:
+    """
+    Dynamically detects fork support for concurrent transmissions.
+    Uses MAX_CONCURRENT_TRANSMISSIONS from .env, or scales automatically via CPU cores.
+    """
+    sig = inspect.signature(Client.__init__)
+    if "max_concurrent_transmissions" not in sig.parameters:
+        return {}
+
+    env_val = os.environ.get("MAX_CONCURRENT_TRANSMISSIONS", "").strip()
+    if env_val.isdigit() and int(env_val) > 0:
+        val = int(env_val)
+    else:
+        cpu_cores = os.cpu_count() or 2
+        val = min(workers, max(2, cpu_cores * 2))
+
+    return {"max_concurrent_transmissions": val}
+
+bot_workers = min(32, (os.cpu_count() or 2) * 8)
+
 app = Client(
-    "RestrictedBot",
+    name="RestrictedBot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
-    workers=min(32, (os.cpu_count() or 2) * 8), # Increased workers
-    max_concurrent_transmissions=10,            # <--- NATIVE PARALLEL CHUNKING
+    workers=bot_workers,
     sleep_threshold=20,
-    ipv6=False                    
+    ipv6=False,
+    **get_transmission_kwargs(workers=bot_workers)
 )
 
 import random
@@ -452,7 +541,7 @@ REACTIONS = [
 ALL_COMMANDS = [
     "start", "help", "login", "logout", "dl", "watch", "unwatch", 
     "watchers", "cancel", "broadcast", "botstats", "status", 
-    "log", "pixel", "sos", "mediainfo", "mi", "chats", "speedtest"
+    "log", "pixel", "sos", "mediainfo", "mi", "chats", "speedtest", "spectrogram", "spec"
 ]
 
 @app.on_message(filters.command(ALL_COMMANDS), group=-1)
@@ -1429,11 +1518,16 @@ async def speedtest_handler(client: Client, message: Message):
     
     def run_speedtest_sync():
         try:
-            st = speedtest.Speedtest()
+            # secure=True forces HTTPS to bypass datacenter port blocks
+            st = speedtest.Speedtest(secure=True)
             st.get_best_server()
             st.download()
             st.upload()
-            st.results.share() # Generates the image link
+            try:
+                # Silently ignore image generation if Speedtest blocks the datacenter IP
+                st.results.share() 
+            except Exception:
+                pass 
             return st.results.dict(), None
         except Exception as e:
             return None, str(e)
@@ -1856,12 +1950,27 @@ async def confirm_logout_cb(client, query):
 
 from pyrogram.types import ReplyKeyboardMarkup, ReplyKeyboardRemove
 
+# --- UNIVERSAL LISTENER EXCEPTION MAPPING ---
+try:
+    from pyromod.exceptions import ListenerStopped
+except ImportError:
+    class ListenerStopped(Exception): pass
+
+try:
+    from pyrogram.errors import ListenerCanceled as NativeListenerStopped
+except ImportError:
+    class NativeListenerStopped(Exception): pass
+# --------------------------------------------
+
 @app.on_callback_query(filters.regex("^cancel_login$"))
 async def cancel_login_cb(client, query):
     user_id = query.from_user.id
     
+    # Attempt to kill the Pyromod or Native .ask() listener instantly
     try:
-        if hasattr(client, "cancel_listener"):
+        if hasattr(client, "stop_listening"):
+            await client.stop_listening(chat_id=user_id)
+        elif hasattr(client, "cancel_listener"):
             client.cancel_listener(user_id)
         elif hasattr(client, "listen") and hasattr(client.listen, "cancel"):
             client.listen.cancel(user_id)
@@ -2032,8 +2141,8 @@ async def login_handler(bot: Client, message: Message):
         await bot.send_message(user_id, success_msg, parse_mode=enums.ParseMode.HTML)
 
     # --- ERROR HANDLERS ---
-    except ListenerStopped:
-        # Silently caught when Cancel button is pressed
+    except (ListenerStopped, NativeListenerStopped, asyncio.CancelledError):
+        # Silently caught when Cancel button is pressed or task is natively cancelled by the fork
         if client_auth and client_auth.is_connected:
             try: await client_auth.disconnect()
             except: pass
@@ -2399,6 +2508,11 @@ async def unwatch_callback(client, query):
 
 @app.on_message((filters.text | filters.caption) & filters.private & ~filters.command(ALL_COMMANDS))
 async def save(client: Client, message: Message):
+    # 🟢 WZGRAM FALLBACK FIX: Prevent capturing unknown commands as links!
+    text_content = message.text or message.caption or ""
+    if text_content.startswith("/"):
+        return
+        
     user_id = message.from_user.id
     if user_id in PENDING_TASKS:
         if PENDING_TASKS[user_id].get("status") == "waiting_id":
@@ -2508,23 +2622,49 @@ async def chats_cmd(client: Client, message: Message):
 
     users, groups, channels, bots = [], [], [], []
     
-    try:
-        async for d in uclient.get_dialogs():
-            name = html.escape(d.chat.title or d.chat.first_name or "Unknown")
-            cid = d.chat.id
-            line = f"• <b>{name}</b> │ <code>{cid}</code>"
+    # 🟢 RETRY LOOP: Handles transient network drops or fork-specific socket timeouts
+    max_retries = 3
+    success = False
+    last_err = None
+
+    for attempt in range(max_retries):
+        try:
+            users.clear(); groups.clear(); channels.clear(); bots.clear()
+            async for d in uclient.get_dialogs():
+                chat = getattr(d, "chat", None)
+                if not chat:
+                    continue
+                cid = getattr(chat, "id", None)
+                if not cid:
+                    continue
+
+                title = getattr(chat, "title", None)
+                first_name = getattr(chat, "first_name", None)
+                name = html.escape(title or first_name or f"Chat {cid}")
+                line = f"• <b>{name}</b> │ <code>{cid}</code>"
+                
+                c_type = getattr(chat, "type", None)
+                type_str = str(c_type).lower() if c_type else ""
+                
+                if "group" in type_str or "supergroup" in type_str:
+                    groups.append(line)
+                elif "channel" in type_str:
+                    channels.append(line)
+                elif "bot" in type_str:
+                    bots.append(line)
+                elif "private" in type_str:
+                    users.append(line)
             
-            if d.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-                groups.append(line)
-            elif d.chat.type == enums.ChatType.CHANNEL:
-                channels.append(line)
-            elif d.chat.type == enums.ChatType.BOT:
-                bots.append(line)
-            elif d.chat.type == enums.ChatType.PRIVATE:
-                users.append(line)
-    except Exception as e:
-        return await status.edit(f"❌ <b>Error reading dialogs:</b> <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
-        
+            success = True
+            break
+        except Exception as e:
+            last_err = e
+            bot_logger.warning(f"Dialog fetch attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+
+    if not success:
+        return await status.edit(f"❌ <b>Error reading dialogs after retries:</b> <code>{last_err}</code>", parse_mode=enums.ParseMode.HTML)
+
     await status.delete()
 
     def chunk_list(items, chunk_size=50):
@@ -3341,16 +3481,18 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 api_id = await db.get_api_id(user_id) or API_ID
                 api_hash = await db.get_api_hash(user_id) or API_HASH
                 
+                user_workers = 8
+                
                 acc = Client(
-                    ":memory:", 
+                    name=":memory:", 
                     session_string=user_data, 
                     api_hash=api_hash, 
                     api_id=api_id, 
                     no_updates=True,
-                    workers=8,                              # <--- Give it more async threads
-                    max_concurrent_transmissions=10,        # <--- NATIVE PARALLEL CHUNKING
+                    workers=user_workers,
                     sleep_threshold=60,
-                    ipv6=False
+                    ipv6=False,
+                    **get_transmission_kwargs(workers=user_workers)
                 )
                 await acc.start()
                 is_temp_acc = True
@@ -4477,6 +4619,7 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('sos', 'System SOS')">🖥 System SOS</div>
             <div class="menu-item" onclick="switchView('logs', 'Logs')">📋 System Logs</div>
             <div class="menu-item" onclick="switchView('mediainfo', 'Media Inspector')">🔍 Media Inspector</div>
+            <div class="menu-item" onclick="switchView('spectrogram', 'Audio Spectrogram')">📉 Audio Spectrogram</div>
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
 
@@ -4695,6 +4838,22 @@ HTML_DASHBOARD = """
                 </div>
                 <div class="card" id="mi-results-card" style="display: none;">
                     <div id="mi-results-content" style="font-family: monospace; font-size: 13px; color: var(--text); overflow-x: auto; white-space: pre-wrap; line-height: 1.5;"></div>
+                </div>
+            </div>
+
+            <div id="view-spectrogram" class="view-section">
+                <div class="section-title">Spectrogram & DSP Analyzer</div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <p style="font-size: 12px; color: var(--subtext); margin-bottom: 15px;">Paste a direct Telegram link (`t.me/c/...`) or HTTP link to an audio file. The server will download a small chunk and render the frequencies.</p>
+                    <div class="input-group">
+                        <label>Audio Link</label>
+                        <input type="text" id="spec-link" placeholder="https://t.me/c/123/456 or http://...">
+                    </div>
+                    <button class="primary-btn" id="spec-btn" style="background: #e11d48;" onclick="runWebSpectrogram()">Generate Spectrogram</button>
+                </div>
+                <div class="card" id="spec-results-card" style="display: none; text-align: center;">
+                    <img id="spec-image" style="max-width: 100%; border-radius: 12px; margin-bottom: 15px; border: 1px solid var(--card-border);" />
+                    <div id="spec-html" style="font-family: monospace; font-size: 13px; color: var(--text); overflow-x: auto; white-space: pre-wrap; line-height: 1.5; text-align: left;"></div>
                 </div>
             </div>
             
@@ -5089,14 +5248,15 @@ HTML_DASHBOARD = """
                 if (data.status === 'success') {
                     warnBox.style.display = 'none';
                     allLoadedChats = data.chats || [];
-
                     renderFilteredChats();
                 } else {
                     warnBox.style.display = 'block';
-                    container.innerHTML = '<div style="color: var(--subtext);">No chats available. Connect session first.</div>';
+                    // Show the actual Python error message so we know why it failed
+                    container.innerHTML = `<div style="color: var(--subtext); padding: 10px;">${data.message}</div>`;
                 }
             } catch(e) {
-                container.innerHTML = '<div style="color: var(--danger);">Failed to load dialogs.</div>';
+                warnBox.style.display = 'block';
+                container.innerHTML = `<div style="color: var(--danger); padding: 10px;">Network Error: Could not connect to the bot server. Request timed out.</div>`;
             } finally {
                 // Restore button instantly
                 if (refreshBtn) { refreshBtn.innerText = "🔄 Refresh"; refreshBtn.style.opacity = "1"; refreshBtn.style.pointerEvents = "auto"; }
@@ -5413,7 +5573,38 @@ HTML_DASHBOARD = """
                 btn.innerText = "Analyze File";
                 btn.disabled = false;
             }
-        }        
+        }
+
+        // --- SPECTROGRAM LOGIC ---
+        async function runWebSpectrogram() {
+            const link = document.getElementById('spec-link').value;
+            if(!link) return alert("Please enter a link!");
+            const btn = document.getElementById('spec-btn');
+            btn.innerText = "⏳ Running DSP & Rendering (Please wait)...";
+            btn.disabled = true;
+            document.getElementById('spec-results-card').style.display = 'none';
+            
+            try {
+                const res = await fetch('/api/spectrogram', {
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: currentUser, link: link})
+                });
+                const data = await res.json();
+                if(data.status === 'success') {
+                    document.getElementById('spec-results-card').style.display = 'block';
+                    document.getElementById('spec-image').src = "data:image/png;base64," + data.image;
+                    document.getElementById('spec-html').innerHTML = data.html;
+                } else {
+                    alert("Error: " + data.message);
+                }
+            } catch(e) {
+                alert("Network error.");
+            } finally {
+                btn.innerText = "Generate Spectrogram";
+                btn.disabled = false;
+            }
+        }
     </script>
 </body>
 </html>
@@ -5836,42 +6027,63 @@ async def _api_tg_logout(request):
 
 async def _api_chats_handler(request):
     uid = int(request.query.get("user_id", 0))
-    uclient = USER_CLIENTS.get(uid)
+    session_str = await db.get_session(uid)
     
-    # 🟢 DYNAMIC WAKE-UP FOR WEB DASHBOARD
+    if not session_str:
+        return web.json_response({"status": "error", "message": "Not connected to Telegram. Please login."})
+
+    uclient = USER_CLIENTS.get(uid)
+    is_temp = False
+    
+    # 🟢 DYNAMIC WAKE-UP: Use :memory: to prevent SQLite File Locks that freeze the bot!
     if not uclient or not uclient.is_connected:
-        session_str = await db.get_session(uid)
-        if not session_str:
-            return web.json_response({"status": "error", "message": "Not connected to Telegram. Please login."})
-        
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
-            await uclient.start()
-            USER_CLIENTS[uid] = uclient
+            uclient = Client(":memory:", session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+            await uclient.connect()
+            is_temp = True
         except Exception as e:
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     chat_list = []
-    count = 0
     try:
-        # Limited to 500 so the API doesn't crash, and yields to the server every 25 chats so nothing freezes.
-        async for d in uclient.get_dialogs(limit=500):
-            name = d.chat.title or d.chat.first_name or "Unknown"
-            c_type = d.chat.type
-            
-            cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
-            is_forum = getattr(d.chat, "is_forum", False)
-            chat_list.append({"id": str(d.chat.id), "name": f"[{cat}] {name}", "is_forum": is_forum})
-            
-            count += 1
-            if count % 25 == 0:
-                await asyncio.sleep(0) # This tells the server to breathe!
+        async def fetch_dialogs():
+            chats = []
+            count = 0
+            async for d in uclient.get_dialogs(limit=300):
+                chat = getattr(d, "chat", None)
+                if not chat:
+                    continue
+                cid = getattr(chat, "id", None)
+                if not cid:
+                    continue
+
+                title = getattr(chat, "title", None)
+                first_name = getattr(chat, "first_name", None)
+                name = title or first_name or f"Chat {cid}"
+                c_type = getattr(chat, "type", None)
+                
+                cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
+                is_forum = getattr(chat, "is_forum", False)
+                chats.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
+                count += 1
+                if count % 25 == 0:
+                    await asyncio.sleep(0)
+            return chats
+
+        # Prevent indefinite hangs with a 15-second timeout
+        chat_list = await asyncio.wait_for(fetch_dialogs(), timeout=15.0)
+
+    except asyncio.TimeoutError:
+        return web.json_response({"status": "error", "message": "Telegram API took too long to respond. Try again."})
     except Exception as e: 
         return web.json_response({"status": "error", "message": str(e)})
-        
+    finally:
+        if is_temp:
+            try: await uclient.disconnect()
+            except: pass
+            
     return web.json_response({"status": "success", "chats": chat_list})
 
 async def _api_speedtest_handler(request):
@@ -5886,11 +6098,14 @@ async def _api_speedtest_handler(request):
 
     def run_speedtest_sync():
         try:
-            st = speedtest.Speedtest()
+            st = speedtest.Speedtest(secure=True)
             st.get_best_server()
             st.download()
             st.upload()
-            st.results.share()
+            try:
+                st.results.share()
+            except Exception:
+                pass
             return st.results.dict(), None
         except Exception as e:
             return None, str(e)
@@ -5990,16 +6205,39 @@ async def _api_topics_handler(request):
     try: chat_id = int(chat_id)
     except: pass
     
+    session_str = await db.get_session(uid)
+    if not session_str:
+        return web.json_response({"status": "error", "message": "Not connected to Telegram."})
+
     uclient = USER_CLIENTS.get(uid)
+    is_temp = False
+
     if not uclient or not uclient.is_connected:
-        return web.json_response({"status": "error", "message": "Telegram session not active"})
+        try:
+            api_id = await db.get_api_id(uid) or API_ID
+            api_hash = await db.get_api_hash(uid) or API_HASH
+            uclient = Client(":memory:", session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+            await uclient.connect()
+            is_temp = True
+        except Exception as e:
+            return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
     
     topics = []
     try:
-        async for topic in uclient.get_forum_topics(chat_id):
-            topics.append({"id": topic.id, "title": topic.title})
-    except Exception as e:
+        async def fetch_topics():
+            t_list = []
+            async for topic in uclient.get_forum_topics(chat_id):
+                t_list.append({"id": topic.id, "title": topic.title})
+            return t_list
+            
+        topics = await asyncio.wait_for(fetch_topics(), timeout=10.0)
+    except Exception:
         pass 
+    finally:
+        if is_temp:
+            try: await uclient.disconnect()
+            except: pass
+
     return web.json_response({"status": "success", "topics": topics})
 
 async def _api_mediainfo_web_handler(request):
@@ -6084,6 +6322,88 @@ async def _api_mediainfo_web_handler(request):
             try: os.remove(file_path)
             except: pass
 
+async def _api_spectrogram_web_handler(request):
+    data = await request.json()
+    uid = int(data.get("user_id", 0))
+    url = data.get("link", "")
+    if not url: return web.json_response({"status": "error", "message": "No link provided"})
+    
+    temp_dir = Path(f"./temp_sox_web_{uid}_{int(time.time())}")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    original_file = temp_dir / "audio_input.dat"
+    wav_file = temp_dir / "converted.wav"
+    output_img = temp_dir / "spectrogram.png"
+    
+    try:
+        # 1. DOWNLOAD FULL FILE
+        if "t.me" in url or "telegram.me" in url:
+            parsed = _parse_source_link(url)
+            chat_id = parsed.get("chat_id")
+            msg_id = parsed.get("msg_id")
+            
+            uclient = USER_CLIENTS.get(uid)
+            if not uclient or not uclient.is_connected:
+                return web.json_response({"status": "error", "message": "Telegram session not active. Connect in Settings."})
+                
+            msg = await uclient.get_messages(chat_id, msg_id)
+            if msg.empty: return web.json_response({"status": "error", "message": "Message not found or inaccessible"})
+            await uclient.download_media(msg, file_name=str(original_file))
+        elif url.startswith("http"):
+            await full_download_http(url, original_file)
+        else:
+            return web.json_response({"status": "error", "message": "Invalid link format"})
+
+        # 2. FFMPEG
+        ffmpeg_cmd = ["ffmpeg", "-i", str(original_file), "-vn", "-ac", "2", "-c:a", "pcm_f32le", str(wav_file), "-y"]
+        process = await asyncio.create_subprocess_exec(*ffmpeg_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        await process.wait()
+        
+        if not wav_file.exists(): return web.json_response({"status": "error", "message": "Audio Extraction Failed."})
+
+        # 3. DSP & SOX
+        stats = generate_audio_stats_dsp(str(wav_file), str(original_file), "Web Audio")
+        if not stats: return web.json_response({"status": "error", "message": "DSP Processing Failed."})
+
+        sox_cmd = ["sox", str(wav_file), "-n", "spectrogram", "-o", str(output_img), "-x", "1000", "-Y", "800", "-c", "Audio", "-t", " "]
+        process_sox = await asyncio.create_subprocess_exec(*sox_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        await process_sox.communicate()
+
+        if not output_img.exists(): return web.json_response({"status": "error", "message": "SoX Generation Failed."})
+
+        # 4. CONVERT TO BASE64 & HTML
+        with open(output_img, "rb") as img_f:
+            img_b64 = base64.b64encode(img_f.read()).decode('utf-8')
+
+        m = stats['mastering']
+        mastering_html = ""
+        if m:
+            mastering_html = (
+                f"<br><span style='color:var(--accent);'><b>— MASTERING ANALYSIS —</b></span><br>"
+                f"🎚 <b>Dynamic Range:</b> DR {m['dr']}<br>"
+                f"🔊 <b>Loudness:</b> {m['lufs']:.1f} LUFS<br>"
+                f"📈 <b>Peak / RMS:</b> {m['peak']:.2f} dBFS / {m['rms']:.2f} dB<br>"
+                f"🏷 <b>Score:</b> {m['grade']}"
+            )
+
+        html_stats = (
+            f"<span style='color:#10b981;'><b>{stats['auth_badge']}</b></span><br>"
+            f"<i>{stats['auth_desc']}</i><br><br>"
+            f"📀 <b>Format:</b> {stats['format']} • {stats['channel_str']} • {stats['bit_depth']}-bit • {stats['sample_rate']/1000} kHz<br>"
+            f"📈 <b>Cutoff:</b> {stats['cutoff']} kHz<br>"
+            f"🧱 <b>Cliff Drop:</b> {stats['cliff_drop']:.1f} dB"
+            f"{mastering_html}"
+        )
+
+        return web.json_response({"status": "success", "image": img_b64, "html": html_stats})
+
+    except Exception as e:
+        return web.json_response({"status": "error", "message": f"Processing error: {e}"})
+    finally:
+        import shutil
+        try: shutil.rmtree(str(temp_dir), ignore_errors=True)
+        except: pass
+        
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -6111,6 +6431,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_post("/api/task/cancel", _api_cancel_task)
     app_web.router.add_post("/api/watcher/add", _api_add_watcher)
     app_web.router.add_post("/api/watcher/cancel", _api_cancel_watcher)
+    app_web.router.add_post("/api/spectrogram", _api_spectrogram_web_handler)
     
     runner = web.AppRunner(app_web)
     await runner.setup()
@@ -6234,6 +6555,40 @@ async def partial_download_http(url, file_path, limit_mb=15):
                         if current_bytes > limit_bytes: break
         return file_size, detected_name
 
+async def download_audio_snippet_tg(client_to_use, message, file_path, limit_mb=15):
+    """Continuous download of the first X MB so SoX/FFmpeg reads it as a valid truncated file."""
+    with open(file_path, "wb") as f:
+        current_bytes = 0
+        async for chunk in client_to_use.stream_media(message):
+            f.write(chunk)
+            current_bytes += len(chunk)
+            if current_bytes >= limit_mb * 1024 * 1024:
+                break
+
+async def download_audio_snippet_http(url, file_path, limit_mb=15):
+    """Continuous HTTP download of the first X MB."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            resp.raise_for_status()
+            with open(file_path, "wb") as f:
+                current_bytes = 0
+                async for chunk in resp.content.iter_chunked(1024 * 1024):
+                    f.write(chunk)
+                    current_bytes += len(chunk)
+                    if current_bytes >= limit_mb * 1024 * 1024:
+                        break
+
+async def full_download_http(url, file_path):
+    """Full HTTP download for Spectrogram analysis."""
+    headers = {"User-Agent": "Mozilla/5.0"}
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url, headers=headers) as resp:
+            resp.raise_for_status()
+            with open(file_path, "wb") as f:
+                async for chunk in resp.content.iter_chunked(1024 * 1024):
+                    f.write(chunk)
+                    
 @app.on_message(filters.command(["mediainfo", "mi"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
 async def mediainfo_handler(client: Client, message: Message):
     url = None
@@ -6393,6 +6748,282 @@ async def mediainfo_handler(client: Client, message: Message):
             try: os.remove(file_path)
             except Exception as e: logger.debug(f"MediaInfo cleanup failed: {e}")
 
+# ==============================================================================
+# --- THE ULTIMATE FORENSIC & MASTERING AUDIO ANALYZER ---
+# ==============================================================================
+
+def get_channel_info_dsp(file_path):
+    try:
+        cmd = ["ffprobe", "-v", "error", "-select_streams", "a:0", "-show_entries", "stream=channels,channel_layout,codec_name", "-of", "json", str(file_path)]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        info = json.loads(result.stdout)['streams'][0]
+        
+        channels = info.get('channels', 2)
+        layout = info.get('channel_layout', 'unknown').lower()
+        codec = info.get('codec_name', '').lower()
+
+        codec_map = {'alac': 'ALAC', 'aac': 'AAC', 'flac': 'FLAC', 'mp3': 'MP3', 'eac3': 'E-AC-3', 'ac4': 'AC-4', 'truehd': 'TrueHD', 'opus': 'OPUS', 'vorbis': 'OGG', 'pcm_s16le': 'WAV'}
+        detected_format = codec_map.get(codec, codec.upper() if codec else "AUDIO")
+
+        is_spatial = False
+        if codec in ['eac3', 'ac4', 'truehd']:
+            is_spatial = True
+            channel_str = f"{channels} Ch (Binaural Downmix)" if 'binaural' in layout else f"{channels} Ch (Spatial / Atmos)"
+        elif layout != 'unknown':
+            channel_str = f"{channels} Ch ({layout.title()})"
+        else:
+            channel_str = f"{channels} Ch"
+
+        return detected_format, channel_str, is_spatial
+    except Exception: return "AUDIO", "2.0 Ch (Stereo)", False
+
+def analyze_mastering(data, sr):
+    try:
+        if data.ndim == 1: data = np.expand_dims(data, axis=1)
+        samples, channels = data.shape
+
+        dc_offset_db = 20 * np.log10(np.abs(np.mean(data, axis=0)) + 1e-12)
+        worst_dc = np.max(dc_offset_db)
+
+        peak_db = 20 * np.log10(np.max(np.abs(data), axis=0) + 1e-12)
+        max_peak = np.max(peak_db)
+        rms_db = 20 * np.log10(np.sqrt(np.mean(data**2, axis=0)) + 1e-12)
+        avg_rms = np.mean(rms_db)
+
+        clip_events = 0
+        for ch in range(channels):
+            is_clip = (np.abs(data[:, ch]) >= 0.997).astype(int)
+            if len(is_clip) >= 3:
+                seq = np.convolve(is_clip, np.ones(3), mode='valid')
+                clip_events += np.sum(seq == 3)
+
+        correlation = 1.0
+        if channels >= 2:
+            c1, c2 = data[:, 0] - np.mean(data[:, 0]), data[:, 1] - np.mean(data[:, 1])
+            den = np.sqrt(np.sum(c1**2) * np.sum(c2**2))
+            if den > 0: correlation = np.sum(c1 * c2) / den
+
+        lufs = -70.0
+        if HAS_PYLN:
+            meter = pyln.Meter(sr)
+            lufs = meter.integrated_loudness(data)
+
+        dr_channels = []
+        for ch in range(channels):
+            ch_data = data[:, ch]
+            block_samples = 3 * sr
+            num_blocks = len(ch_data) // block_samples
+            if num_blocks > 1:
+                rms_blocks = [np.sqrt(2 * np.mean(ch_data[i*block_samples:(i+1)*block_samples]**2) + 1e-12) for i in range(num_blocks)]
+                peak_blocks = [np.max(np.abs(ch_data[i*block_samples:(i+1)*block_samples])) for i in range(num_blocks)]
+                top_indices = np.argsort(rms_blocks)[::-1][:max(1, int(num_blocks * 0.2))]
+                avg_top_rms = np.mean([rms_blocks[i] for i in top_indices])
+                top_peaks = sorted([peak_blocks[i] for i in top_indices], reverse=True)
+                if avg_top_rms > 0:
+                    dr_channels.append(20 * np.log10((top_peaks[1] if len(top_peaks) > 1 else top_peaks[0]) / avg_top_rms))
+        dr_val = max(1, int(round(np.mean(dr_channels)))) if dr_channels else 0
+
+        grade = "🟢 Excellent" if (dr_val >= 11 and clip_events == 0) else ("🟡 Good / Moderate" if dr_val >= 8 and clip_events <= 50 else "🔴 Poor (Hot Master / Clipped)")
+        return {"dc_offset": round(worst_dc, 1), "peak": round(max_peak, 2), "rms": round(avg_rms, 2), "clipping": clip_events, "correlation": round(correlation, 2), "lufs": round(lufs, 1), "dr": dr_val, "grade": grade}
+    except Exception: return None
+
+def detect_fake_24bit(data_raw, sr):
+    try:
+        mono = data_raw.mean(axis=1) if data_raw.ndim > 1 else data_raw
+        frame_len = sr
+        n_frames = len(mono) // frame_len
+        if n_frames < 3: return "n/a", 0.0, "Track too short."
+        frame_rms = np.array([np.sqrt(np.mean(mono[i*frame_len:(i+1)*frame_len] ** 2) + 1e-18) for i in range(n_frames)])
+        loud_sample = np.concatenate([mono[i*frame_len:(i+1)*frame_len] for i in np.argsort(frame_rms)[::-1][:max(1, n_frames // 4)]])
+        scaled = loud_sample * 32768.0
+        on_grid_ratio = float(np.mean(np.abs(scaled - np.round(scaled)) < 1e-3))
+        noise_floor_db = 20 * np.log10(np.std(np.concatenate([mono[i*frame_len:(i+1)*frame_len] for i in np.argsort(frame_rms)[:max(1, n_frames // 10)]])) + 1e-12)
+
+        if on_grid_ratio > 0.98: return "padded", 0.95, f"{on_grid_ratio*100:.1f}% samples on 16-bit grid (Padded upscale)."
+        if noise_floor_db >= -60.0: return "genuine", 0.50, f"No silent sections found (quietest is {noise_floor_db:.1f} dB). Assumed genuine."
+        if noise_floor_db > -98.0: return "dithered_upscale", round(min(0.9, max(0.5, (noise_floor_db + 110) / 20)), 2), f"Noise floor {noise_floor_db:.1f} dB matches 16-bit dither."
+        return "genuine", 0.85, f"Noise floor {noise_floor_db:.1f} dB matches 24-bit."
+    except Exception: return "n/a", 0.0, "Analysis failed."
+
+def generate_audio_stats_dsp(wav_path, original_file_path, original_name):
+    try:
+        audio = MutagenFile(original_file_path, easy=True)
+        full = MutagenFile(original_file_path)
+        title = audio.get('title', [original_name])[0] if audio else original_name
+        artist = audio.get('artist', ['Unknown Artist'])[0] if audio else "Unknown Artist"
+        bit_depth = getattr(full.info, "bits_per_sample", 16) if hasattr(full, 'info') else 16
+        sample_rate_meta = getattr(full.info, "sample_rate", 44100) if hasattr(full, 'info') else 44100
+    except Exception: title, artist, bit_depth, sample_rate_meta = original_name, "Unknown Artist", 16, 44100
+
+    format_name, channel_str, is_spatial = get_channel_info_dsp(original_file_path)
+
+    try:
+        sr, data_raw = wavfile.read(wav_path)
+        bit_verdict, bit_confidence, bit_detail = ("n/a", 0.0, "") if bit_depth != 24 else detect_fake_24bit(data_raw, sr)
+        mastering = analyze_mastering(data_raw, sr)
+
+        if data_raw.ndim > 1:
+            f, t, Zxx_L = stft(data_raw[:, 0], fs=sr, nperseg=8192)
+            f, t, Zxx_R = stft(data_raw[:, 1], fs=sr, nperseg=8192)
+            max_mag = np.maximum(np.max(np.abs(Zxx_L), axis=1), np.max(np.abs(Zxx_R), axis=1))
+            stft_2d = np.maximum(np.abs(Zxx_L), np.abs(Zxx_R))
+        else:
+            f, t, Zxx = stft(data_raw, fs=sr, nperseg=8192)
+            max_mag, stft_2d = np.max(np.abs(Zxx), axis=1), np.abs(Zxx)
+
+        psd_db = 20 * np.log10(max_mag + 1e-12)
+        nyquist_hz = sr / 2.0
+        passband_mask = (f >= 1000) & (f <= 8000)
+        rel_psd_db = psd_db - (np.mean(psd_db[passband_mask]) if np.any(passband_mask) else np.max(psd_db))
+
+        search_mask = f >= 10000
+        search_freqs, search_db = f[search_mask], rel_psd_db[search_mask]
+        noise_eval_mask = search_freqs >= (nyquist_hz * 0.85)
+        dynamic_threshold = max(-60.0, min(-35.0, (np.median(search_db[noise_eval_mask]) if np.any(noise_eval_mask) else -55.0) + 12.0))
+
+        cutoff_hz, consecutive_bins, required_bins = nyquist_hz, 0, max(1, int(150 / (sr / 8192)))
+        for i in range(len(search_db) - 1, -1, -1):
+            if search_db[i] > dynamic_threshold:
+                consecutive_bins += 1
+                if consecutive_bins >= required_bins: cutoff_hz = search_freqs[i + consecutive_bins - 1]; break
+            else: consecutive_bins = 0
+
+        pre_mask = (f >= max(0, cutoff_hz - 1500)) & (f <= cutoff_hz)
+        post_mask = (f > cutoff_hz) & (f <= min(nyquist_hz, cutoff_hz + 1500))
+        cliff_drop = float(np.median(rel_psd_db[pre_mask]) - np.median(rel_psd_db[post_mask])) if np.any(pre_mask) and np.any(post_mask) else 0.0
+
+        hole_ratio = 0.0
+        high_band_mask = (f >= 12000) & (f <= min(20000, nyquist_hz - 500))
+        if np.any(high_band_mask):
+            peak_val = np.max(stft_2d[high_band_mask, :])
+            if peak_val > 0: hole_ratio = float(np.mean(stft_2d[high_band_mask, :] < (peak_val * 1e-4)))
+
+        lossless_formats = ['FLAC', 'ALAC', 'WAV', 'PCM', 'DSF', 'DSD', 'AIFF']
+        if is_spatial or format_name in ['E-AC-3', 'AC-4', 'TRUEHD']: auth_badge, auth_desc = "🟢 Dolby Atmos / Spatial", "Genuine spatial audio stream."
+        elif format_name in lossless_formats:
+            if bit_verdict == "padded": auth_badge, auth_desc = f"🔴 Fake 24-Bit / Padded ({bit_confidence*100:.0f}%)", bit_detail
+            elif bit_verdict == "dithered_upscale": auth_badge, auth_desc = f"🟡 Possible Dithered Upscale ({bit_confidence*100:.0f}%)", bit_detail
+            elif sample_rate_meta >= 88200 and (cutoff_hz/1000.0) >= 24.0: auth_badge, auth_desc = "🟢 Hi-Res Lossless", f"Genuine extension to {cutoff_hz/1000.0} kHz."
+            elif hole_ratio > 0.15 and cliff_drop < 15.0 and (cutoff_hz/1000.0) >= 19.0: auth_badge, auth_desc = "🔴 Fake Lossless (Lossy)", f"Spectral hole {hole_ratio*100:.1f}%. Typical AAC/Opus transcode."
+            elif cliff_drop >= 18.0 and (cutoff_hz/1000.0) <= 20.5 and mastering and mastering['clipping'] > 50: auth_badge, auth_desc = "🟢 Lossless · CD Quality (Hot Master)", "Clipping generated harmonics."
+            elif cliff_drop >= 18.0 and (cutoff_hz/1000.0) <= 20.5: auth_badge, auth_desc = "🔴 Fake Lossless / Upscale", "Hard brick-wall cliff detected."
+            elif (cutoff_hz/1000.0) > 20.0 or cliff_drop < 16.0: auth_badge, auth_desc = f"🟢 Lossless · {'Studio Master (24-bit)' if bit_depth == 24 else 'CD Quality'}", "Clean high-frequency response."
+            else: auth_badge, auth_desc = "🟡 Inconclusive / Filtered", "Unusual slope detected."
+        else:
+            auth_badge, auth_desc = ("🟢 Standard Lossy", "Normal brick-wall detected.") if cliff_drop >= 18.0 else ("🟢 High-Bitrate Lossy", "Gradual roll-off. Excellent quality.")
+
+        return {"title": title, "artist": artist, "format": format_name, "bit_depth": bit_depth, "sample_rate": sample_rate_meta, "channel_str": channel_str, "cutoff": round(cutoff_hz/1000.0, 1), "cliff_drop": round(cliff_drop, 1), "auth_badge": auth_badge, "auth_desc": auth_desc, "mastering": mastering}
+    except Exception as e: return None
+
+@app.on_message(filters.command(["spectrogram", "spec"]) & (filters.user(ADMINS) | filters.user(SUDOS)))
+async def tg_spectrogram_cmd(client: Client, message: Message):
+    url = None
+    media_msg = None
+    
+    if len(message.command) > 1:
+        potential_url = message.command[1]
+        if potential_url.startswith("http"): url = potential_url
+
+    if not url and message.reply_to_message:
+        replied = message.reply_to_message
+        if replied.text:
+            match = re.search(r'https?://\S+', replied.text)
+            if match: url = match.group(0)
+        elif replied.document or replied.video or replied.audio or replied.voice:
+            media_msg = replied
+
+    if not url and not media_msg:
+        return await message.reply("❌ Usage: `/spec <link>` or reply to a file/link.")
+
+    status_msg = await message.reply("📉 <b>Downloading & Analyzing Audio...</b>", parse_mode=enums.ParseMode.HTML)
+    
+    temp_dir = Path(f"./temp_sox_{message.from_user.id}_{int(time.time())}")
+    temp_dir.mkdir(parents=True, exist_ok=True)
+    
+    original_file = temp_dir / "audio_input.dat"
+    wav_file = temp_dir / "converted.wav"
+    output_img = temp_dir / "spectrogram.png"
+
+    try:
+        # 1. DOWNLOAD LOGIC (FULL FILE)
+        if url:
+            if "t.me" in url or "telegram.me" in url:
+                parsed = _parse_source_link(url)
+                chat_id = parsed.get("chat_id")
+                msg_id = parsed.get("msg_id")
+                
+                uclient = USER_CLIENTS.get(message.from_user.id)
+                if not uclient or not uclient.is_connected:
+                    return await status_msg.edit_text("❌ Telegram session not active. Please /login.")
+                    
+                msg = await uclient.get_messages(chat_id, msg_id)
+                if msg.empty: return await status_msg.edit_text("❌ Message not found or inaccessible.")
+                await uclient.download_media(msg, file_name=str(original_file))
+            else:
+                await full_download_http(url, original_file)
+        else:
+            await client.download_media(media_msg, file_name=str(original_file))
+
+        # 2. CONVERSION
+        await status_msg.edit_text("📉 <b>Running DSP Mathematics...</b>", parse_mode=enums.ParseMode.HTML)
+        ffmpeg_cmd = ["ffmpeg", "-i", str(original_file), "-vn", "-ac", "2", "-c:a", "pcm_f32le", str(wav_file), "-y"]
+        process = await asyncio.create_subprocess_exec(*ffmpeg_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE)
+        await process.wait()
+        
+        if not wav_file.exists(): return await status_msg.edit_text("❌ Audio Extraction Failed.")
+
+        # 3. STATS & SOX
+        stats = generate_audio_stats_dsp(str(wav_file), str(original_file), "Audio Analysis")
+        if not stats: return await status_msg.edit_text("❌ DSP Processing Failed.")
+
+        sox_cmd = ["sox", str(wav_file), "-n", "spectrogram", "-o", str(output_img), "-x", "1000", "-Y", "800", "-c", "Audio", "-t", " "]
+        process_sox = await asyncio.create_subprocess_exec(*sox_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        await process_sox.communicate()
+
+        if not output_img.exists(): return await status_msg.edit_text("❌ SoX Image Generation Failed.")
+
+        # 4. CAPTION BUILDING
+        m = stats['mastering']
+        mastering_text = ""
+        if m:
+            phase_warn = "⚠️ Mono risk" if m['correlation'] < -0.2 else "Phase OK"
+            dc_warn = "⚠️ Defect" if m['dc_offset'] > -60.0 else "Clean"
+            mastering_text = (
+                f"\n<b>— MASTERING ANALYSIS —</b>\n"
+                f"🎚 <b>Dynamic Range:</b> <code>DR {m['dr']}</code>\n"
+                f"🔊 <b>Loudness (LUFS):</b> <code>{m['lufs']:.1f} LUFS</code>\n"
+                f"📈 <b>Peak / RMS:</b> <code>{m['peak']:.2f} dBFS</code> / <code>{m['rms']:.2f} dB</code>\n"
+                f"💥 <b>Clipping Events:</b> <code>{m['clipping']}</code>\n"
+                f"⚖️ <b>Stereo Correl:</b> <code>{m['correlation']:.2f} ({phase_warn})</code>\n"
+                f"🔌 <b>DC Offset:</b> <code>{m['dc_offset']:.1f} dBFS ({dc_warn})</code>\n"
+                f"🏷 <b>Score:</b> {m['grade']}\n"
+            )
+
+        caption = (
+            f"📊 <b>Audio Analysis: Fidelity & Mastering</b>\n"
+            f"━━━━━━━━━━━━━━━━━━\n"
+            f"<blockquote expandable>"
+            f"<b>— FIDELITY & AUTHENTICITY —</b>\n"
+            f"📀 <b>Container:</b> <code>{stats['format']} • {stats['channel_str']} • {stats['bit_depth']}-bit • {stats['sample_rate']/1000} kHz</code>\n"
+            f"📈 <b>Bandwidth Cutoff:</b> <code>{stats['cutoff']} kHz</code>\n"
+            f"🧱 <b>Cliff Drop:</b> <code>{stats['cliff_drop']:.1f} dB</code>\n"
+            f"🔍 <b>Authenticity:</b> {stats['auth_badge']}\n"
+            f"<i>{stats['auth_desc']}</i>\n"
+            f"{mastering_text}"
+            f"</blockquote>\n"
+            f"⚡ <b>RESULT:</b> {stats['auth_badge']}"
+        )
+
+        await message.reply_photo(photo=str(output_img), caption=caption, parse_mode=enums.ParseMode.HTML)
+        await status_msg.delete()
+
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Error: {e}")
+    finally:
+        import shutil
+        try: shutil.rmtree(str(temp_dir), ignore_errors=True)
+        except: pass
+            
 # ==============================================================================
 # --- LIVE WATCHER ENGINE (WITH UNIVERSAL QUEUE & CATCH-UP) ---
 # ==============================================================================
@@ -6833,7 +7464,8 @@ async def main():
             BotCommand("pixel", "✨ Bypass Pixeldrain links"),
             BotCommand("sos", "⚙️ Deep System Statistics"),
             BotCommand("mediainfo", "🔍 Technical File MetaData"),
-            BotCommand("speedtest", "🚀 Test Server Speed")
+            BotCommand("speedtest", "🚀 Test Server Speed"),
+            BotCommand("spectrogram", "📉 Audio Spectrogram")
         ]
 
         await app.set_bot_commands(public_commands, scope=BotCommandScopeDefault())
