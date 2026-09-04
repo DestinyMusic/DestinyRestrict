@@ -3,6 +3,7 @@ import os
 import psutil
 import time
 import asyncio
+import json
 import uvloop
 
 # --- 1. EVENT LOOP INITIALIZATION (FOR PYROFORK/WZGRAM) ---
@@ -4739,10 +4740,30 @@ HTML_DASHBOARD = """
             position: absolute; bottom: 85px; right: 30px; background: color-mix(in srgb, var(--card) 95%, transparent);
             backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--card-border);
             border-radius: 20px; padding: 20px; width: 320px; max-width: calc(100vw - 24px);
+            max-height: min(78vh, 620px); overflow-y: auto; overflow-x: hidden;
+            -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y;
             display: none; z-index: 30; box-shadow: 0 20px 50px rgba(0,0,0,0.8);
             transition: opacity 0.25s ease, transform 0.25s ease;
+            scrollbar-width: thin;
         }
         .settings-popup.open { display: block; }
+        .cinema-viewport:fullscreen .settings-popup,
+        .cinema-viewport:-webkit-full-screen .settings-popup {
+            top: max(12px, env(safe-area-inset-top)); bottom: auto; right: 12px;
+            max-height: calc(100dvh - 24px); overflow-y: auto;
+        }
+        @media (max-width: 700px) and (orientation: landscape) {
+            .settings-popup {
+                right: 8px; bottom: 58px; width: min(360px, calc(100vw - 16px));
+                max-height: calc(100dvh - 70px);
+            }
+        }
+        @media (max-width: 700px) and (orientation: portrait) {
+            .settings-popup {
+                right: 8px; bottom: 70px; width: min(360px, calc(100vw - 16px));
+                max-height: 70dvh;
+            }
+        }
         .pop-title { font-size: 14px; font-weight: 800; margin-bottom: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
         .pop-select { width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; color: #fff; font-size: 12px; margin-bottom: 14px; outline: none; }
 
@@ -7563,7 +7584,14 @@ async def _api_media_probe_handler(request):
             file_size, detected_name = await partial_download_http(link, target_path, limit_mb=32)
             real_file_name = detected_name or "Direct_Stream_Media"
             lower_name = str(real_file_name).lower()
-            requires_transcode = not lower_name.endswith(".mp4")
+            lower_link = link.lower()
+            # Direct MP4/WebM can normally stay native. Other direct containers may
+            # need the FFmpeg bridge. HTML page URLs are rejected by the helper above.
+            is_hls = bool(re.search(r"\.(?:m3u8)(?:$|[?#])", lower_link))
+            is_dash = bool(re.search(r"\.(?:mpd)(?:$|[?#])", lower_link))
+            requires_transcode = not lower_name.endswith((".mp4", ".webm"))
+            if is_hls or is_dash:
+                requires_transcode = True
 
         cmd = [
             "ffprobe", "-v", "error",
@@ -7579,7 +7607,7 @@ async def _api_media_probe_handler(request):
         stdout, stderr = await proc.communicate()
         if proc.returncode != 0:
             err = stderr.decode("utf-8", errors="ignore").strip()
-            raise RuntimeError(f"ffprobe failed: {err or 'unknown error'}")
+            raise RuntimeError(f"ffprobe could not identify this media stream from the available probe bytes: {err or 'unknown format or incomplete media'}")
 
         probe_data = json.loads(stdout.decode("utf-8", errors="ignore") or "{}")
         streams = probe_data.get("streams", [])
@@ -7838,21 +7866,45 @@ async def _api_stream_handler(request):
             await session.close()
             return web.Response(status=remote.status, text=text[:500])
 
+        remote_content_type = (remote.headers.get("Content-Type") or "").lower()
+        if "text/html" in remote_content_type:
+            text = await remote.text(errors="ignore")
+            remote.close()
+            await session.close()
+            return web.Response(
+                status=415,
+                text="The URL returned an HTML webpage, not a direct media stream.",
+                headers={"Access-Control-Allow-Origin": "*"}
+            )
+
+        # Do NOT forward upstream Content-Length/Content-Range blindly. Several
+        # CDNs advertise the original size and then close a partial response early;
+        # forwarding that header makes the browser raise ContentLengthError.
+        # Without it aiohttp uses chunked transfer and the bytes we actually write
+        # are exactly the bytes declared by this response.
         out_headers = {
             "Content-Type": remote.headers.get("Content-Type", "video/mp4"),
             "Access-Control-Allow-Origin": "*",
             "Accept-Ranges": remote.headers.get("Accept-Ranges", "bytes"),
             "Cache-Control": "no-store",
         }
-        for name in ("Content-Length", "Content-Range"):
-            if remote.headers.get(name): out_headers[name] = remote.headers[name]
 
         response = web.StreamResponse(status=remote.status, headers=out_headers)
         await response.prepare(request)
         try:
-            async for chunk in remote.content.iter_chunked(128 * 1024):
-                await response.write(chunk)
-            await response.write_eof()
+            try:
+                async for chunk in remote.content.iter_chunked(128 * 1024):
+                    await response.write(chunk)
+            except (aiohttp.ClientPayloadError, aiohttp.ServerDisconnectedError, asyncio.TimeoutError, ConnectionError) as exc:
+                # Upstream ended before its advertised length. Since we intentionally
+                # did not send Content-Length to the browser, avoid producing a second
+                # protocol-level length error. The caller may still treat the stream as
+                # incomplete, but the server itself remains healthy.
+                logger.warning(f"[Direct proxy] Upstream ended early: {exc}")
+            try:
+                await response.write_eof()
+            except Exception:
+                pass
         finally:
             remote.close()
             await session.close()
@@ -8037,53 +8089,160 @@ async def partial_download_tg(client, message, file_path, limit_mb=15):
                     f.write(chunk)
 
 async def partial_download_http(url, file_path, limit_mb=15):
-    headers = {"User-Agent": "Mozilla/5.0"}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url, headers=headers, timeout=20) as resp:
-            resp.raise_for_status()
-            detected_name = "Stream_File.dat"
-            cd = resp.headers.get("Content-Disposition")
-            if cd:
-                fname_match = re.search(r'filename="?([^"]+)"?', cd)
-                if fname_match: detected_name = fname_match.group(1)
-            
-            if detected_name == "Stream_File.dat":
-                parsed = urlparse(url)
-                path_name = os.path.basename(parsed.path)
-                if path_name: detected_name = unquote(path_name)
-            
-            file_size = int(resp.headers.get("Content-Length", 0))
+    """Robust bounded HTTP sampler used by MediaInfo/probing.
 
-        limit_bytes = limit_mb * 1024 * 1024
-        if 0 < file_size <= limit_bytes:
-            async with session.get(url, headers=headers) as resp:
-                with open(file_path, "wb") as f:
-                    async for chunk in resp.content.iter_chunked(1024 * 1024):
-                        f.write(chunk)
-        elif file_size > limit_bytes:
+    Important properties:
+      * Never assumes the remote Content-Length equals the number of bytes that
+        will actually arrive. Some CDNs/proxies close a response early.
+      * Uses byte ranges for large files when supported.
+      * Never calls response.read() without a size cap on a supposedly ranged
+        response.
+      * Rejects HTML pages early because a movie-page URL is not a media URL.
+      * Returns gracefully with the bytes that were actually received when the
+        remote server truncates a probe response.
+    """
+    limit_bytes = max(1, int(limit_mb * 1024 * 1024))
+    ua = (
+        "Mozilla/5.0 (Linux; Android 10; Mobile) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0 Mobile Safari/537.36"
+    )
+    headers = {
+        "User-Agent": ua,
+        "Accept": "video/*,audio/*,application/octet-stream,application/vnd.apple.mpegurl,*/*;q=0.8",
+        "Accept-Encoding": "identity",
+        "Connection": "close",
+    }
+    timeout = aiohttp.ClientTimeout(total=None, connect=20, sock_connect=20, sock_read=25)
+
+    def filename_from_headers(resp):
+        detected = "Stream_File.dat"
+        cd = resp.headers.get("Content-Disposition", "")
+        if cd:
+            # RFC 5987 filename*=UTF-8''... first, then normal filename=.
+            m = re.search(r"filename\\*=(?:UTF-8''|utf-8'')([^;]+)", cd, re.I)
+            if m:
+                detected = unquote(m.group(1).strip().strip('"'))
+            else:
+                m = re.search(r'filename="?([^";]+)"?', cd, re.I)
+                if m:
+                    detected = m.group(1).strip()
+        if detected == "Stream_File.dat":
+            path_name = os.path.basename(urlparse(url).path)
+            if path_name:
+                detected = unquote(path_name)
+        return detected or "Stream_File.dat"
+
+    async def consume_limited(resp, out_f, max_bytes):
+        """Write at most max_bytes and tolerate premature upstream EOF."""
+        written = 0
+        try:
+            async for chunk in resp.content.iter_chunked(256 * 1024):
+                if not chunk:
+                    continue
+                remaining = max_bytes - written
+                if remaining <= 0:
+                    break
+                if len(chunk) > remaining:
+                    chunk = chunk[:remaining]
+                out_f.write(chunk)
+                written += len(chunk)
+                if written >= max_bytes:
+                    break
+        except (aiohttp.ClientPayloadError,
+                aiohttp.ServerDisconnectedError,
+                asyncio.TimeoutError,
+                ConnectionError,
+                OSError) as exc:
+            # A truncated probe is still useful to ffprobe if it contains enough
+            # container headers/stream descriptors. Do not turn this into a fatal
+            # ContentLengthError for the web player.
+            logger.warning(f"[HTTP probe] Remote body ended early: {exc}")
+        return written
+
+    async with aiohttp.ClientSession(timeout=timeout, raise_for_status=False) as session:
+        # First request: headers + content-type + filename. Do not consume its body.
+        try:
+            async with session.get(url, headers=headers, allow_redirects=True) as resp:
+                if resp.status >= 400:
+                    body = await resp.text(errors="ignore")
+                    raise RuntimeError(f"HTTP {resp.status}: {body[:180]}")
+
+                content_type = (resp.headers.get("Content-Type") or "").lower()
+                detected_name = filename_from_headers(resp)
+                declared_size = int(resp.headers.get("Content-Length", "0") or 0)
+                final_url = str(resp.url)
+
+                # A webpage is not a playable media stream. Give the UI a useful
+                # message instead of feeding HTML to ffprobe/HTMLMediaElement.
+                if "text/html" in content_type or content_type.startswith("text/plain") and not re.search(r"\.(?:m3u8|mpd)(?:$|\?)", final_url, re.I):
+                    raise ValueError(
+                        "This URL returned a webpage/text page, not a direct video/audio stream. "
+                        "Use the direct .mp4/.webm/.mkv/.m3u8 media URL."
+                    )
+        except ValueError:
+            raise
+
+        # Small/unknown-size resource: read only the probe budget. Even if the
+        # server advertises a larger Content-Length, we never require all bytes.
+        if declared_size == 0 or declared_size <= limit_bytes:
             with open(file_path, "wb") as f:
-                edge_bytes = max(1_000_000, limit_bytes // 2)
-                edge_bytes = min(edge_bytes, file_size // 2)
+                try:
+                    async with session.get(url, headers=headers, allow_redirects=True) as resp:
+                        if resp.status >= 400:
+                            raise RuntimeError(f"HTTP {resp.status} while reading media")
+                        await consume_limited(resp, f, limit_bytes)
+                except (aiohttp.ClientPayloadError,
+                        aiohttp.ServerDisconnectedError,
+                        asyncio.TimeoutError,
+                        ConnectionError,
+                        OSError) as exc:
+                    logger.warning(f"[HTTP probe] Body truncated after partial read: {exc}")
+            return declared_size, detected_name
 
-                h_start = headers.copy()
-                h_start["Range"] = f"bytes=0-{edge_bytes - 1}"
-                async with session.get(url, headers=h_start) as resp:
-                    f.write(await resp.read())
+        # Large resource: make a sparse probe file from head + tail ranges.
+        edge_bytes = max(1_000_000, limit_bytes // 2)
+        edge_bytes = min(edge_bytes, max(1, declared_size // 2))
+        head_expected = edge_bytes
+        tail_start = max(0, declared_size - edge_bytes)
 
-                h_end = headers.copy()
-                h_end["Range"] = f"bytes={file_size - edge_bytes}-{file_size - 1}"
-                async with session.get(url, headers=h_end) as resp:
-                    f.seek(file_size - edge_bytes)
-                    f.write(await resp.read())
-        else:
-            async with session.get(url, headers=headers) as resp:
-                with open(file_path, "wb") as f:
-                    current_bytes = 0
-                    async for chunk in resp.content.iter_chunked(1024 * 1024):
-                        f.write(chunk)
-                        current_bytes += len(chunk)
-                        if current_bytes > limit_bytes: break
-        return file_size, detected_name
+        with open(file_path, "wb") as f:
+            # HEAD sample.
+            head_headers = headers.copy()
+            head_headers["Range"] = f"bytes=0-{head_expected - 1}"
+            try:
+                async with session.get(url, headers=head_headers, allow_redirects=True) as resp:
+                    if resp.status >= 400:
+                        raise RuntimeError(f"HTTP {resp.status} for initial probe range")
+                    await consume_limited(resp, f, head_expected)
+                    head_is_partial = resp.status == 206 or bool(resp.headers.get("Content-Range"))
+            except (aiohttp.ClientPayloadError,
+                    aiohttp.ServerDisconnectedError,
+                    asyncio.TimeoutError,
+                    ConnectionError,
+                    OSError) as exc:
+                logger.warning(f"[HTTP probe] Head range ended early: {exc}")
+                head_is_partial = False
+
+            # Tail sample only when the server really honors Range. If it ignores
+            # the Range header and returns 200/full-body, do not corrupt the sparse
+            # file by writing the beginning of the file at the tail offset.
+            tail_headers = headers.copy()
+            tail_headers["Range"] = f"bytes={tail_start}-{declared_size - 1}"
+            try:
+                async with session.get(url, headers=tail_headers, allow_redirects=True) as resp:
+                    if resp.status == 206 or resp.headers.get("Content-Range"):
+                        f.seek(tail_start)
+                        await consume_limited(resp, f, edge_bytes)
+                    else:
+                        logger.info("[HTTP probe] Remote server ignored tail Range; using head sample only.")
+            except (aiohttp.ClientPayloadError,
+                    aiohttp.ServerDisconnectedError,
+                    asyncio.TimeoutError,
+                    ConnectionError,
+                    OSError) as exc:
+                logger.warning(f"[HTTP probe] Tail range ended early: {exc}")
+
+        return declared_size, detected_name
 
 async def download_audio_snippet_tg(client_to_use, message, file_path, limit_mb=15):
     """Continuous download of the first X MB so SoX/FFmpeg reads it as a valid truncated file."""
@@ -8209,7 +8368,6 @@ async def mediainfo_handler(client: Client, message: Message):
                 
             from telegraph.utils import html_to_nodes
             import socket
-            import json # Ensure json is imported for dumps
             
             conn = aiohttp.TCPConnector(family=socket.AF_INET, force_close=True, enable_cleanup_closed=True)
             async with aiohttp.ClientSession(connector=conn) as session:
