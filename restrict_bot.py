@@ -5172,14 +5172,15 @@ HTML_DASHBOARD = """
                 if (data.status === 'success') {
                     warnBox.style.display = 'none';
                     allLoadedChats = data.chats || [];
-
                     renderFilteredChats();
                 } else {
                     warnBox.style.display = 'block';
-                    container.innerHTML = '<div style="color: var(--subtext);">No chats available. Connect session first.</div>';
+                    // Show the actual Python error message so we know why it failed
+                    container.innerHTML = `<div style="color: var(--subtext); padding: 10px;">${data.message}</div>`;
                 }
             } catch(e) {
-                container.innerHTML = '<div style="color: var(--danger);">Failed to load dialogs.</div>';
+                warnBox.style.display = 'block';
+                container.innerHTML = `<div style="color: var(--danger); padding: 10px;">Network Error: Could not connect to the bot server. Request timed out.</div>`;
             } finally {
                 // Restore button instantly
                 if (refreshBtn) { refreshBtn.innerText = "🔄 Refresh"; refreshBtn.style.opacity = "1"; refreshBtn.style.pointerEvents = "auto"; }
@@ -5950,42 +5951,53 @@ async def _api_tg_logout(request):
 
 async def _api_chats_handler(request):
     uid = int(request.query.get("user_id", 0))
-    uclient = USER_CLIENTS.get(uid)
+    session_str = await db.get_session(uid)
     
-    # 🟢 DYNAMIC WAKE-UP FOR WEB DASHBOARD
+    if not session_str:
+        return web.json_response({"status": "error", "message": "Not connected to Telegram. Please login."})
+
+    uclient = USER_CLIENTS.get(uid)
+    is_temp = False
+    
+    # 🟢 DYNAMIC WAKE-UP: Use :memory: to prevent SQLite File Locks that freeze the bot!
     if not uclient or not uclient.is_connected:
-        session_str = await db.get_session(uid)
-        if not session_str:
-            return web.json_response({"status": "error", "message": "Not connected to Telegram. Please login."})
-        
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
-            await uclient.start()
-            USER_CLIENTS[uid] = uclient
+            uclient = Client(":memory:", session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+            await uclient.connect()
+            is_temp = True
         except Exception as e:
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     chat_list = []
-    count = 0
     try:
-        # Limited to 500 so the API doesn't crash, and yields to the server every 25 chats so nothing freezes.
-        async for d in uclient.get_dialogs(limit=500):
-            name = d.chat.title or d.chat.first_name or "Unknown"
-            c_type = d.chat.type
-            
-            cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
-            is_forum = getattr(d.chat, "is_forum", False)
-            chat_list.append({"id": str(d.chat.id), "name": f"[{cat}] {name}", "is_forum": is_forum})
-            
-            count += 1
-            if count % 25 == 0:
-                await asyncio.sleep(0) # This tells the server to breathe!
+        async def fetch_dialogs():
+            chats = []
+            count = 0
+            async for d in uclient.get_dialogs(limit=300):
+                name = d.chat.title or d.chat.first_name or "Unknown"
+                c_type = d.chat.type
+                cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
+                is_forum = getattr(d.chat, "is_forum", False)
+                chats.append({"id": str(d.chat.id), "name": f"[{cat}] {name}", "is_forum": is_forum})
+                count += 1
+                if count % 25 == 0:
+                    await asyncio.sleep(0)
+            return chats
+
+        # Prevent indefinite hangs with a 15-second timeout
+        chat_list = await asyncio.wait_for(fetch_dialogs(), timeout=15.0)
+
+    except asyncio.TimeoutError:
+        return web.json_response({"status": "error", "message": "Telegram API took too long to respond. Try again."})
     except Exception as e: 
         return web.json_response({"status": "error", "message": str(e)})
-        
+    finally:
+        if is_temp:
+            try: await uclient.disconnect()
+            except: pass
+            
     return web.json_response({"status": "success", "chats": chat_list})
 
 async def _api_speedtest_handler(request):
@@ -6104,16 +6116,39 @@ async def _api_topics_handler(request):
     try: chat_id = int(chat_id)
     except: pass
     
+    session_str = await db.get_session(uid)
+    if not session_str:
+        return web.json_response({"status": "error", "message": "Not connected to Telegram."})
+
     uclient = USER_CLIENTS.get(uid)
+    is_temp = False
+
     if not uclient or not uclient.is_connected:
-        return web.json_response({"status": "error", "message": "Telegram session not active"})
+        try:
+            api_id = await db.get_api_id(uid) or API_ID
+            api_hash = await db.get_api_hash(uid) or API_HASH
+            uclient = Client(":memory:", session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+            await uclient.connect()
+            is_temp = True
+        except Exception as e:
+            return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
     
     topics = []
     try:
-        async for topic in uclient.get_forum_topics(chat_id):
-            topics.append({"id": topic.id, "title": topic.title})
-    except Exception as e:
+        async def fetch_topics():
+            t_list = []
+            async for topic in uclient.get_forum_topics(chat_id):
+                t_list.append({"id": topic.id, "title": topic.title})
+            return t_list
+            
+        topics = await asyncio.wait_for(fetch_topics(), timeout=10.0)
+    except Exception:
         pass 
+    finally:
+        if is_temp:
+            try: await uclient.disconnect()
+            except: pass
+
     return web.json_response({"status": "success", "topics": topics})
 
 async def _api_mediainfo_web_handler(request):
