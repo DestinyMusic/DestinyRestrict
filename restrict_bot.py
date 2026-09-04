@@ -33,21 +33,41 @@ import motor.motor_asyncio
 
 from pyrogram import Client, filters, enums, idle
 
-# --- 3. UNIVERSAL WZGRAM / PYROFORK CRASH FIX ---
-# WZGram/Pyrofork natively use a 'ListenerRegistry'. If we import pyromod,
-# it overwrites this registry with a standard dictionary and crashes the bot.
+# --- UNIVERSAL FORK & PYROMOD SUBSCRIPTABLE PATCH ---
+# This bridges the gap between Pyromod's dictionary expectations 
+# and modern Telegram forks' custom ListenerRegistry objects.
 try:
     from pyrogram.dispatcher import ListenerRegistry
-    HAS_NATIVE_LISTENERS = True
-except ImportError:
-    HAS_NATIVE_LISTENERS = False
+    
+    if not hasattr(ListenerRegistry, "__getitem__"):
+        def _reg_getitem(self, key):
+            for attr in ["registry", "_registry", "data", "_data", "listeners"]:
+                val = getattr(self, attr, None)
+                if isinstance(val, dict):
+                    return val[key]
+            return getattr(self, key, {})
+        ListenerRegistry.__getitem__ = _reg_getitem
 
-if not HAS_NATIVE_LISTENERS:
-    try:
-        import pyromod.listen
-    except ImportError:
-        pass
-# ------------------------------------------------
+    if not hasattr(ListenerRegistry, "__setitem__"):
+        def _reg_setitem(self, key, value):
+            for attr in ["registry", "_registry", "data", "_data", "listeners"]:
+                val = getattr(self, attr, None)
+                if isinstance(val, dict):
+                    val[key] = value
+                    return
+            setattr(self, key, value)
+        ListenerRegistry.__setitem__ = _reg_setitem
+
+    if not hasattr(ListenerRegistry, "get"):
+        def _reg_get(self, key, default=None):
+            try:
+                return self[key]
+            except (KeyError, TypeError):
+                return default
+        ListenerRegistry.get = _reg_get
+except ImportError:
+    pass
+# --------------------------------------------------
 
 from pyrogram.errors import (
     FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant,
@@ -2574,23 +2594,49 @@ async def chats_cmd(client: Client, message: Message):
 
     users, groups, channels, bots = [], [], [], []
     
-    try:
-        async for d in uclient.get_dialogs():
-            name = html.escape(d.chat.title or d.chat.first_name or "Unknown")
-            cid = d.chat.id
-            line = f"• <b>{name}</b> │ <code>{cid}</code>"
+    # 🟢 RETRY LOOP: Handles transient network drops or fork-specific socket timeouts
+    max_retries = 3
+    success = False
+    last_err = None
+
+    for attempt in range(max_retries):
+        try:
+            users.clear(); groups.clear(); channels.clear(); bots.clear()
+            async for d in uclient.get_dialogs():
+                chat = getattr(d, "chat", None)
+                if not chat:
+                    continue
+                cid = getattr(chat, "id", None)
+                if not cid:
+                    continue
+
+                title = getattr(chat, "title", None)
+                first_name = getattr(chat, "first_name", None)
+                name = html.escape(title or first_name or f"Chat {cid}")
+                line = f"• <b>{name}</b> │ <code>{cid}</code>"
+                
+                c_type = getattr(chat, "type", None)
+                type_str = str(c_type).lower() if c_type else ""
+                
+                if "group" in type_str or "supergroup" in type_str:
+                    groups.append(line)
+                elif "channel" in type_str:
+                    channels.append(line)
+                elif "bot" in type_str:
+                    bots.append(line)
+                elif "private" in type_str:
+                    users.append(line)
             
-            if d.chat.type in [enums.ChatType.GROUP, enums.ChatType.SUPERGROUP]:
-                groups.append(line)
-            elif d.chat.type == enums.ChatType.CHANNEL:
-                channels.append(line)
-            elif d.chat.type == enums.ChatType.BOT:
-                bots.append(line)
-            elif d.chat.type == enums.ChatType.PRIVATE:
-                users.append(line)
-    except Exception as e:
-        return await status.edit(f"❌ <b>Error reading dialogs:</b> <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
-        
+            success = True
+            break
+        except Exception as e:
+            last_err = e
+            bot_logger.warning(f"Dialog fetch attempt {attempt + 1} failed: {e}")
+            await asyncio.sleep(2)
+
+    if not success:
+        return await status.edit(f"❌ <b>Error reading dialogs after retries:</b> <code>{last_err}</code>", parse_mode=enums.ParseMode.HTML)
+
     await status.delete()
 
     def chunk_list(items, chunk_size=50):
@@ -5976,11 +6022,21 @@ async def _api_chats_handler(request):
             chats = []
             count = 0
             async for d in uclient.get_dialogs(limit=300):
-                name = d.chat.title or d.chat.first_name or "Unknown"
-                c_type = d.chat.type
+                chat = getattr(d, "chat", None)
+                if not chat:
+                    continue
+                cid = getattr(chat, "id", None)
+                if not cid:
+                    continue
+
+                title = getattr(chat, "title", None)
+                first_name = getattr(chat, "first_name", None)
+                name = title or first_name or f"Chat {cid}"
+                c_type = getattr(chat, "type", None)
+                
                 cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
-                is_forum = getattr(d.chat, "is_forum", False)
-                chats.append({"id": str(d.chat.id), "name": f"[{cat}] {name}", "is_forum": is_forum})
+                is_forum = getattr(chat, "is_forum", False)
+                chats.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
                 count += 1
                 if count % 25 == 0:
                     await asyncio.sleep(0)
