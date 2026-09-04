@@ -2,9 +2,18 @@
 import os
 import psutil
 import time
-import uvloop
-uvloop.install()
 import asyncio
+import uvloop
+
+# --- UNIVERSAL EVENT LOOP FIX FOR PYROFORK/WZGRAM ---
+# Many modern forks require an active event loop AT IMPORT TIME.
+uvloop.install()
+try:
+    asyncio.get_event_loop()
+except RuntimeError:
+    asyncio.set_event_loop(asyncio.new_event_loop())
+# ----------------------------------------------------
+
 import re
 import shutil
 import subprocess
@@ -14,7 +23,17 @@ import uuid
 from pathlib import Path
 from collections import defaultdict, OrderedDict
 import motor.motor_asyncio
+
 from pyrogram import Client, filters, enums, idle
+
+# --- KURIGRAM + PYROMOD COMPATIBILITY PATCH ---
+# Kurigram lacks 'ButtonStyle', which crashes newer versions of Pyromod.
+if not hasattr(enums, "ButtonStyle"):
+    class DummyButtonStyle:
+        DEFAULT = 0
+    enums.ButtonStyle = DummyButtonStyle
+# ----------------------------------------------
+
 import pyromod.listen
 from pyrogram.errors import (
     FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant,
