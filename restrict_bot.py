@@ -5,14 +5,21 @@ import time
 import asyncio
 import uvloop
 
-# --- UNIVERSAL EVENT LOOP FIX FOR PYROFORK/WZGRAM ---
-# Many modern forks require an active event loop AT IMPORT TIME.
+# --- 1. EVENT LOOP INITIALIZATION (FOR PYROFORK/WZGRAM) ---
 uvloop.install()
 try:
     asyncio.get_event_loop()
 except RuntimeError:
     asyncio.set_event_loop(asyncio.new_event_loop())
-# ----------------------------------------------------
+# ----------------------------------------------------------
+
+# --- 2. BULLETPROOF KURIGRAM CRASH FIX ---
+import pyrogram.enums
+if not hasattr(pyrogram.enums, "ButtonStyle"):
+    class DummyButtonStyle:
+        DEFAULT = 0
+    pyrogram.enums.ButtonStyle = DummyButtonStyle
+# -----------------------------------------
 
 import re
 import shutil
@@ -26,20 +33,21 @@ import motor.motor_asyncio
 
 from pyrogram import Client, filters, enums, idle
 
-# --- KURIGRAM + PYROMOD COMPATIBILITY PATCH ---
-# Kurigram lacks 'ButtonStyle', which crashes newer versions of Pyromod.
-if not hasattr(enums, "ButtonStyle"):
-    class DummyButtonStyle:
-        DEFAULT = 0
-    enums.ButtonStyle = DummyButtonStyle
-# ----------------------------------------------
+# --- 3. UNIVERSAL WZGRAM / PYROFORK CRASH FIX ---
+# WZGram/Pyrofork natively use a 'ListenerRegistry'. If we import pyromod,
+# it overwrites this registry with a standard dictionary and crashes the bot.
+try:
+    from pyrogram.dispatcher import ListenerRegistry
+    HAS_NATIVE_LISTENERS = True
+except ImportError:
+    HAS_NATIVE_LISTENERS = False
 
-# --- UNIVERSAL FORK COMPATIBILITY PATCH ---
-# WZGram, Pyrofork, and Kurigram natively have .ask() built-in.
-# Importing pyromod on top of them crashes the bot with "ListenerRegistry object is not subscriptable".
-if not hasattr(Client, "ask"):
-    import pyromod.listen
-# ------------------------------------------
+if not HAS_NATIVE_LISTENERS:
+    try:
+        import pyromod.listen
+    except ImportError:
+        pass
+# ------------------------------------------------
 
 from pyrogram.errors import (
     FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant,
@@ -1910,9 +1918,11 @@ except ImportError:
 async def cancel_login_cb(client, query):
     user_id = query.from_user.id
     
-    # Attempt to kill the Pyromod .ask() listener instantly
+    # Attempt to kill the Pyromod or Native .ask() listener instantly
     try:
-        if hasattr(client, "cancel_listener"):
+        if hasattr(client, "stop_listening"):
+            await client.stop_listening(chat_id=user_id)
+        elif hasattr(client, "cancel_listener"):
             client.cancel_listener(user_id)
         elif hasattr(client, "listen") and hasattr(client.listen, "cancel"):
             client.listen.cancel(user_id)
@@ -2450,6 +2460,11 @@ async def unwatch_callback(client, query):
 
 @app.on_message((filters.text | filters.caption) & filters.private & ~filters.command(ALL_COMMANDS))
 async def save(client: Client, message: Message):
+    # 🟢 WZGRAM FALLBACK FIX: Prevent capturing unknown commands as links!
+    text_content = message.text or message.caption or ""
+    if text_content.startswith("/"):
+        return
+        
     user_id = message.from_user.id
     if user_id in PENDING_TASKS:
         if PENDING_TASKS[user_id].get("status") == "waiting_id":
