@@ -735,19 +735,43 @@ def _parse_source_link(src_link: str):
         parts = clean.split("/")
         source_id = int("-100" + parts[0])
         topic_id = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
-        msg_id = int(parts[-1]) if parts[-1].isdigit() else None
+        
+        # Range Parsing for Private Links
+        msg_id = None
+        msg_range = None
+        last_segment = parts[-1].strip()
+        if "-" in last_segment:
+            r_parts = last_segment.split("-", 1)
+            if r_parts[0].isdigit() and r_parts[1].isdigit():
+                msg_id = int(r_parts[0])
+                msg_range = (int(r_parts[0]), int(r_parts[1]))
+        elif last_segment.isdigit():
+            msg_id = int(last_segment)
+            
         return {
             "kind": "private_c",
             "join_target": None,
             "chat_id": source_id,
             "topic_id": topic_id,
             "msg_id": msg_id,
+            "msg_range": msg_range,
         }
 
     parts = raw.split("/")
     username = parts[0]
     topic_id = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
-    msg_id = int(parts[-1]) if parts[-1].isdigit() else None
+    
+    # Range Parsing for Public/Invite Links
+    msg_id = None
+    msg_range = None
+    last_segment = parts[-1].strip()
+    if "-" in last_segment:
+        r_parts = last_segment.split("-", 1)
+        if r_parts[0].isdigit() and r_parts[1].isdigit():
+            msg_id = int(r_parts[0])
+            msg_range = (int(r_parts[0]), int(r_parts[1]))
+    elif last_segment.isdigit():
+        msg_id = int(last_segment)
 
     if username.startswith("+") or "joinchat" in username:
         return {
@@ -756,6 +780,7 @@ def _parse_source_link(src_link: str):
             "chat_id": None,
             "topic_id": topic_id,
             "msg_id": msg_id,
+            "msg_range": msg_range,
         }
 
     return {
@@ -764,6 +789,7 @@ def _parse_source_link(src_link: str):
         "chat_id": username,
         "topic_id": topic_id,
         "msg_id": msg_id,
+        "msg_range": msg_range,
     }
 
 def _pretty_bytes(n: float) -> str:
@@ -5243,6 +5269,16 @@ HTML_DASHBOARD = """
                     </div>
                 </div>
 
+                <div class="section-title">Multi-Bot Worker Pool (Speed Multiplier)</div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Auxiliary Bot Tokens</h3>
+                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 12px;">Add extra bot tokens (one per line or comma-separated) to enable parallel chunk downloads and eliminate 1080p/4K buffering.</p>
+                    <div class="input-group">
+                        <textarea id="worker-tokens-input" rows="3" placeholder="123456:ABC-DEF...&#10;789012:GHI-JKL..." style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); font-family: monospace; font-size: 12px; outline: none;"></textarea>
+                    </div>
+                    <button class="primary-btn" style="padding: 10px; width: auto;" onclick="saveWorkerTokens()">Save Worker Tokens</button>
+                </div>
+
                 <div class="section-title">Telegram Session Management</div>
                 <div class="card" style="margin-bottom: 20px;">
                     <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Connect Telegram via Web</h3>
@@ -5486,6 +5522,8 @@ HTML_DASHBOARD = """
 
             if (viewId === 'chats') loadWebChats();
             if (viewId === 'sos') loadSosStats();
+            if (viewId === 'settings') loadWorkerTokens();
+
         }
 
         async function runWebSpeedtest() {
@@ -5685,6 +5723,34 @@ HTML_DASHBOARD = """
             await loadWebChats();
         }
 
+        async function loadWorkerTokens() {
+            if (!currentUser) return;
+            try {
+                const res = await fetch(`/api/settings/tokens?user_id=${currentUser}`);
+                const data = await res.json();
+                if (data.status === 'success' && data.tokens) {
+                    const el = document.getElementById('worker-tokens-input');
+                    if (el) el.value = data.tokens.join('\n');
+                }
+            } catch (_) {}
+        }
+
+        async function saveWorkerTokens() {
+            const raw = document.getElementById('worker-tokens-input').value;
+            const tokens = raw.split(/[\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
+            try {
+                const res = await fetch('/api/settings/tokens', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: currentUser, tokens})
+                });
+                const data = await res.json();
+                alert(data.message || "Tokens updated.");
+            } catch (e) {
+                alert("Failed to save tokens.");
+            }
+        }
+        
         async function fetchStats() {
             if (!currentUser) return;
             try {
@@ -8139,12 +8205,46 @@ async def _api_tg_stream_handler(request):
         filename = getattr(media, "file_name", "").lower()
         mime_type = getattr(media, "mime_type", "application/octet-stream")
         
-        # 1. Virtualize Split Files (.001, .002, etc.)
         parts_map = []
         global_offset = 0
-        match = re.search(r'\.(\d{2,3})$', filename)
         
-        if match and int(match.group(1)) == 1:
+        # Check if the user specified an explicit range (e.g. 101-105)
+        range_spec = request.query.get("range", "")
+        range_match = re.match(r"^(\d+)-(\d+)$", range_spec)
+        
+        if range_match:
+            start_id, end_id = int(range_match.group(1)), int(range_match.group(2))
+            for mid in range(start_id, end_id + 1):
+                try:
+                    m = await uclient.get_messages(chat_id, mid)
+                    doc = m.document or m.video or m.audio
+                    if doc:
+                        psz = doc.file_size
+                        parts_map.append({"msg": m, "start": global_offset, "end": global_offset + psz, "size": psz})
+                        global_offset += psz
+                except Exception: continue
+        else:
+            match = re.search(r'\.(\d{2,3})$', filename)
+            if match and int(match.group(1)) == 1:
+                current_id = msg_id
+                while True:
+                    try:
+                        m = await uclient.get_messages(chat_id, current_id)
+                        doc = m.document or m.video
+                        if not doc: break
+                        psz = doc.file_size
+                        parts_map.append({"msg": m, "start": global_offset, "end": global_offset + psz, "size": psz})
+                        global_offset += psz
+                        current_id += 1
+                        next_m = await uclient.get_messages(chat_id, current_id)
+                        next_doc = next_m.document or next_m.video
+                        if not next_doc or not re.search(r'\.\d{2,3}$', next_doc.file_name or ""):
+                            break
+                    except Exception: break
+            else:
+                part_size = getattr(media, "file_size", 0)
+                parts_map.append({"msg": msg, "start": 0, "end": part_size, "size": part_size})
+                global_offset = part_size
             current_msg = msg
             current_id = msg_id
             while current_msg and getattr(current_msg, "document", None):
@@ -8218,7 +8318,47 @@ async def _api_tg_stream_handler(request):
             except: pass
             
     return response
+MULTI_BOT_CLIENTS = []
 
+async def init_worker_bots():
+    """Initializes extra bot clients from MongoDB for parallel downloads."""
+    global MULTI_BOT_CLIENTS
+    for c in MULTI_BOT_CLIENTS:
+        try: await c.stop()
+        except Exception: pass
+    MULTI_BOT_CLIENTS.clear()
+
+    doc = await db.db.config.find_one({"_id": "worker_tokens"})
+    tokens = doc.get("tokens", []) if doc else []
+    
+    for idx, token in enumerate(tokens, start=1):
+        try:
+            bot_client = Client(
+                f"worker_bot_{idx}",
+                api_id=API_ID,
+                api_hash=API_HASH,
+                bot_token=token.strip(),
+                workers=4,
+                no_updates=True,
+                ipv6=False
+            )
+            await bot_client.start()
+            MULTI_BOT_CLIENTS.append(bot_client)
+            logger.info(f"🚀 Worker Bot {idx} active for parallel streaming.")
+        except Exception as e:
+            logger.warning(f"Could not load worker token {idx}: {e}")
+
+async def _api_get_worker_tokens(request):
+    doc = await db.db.config.find_one({"_id": "worker_tokens"})
+    return web.json_response({"status": "success", "tokens": doc.get("tokens", []) if doc else []})
+
+async def _api_save_worker_tokens(request):
+    data = await request.json()
+    tokens = [t.strip() for t in data.get("tokens", []) if ":" in t]
+    await db.db.config.update_one({"_id": "worker_tokens"}, {"$set": {"tokens": tokens}}, upsert=True)
+    asyncio.create_task(init_worker_bots())
+    return web.json_response({"status": "success", "message": f"Saved {len(tokens)} worker token(s). Pool reloading."})
+    
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -8253,7 +8393,9 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/topics", _api_topics_handler)
     app_web.router.add_get("/api/tg_stream", _api_tg_stream_handler) # <-- ADD THIS LINE
     app_web.router.add_post("/api/mediainfo", _api_mediainfo_web_handler)
-    
+    app_web.router.add_get("/api/settings/tokens", _api_get_worker_tokens)
+    app_web.router.add_post("/api/settings/tokens", _api_save_worker_tokens)
+        
     runner = web.AppRunner(app_web)
     await runner.setup()
     site = web.TCPSite(runner, host, PORT)
