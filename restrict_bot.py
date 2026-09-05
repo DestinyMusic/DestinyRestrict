@@ -9307,9 +9307,13 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
             
         msg = await get_client_msg(client, chat_id, msg_id)
         data = bytearray()
-        async for chunk in client.stream_media(msg, offset=chunk_index, limit=1):
+        
+        # 🟢 FIX: Offset MUST be in perfectly aligned bytes (multiples of 1MB), not just the index!
+        aligned_byte_offset = chunk_index * 1048576
+        
+        async for chunk in client.stream_media(msg, offset=aligned_byte_offset):
             data.extend(chunk)
-            break 
+            break # We only need exactly 1 chunk (1MB) for the cache
             
         if not data:
             raise ValueError(f"Empty chunk at index {chunk_index}")
@@ -9421,14 +9425,15 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         chunk_index = internal_offset // CHUNK_SIZE
                         skip_bytes = internal_offset % CHUNK_SIZE
                         
-                        import math
-                        total_to_pull = skip_bytes + internal_limit
-                        chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
+                        # 🟢 FIX: Multiply by 1MB to pass a valid byte-aligned offset to Telegram
+                        aligned_byte_offset = chunk_index * CHUNK_SIZE
                         
                         msg = await get_client_msg(client, chat_id, part["msg_id"])
                         bytes_yielded_this_part = 0
                         
-                        async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
+                        # 🟢 FIX: Removed limit parameter entirely to avoid conflicts with Pyrogram forks.
+                        # We will break the loop manually when we have enough bytes.
+                        async for chunk in client.stream_media(msg, offset=aligned_byte_offset):
                             if skip_bytes > 0:
                                 if len(chunk) <= skip_bytes:
                                     skip_bytes -= len(chunk)
