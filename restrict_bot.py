@@ -8814,6 +8814,16 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
                 raise ValueError("EOF Reached or Empty Chunk")
                 
             return bytes(data[:target_bytes])
+            
+        except FloodWait as e:
+            logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
+            await asyncio.sleep(e.value + 1)
+        except Exception as e:
+            if attempt == 3:
+                raise e
+            await asyncio.sleep(1)
+            
+    raise TimeoutError("Exceeded max retries for chunk")
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=2 * 1024 * 1024, concurrency=6):
     """Fast Telegram range generator with cached client selection and split-safe work units."""
