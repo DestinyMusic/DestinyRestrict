@@ -8135,12 +8135,13 @@ async def _api_stream_handler(request):
         mime_type = getattr(media, 'mime_type', 'video/mp4').lower()
         
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+        public_redirect_url = f"/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}" # 🟢 FIX: Browser needs relative path, not 127.0.0.1
         is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma")) or "audio" in mime_type
         is_unfriendly = filename.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv", ".ts", ".webm"))
         
         # Super-fast direct bypass for standard MP4s
         if quality == "Original" and audio_idx is None and not is_unfriendly and not is_audio and not force_transcode and not start_time:
-            raise web.HTTPFound(actual_url)
+            raise web.HTTPFound(public_redirect_url) # 🟢 FIX: Stops redirecting the user to their own localhost
 
     else:
         actual_url = await resolve_direct_link(link) # 🟢 Extracts the raw MP4 from hosters
@@ -8573,8 +8574,21 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
 async def _api_tg_stream_handler(request):
     """High-Speed File-to-Link Proxy with Parallel Chunking, Split Files & ZIP Extraction."""
     user_id = int(request.query.get("user_id", 0))
-    chat_id = request.query.get("chat_id")
-    msg_id = int(request.query.get("msg_id"))
+    
+    # 🟢 THE FIX: Handle direct links sent from the frontend WASM player
+    link = request.query.get("link")
+    if link:
+        parsed = _parse_source_link(link)
+        chat_id = parsed.get("chat_id")
+        msg_id = parsed.get("msg_id")
+    else:
+        chat_id = request.query.get("chat_id")
+        msg_id = request.query.get("msg_id")
+        
+    if chat_id is None or msg_id is None:
+        return web.Response(status=400, text="Missing chat_id/msg_id or link")
+        
+    msg_id = int(msg_id)
     chat_id = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
     
     msg = None
