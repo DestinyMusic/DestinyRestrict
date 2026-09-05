@@ -8734,7 +8734,7 @@ async def _api_stream_handler(request):
         "-user_agent", "Mozilla/5.0",
         "-rw_timeout", "12000000",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-        "-probesize", "32M", "-analyzeduration", "15M", # 🟢 FIX: Massively increased to support 4K Dolby Vision headers
+        "-probesize", "2M", "-analyzeduration", "1M",
         "-fflags", "+nobuffer+flush_packets",
     ]
 
@@ -8803,9 +8803,10 @@ async def _api_stream_handler(request):
     })
     
     try:
+        # 🟢 FIX: Wrap prepare() inside the try block here too
         await response.prepare(request)
         while True:
-            buf = await proc.stdout.read(1048576) # 🟢 FIX: Increased to 1MB chunks to prevent 4K buffering
+            buf = await proc.stdout.read(512 * 1024)
             if not buf:
                 break
             await response.write(buf)
@@ -8984,8 +8985,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         cursor += len(batch)
 
 
-GLOBAL_STREAM_TASKS = {}
-
 async def _api_tg_stream_handler(request):
     """High-speed Telegram Range proxy with multi-bot routing, user fallback, split files and ZIP extraction."""
     try:
@@ -8994,21 +8993,6 @@ async def _api_tg_stream_handler(request):
         user_id = 0
 
     link = request.query.get("link")
-    
-    # 🟢 SCURB-KILLER: Extract parameters early to cancel ghost tasks
-    tmp_chat_id = request.query.get("chat_id")
-    tmp_msg_id = request.query.get("msg_id")
-    if link:
-        parsed_tmp = _parse_source_link(link)
-        tmp_chat_id = parsed_tmp.get("chat_id")
-        tmp_msg_id = parsed_tmp.get("msg_id")
-        
-    if tmp_chat_id and tmp_msg_id:
-        lock_key = f"{user_id}_{tmp_chat_id}_{tmp_msg_id}"
-        old_task = GLOBAL_STREAM_TASKS.get(lock_key)
-        if old_task and not old_task.done():
-            old_task.cancel() # Instantly kill the previous Pyrogram download when user scrubs!
-        GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
     if link:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
@@ -9145,22 +9129,19 @@ async def _api_tg_stream_handler(request):
         import aiohttp
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
-        adjusted_start = start_byte + virtual_data_offset
-        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
-        
         try:
+            # 🟢 FIX: Wrap prepare() and write() together so scrubber disconnects are caught safely
             await response.prepare(request)
-            async for chunk in gen:
+            adjusted_start = start_byte + virtual_data_offset
+            async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6):
                 await response.write(chunk)
             await response.write_eof()
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+            # Gracefully handle when the browser cancels the connection during seeking/scrubbing
             return response
         except Exception as exc:
             logger.debug(f"Telegram stream disconnect/error: {exc}")
-            return response
-        finally:
-            try: await gen.aclose() # Force generator destruction
-            except: pass
+        return response
 
     except asyncio.CancelledError:
         raise
