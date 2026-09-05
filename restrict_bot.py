@@ -4795,20 +4795,42 @@ HTML_DASHBOARD = """
             }
         }
         .pop-title { font-size: 14px; font-weight: 800; margin-bottom: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
-        .pop-select { 
-            width: 100%; padding: 10px; 
-            background: color-mix(in srgb, var(--bg) var(--glass-bg, 100%), transparent); 
-            border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); 
-            border-radius: 10px; color: #fff; font-size: 12px; margin-bottom: 14px; outline: none; 
-            backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px));
-        }
+        .pop-select { display: none; /* Hidden entirely to replace with Custom Glass Selects */ }
         
-        /* 🟢 FIX: Forces the dropdown items to be solid so you can actually read the audio/subtitle tracks */
-        .pop-select option {
-            background-color: var(--card);
-            color: var(--text);
-            font-weight: 600;
+        /* 🟢 NEW: Custom Liquid Glass Dropdown Overrides for Mobile */
+        .glass-select-container { position: relative; width: 100%; margin-bottom: 14px; user-select: none; }
+        .glass-select-display {
+            padding: 12px 14px;
+            background: color-mix(in srgb, var(--bg) var(--glass-bg, 100%), transparent);
+            border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent);
+            border-radius: 12px; color: #fff; font-size: 12px; cursor: pointer; font-weight: 600;
+            backdrop-filter: blur(calc(10px + var(--glass-blur, 0px))); -webkit-backdrop-filter: blur(calc(10px + var(--glass-blur, 0px)));
+            display: flex; justify-content: space-between; align-items: center; transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            box-shadow: inset 0 0 10px rgba(255,255,255,0.02);
         }
+        .glass-select-display::after { content: '▼'; font-size: 10px; color: var(--accent); transition: transform 0.3s; }
+        .glass-select-display.active { border-color: var(--accent); box-shadow: 0 0 15px var(--glow), inset 0 0 10px rgba(255,255,255,0.05); }
+        .glass-select-display.active::after { transform: rotate(180deg); }
+
+        .glass-select-dropdown {
+            position: absolute; top: calc(100% + 6px); left: 0; right: 0;
+            background: color-mix(in srgb, #050505 var(--glass-bg, 95%), transparent);
+            backdrop-filter: blur(calc(25px + var(--glass-blur, 0px))); -webkit-backdrop-filter: blur(calc(25px + var(--glass-blur, 0px)));
+            border: 1px solid var(--accent);
+            border-radius: 14px; max-height: 240px; overflow-y: auto; z-index: 9999;
+            display: none; box-shadow: 0 20px 50px rgba(0,0,0,0.9), 0 0 30px var(--glow);
+            scrollbar-width: thin; scrollbar-color: var(--accent) transparent;
+        }
+        .glass-select-dropdown.show { display: block; animation: glassDropFade 0.25s cubic-bezier(0.4, 0, 0.2, 1) forwards; }
+        @keyframes glassDropFade { from { opacity: 0; transform: translateY(-10px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+
+        .glass-select-item {
+            padding: 14px 16px; font-size: 12px; color: #cbd5e1; border-bottom: 1px solid rgba(255,255,255,0.05); cursor: pointer; transition: all 0.2s;
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .glass-select-item:last-child { border-bottom: none; }
+        .glass-select-item:hover { background: rgba(56, 189, 248, 0.15); color: #fff; padding-left: 20px; }
+        .glass-select-item.same-as-selected { background: rgba(56, 189, 248, 0.25); color: #fff; font-weight: 800; border-left: 4px solid var(--accent); }
 
         /* 3D Matrix Menu (Exact Layout from Image) */
         .matrix-3d-menu {
@@ -5426,6 +5448,79 @@ HTML_DASHBOARD = """
         let currentUser = localStorage.getItem('tg_uid') || null;
         let chatsLoaded = false;
 
+        // 🟢 NEW: Custom Liquid Glass Dropdown Engine
+        function initCustomSelects() {
+            document.querySelectorAll('.pop-select').forEach(select => {
+                // Wipe any existing custom dropdowns if re-rendering (e.g. on new movie load)
+                const existing = select.nextElementSibling;
+                if (existing && existing.classList.contains('glass-select-container')) {
+                    existing.remove();
+                }
+
+                // Create Wrapper
+                const container = document.createElement('div');
+                container.className = 'glass-select-container';
+
+                // Create Display Box
+                const display = document.createElement('div');
+                display.className = 'glass-select-display';
+                display.innerHTML = select.options[select.selectedIndex]?.text || 'Select...';
+
+                // Create Options List
+                const dropdown = document.createElement('div');
+                dropdown.className = 'glass-select-dropdown';
+
+                Array.from(select.options).forEach((opt, idx) => {
+                    const item = document.createElement('div');
+                    item.className = 'glass-select-item';
+                    if (idx === select.selectedIndex) item.classList.add('same-as-selected');
+                    item.innerHTML = opt.text;
+                    item.addEventListener('click', (e) => {
+                        e.stopPropagation();
+                        select.selectedIndex = idx;
+                        display.innerHTML = opt.text;
+                        dropdown.querySelectorAll('.same-as-selected').forEach(el => el.classList.remove('same-as-selected'));
+                        item.classList.add('same-as-selected');
+                        dropdown.classList.remove('show');
+                        display.classList.remove('active');
+                        // Fire the native onchange event (applyTrackSelection, etc.)
+                        select.dispatchEvent(new Event('change'));
+                    });
+                    dropdown.appendChild(item);
+                });
+
+                display.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    // Close other open dropdowns
+                    document.querySelectorAll('.glass-select-dropdown.show').forEach(d => {
+                        if (d !== dropdown) {
+                            d.classList.remove('show');
+                            d.previousElementSibling.classList.remove('active');
+                        }
+                    });
+                    dropdown.classList.toggle('show');
+                    display.classList.toggle('active');
+                    // Auto-scroll to selected item
+                    if (dropdown.classList.contains('show')) {
+                        const activeItem = dropdown.querySelector('.same-as-selected');
+                        if (activeItem) activeItem.scrollIntoView({block: 'nearest'});
+                    }
+                });
+
+                container.appendChild(display);
+                container.appendChild(dropdown);
+                select.parentNode.insertBefore(container, select.nextSibling);
+            });
+        }
+
+        // Global click listener to close custom dropdowns if clicking outside
+        document.addEventListener('click', () => {
+            document.querySelectorAll('.glass-select-dropdown.show').forEach(d => {
+                d.classList.remove('show');
+                d.previousElementSibling.classList.remove('active');
+            });
+        });
+
         function applyLiquidUI(val) {
             document.getElementById('liquid-val').innerText = val;
             document.documentElement.style.setProperty('--liquid-width', val + '%');
@@ -5471,6 +5566,9 @@ HTML_DASHBOARD = """
 
             fetchStats();
             setInterval(fetchStats, 5000);
+            
+            // 🟢 Render initial static Glass Dropdowns (Aspect Ratio, Size, Speed)
+            setTimeout(initCustomSelects, 200);
         }
 
         async function handleLogin(e) {
@@ -7107,6 +7205,9 @@ HTML_DASHBOARD = """
 
                 if (!gl) initWebGL();
                 wakeHUD();
+                
+                // 🟢 Re-render Glass Dropdowns so the new Audio/Sub tracks appear beautifully!
+                setTimeout(initCustomSelects, 50);
             } catch (err) {
                 console.error('Media load failed:', err);
                 if (titleEl) titleEl.innerText = `⚠️ ${err.message || 'Unable to load media'}`;
@@ -8787,7 +8888,7 @@ async def _api_stream_handler(request):
         "-user_agent", "Mozilla/5.0",
         "-rw_timeout", "12000000",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-        "-probesize", "32M", "-analyzeduration", "15M", # 🟢 FIX: Massively increased to support 4K Dolby Vision headers
+        "-probesize", "10M", "-analyzeduration", "5M", # 🟢 FAST 4K PROBE: Enough for Dolby Vision, but loads instantly
         "-fflags", "+nobuffer+flush_packets",
     ]
 
@@ -8858,7 +8959,7 @@ async def _api_stream_handler(request):
     try:
         await response.prepare(request)
         while True:
-            buf = await proc.stdout.read(1048576) # 🟢 FIX: Increased to 1MB chunks to prevent 4K buffering
+            buf = await proc.stdout.read(262144) # 🟢 SMOOTH STREAMING: 256KB chunks deliver frames to the browser instantly
             if not buf:
                 break
             await response.write(buf)
@@ -9168,6 +9269,22 @@ async def _api_tg_stream_handler(request):
             return web.Response(status=416, headers={"Content-Range": f"bytes */{virtual_size}"})
 
         chunk_len = end_byte - start_byte + 1
+        
+        # 🟢 SMART SCRUB-KILLER: Only cancel ghost tasks if it's a massive video stream!
+        # Ignores tiny metadata probes so the browser accurately displays the Total Duration.
+        if "GLOBAL_STREAM_TASKS" not in globals():
+            global GLOBAL_STREAM_TASKS
+            GLOBAL_STREAM_TASKS = {}
+            
+        is_metadata_probe = chunk_len < 5242880 # 5 MB
+        lock_key = f"{user_id}_{chat_id}_{msg_id}"
+        
+        if not is_metadata_probe:
+            old_task = GLOBAL_STREAM_TASKS.get(lock_key)
+            if old_task and not old_task.done():
+                old_task.cancel() # Safely kill the old ghost download
+            GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
+
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Length": str(chunk_len),
@@ -9398,10 +9515,12 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
         msg = await get_client_msg(client, chat_id, msg_id)
         data = bytearray()
         
-        # 🟢 THE REAL FIX: Pyrogram v2+ strictly requires the CHUNK INDEX, not bytes!
-        async for chunk in client.stream_media(msg, offset=chunk_index):
+        # 🟢 FIX: Pyrofork requires BYTES aligned to 1MB (1048576)
+        aligned_byte_offset = chunk_index * 1048576
+        
+        async for chunk in client.stream_media(msg, offset=aligned_byte_offset):
             data.extend(chunk)
-            break # We only need exactly 1 chunk (1MB) for the cache
+            break 
             
         if not data:
             raise ValueError(f"Empty chunk at index {chunk_index}")
@@ -9513,11 +9632,12 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         chunk_index = internal_offset // CHUNK_SIZE
                         skip_bytes = internal_offset % CHUNK_SIZE
                         
+                        aligned_byte_offset = chunk_index * 1048576
+                        
                         msg = await get_client_msg(client, chat_id, part["msg_id"])
                         bytes_yielded_this_part = 0
                         
-                        # 🟢 THE REAL FIX: Pass the raw chunk_index. NO MULTIPLICATION!
-                        async for chunk in client.stream_media(msg, offset=chunk_index):
+                        async for chunk in client.stream_media(msg, offset=aligned_byte_offset):
                             if skip_bytes > 0:
                                 if len(chunk) <= skip_bytes:
                                     skip_bytes -= len(chunk)
