@@ -5071,6 +5071,12 @@ HTML_DASHBOARD = """
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">BACKGROUND OPACITY</label>
                         <input id="subtitle-bg-alpha" type="range" min="0" max="100" value="70" oninput="applySubtitleStyle()" style="width: 100%; margin-bottom: 14px;">
 
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE SYNC DELAY (SECONDS)</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 14px; align-items: center;">
+                            <input id="subtitle-sync-slider" type="range" min="-10" max="10" step="0.25" value="0" oninput="updateSubtitleSync(this.value)" style="flex: 1; accent-color: var(--accent);">
+                            <span id="subtitle-sync-val" style="color: var(--text); font-size: 12px; font-weight: bold; font-family: monospace; min-width: 50px; text-align: right;">0.00s</span>
+                        </div>
+
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
                         <select id="pop-aspect-select" class="pop-select" onchange="applyAspectRatio(this.value)">
                             <option value="contain">Fit (Default)</option>
@@ -6057,6 +6063,13 @@ HTML_DASHBOARD = """
         let subtitleCues = [];
         let subtitleAbortController = null;
         let hudTimeout;
+        let subtitleSyncOffset = 0; // 🟢 NEW: Global Sync Offset Tracker
+        
+        function updateSubtitleSync(val) {
+            subtitleSyncOffset = parseFloat(val);
+            document.getElementById('subtitle-sync-val').innerText = (subtitleSyncOffset > 0 ? "+" : "") + subtitleSyncOffset.toFixed(2) + "s";
+            renderCurrentSubtitle(); // Instantly update text on screen
+        }
 
         // ======================================================================
         // WEBGL 3D ANAGLYPH SHADER PIPELINE
@@ -6636,7 +6649,10 @@ HTML_DASHBOARD = """
                 t = playerRequiresTranscode ? (playerTimelineOffset + cur) : cur;
             }
 
-            const hits = subtitleCues.filter(c => t >= c.start && t <= c.end);
+            // 🟢 Apply the manual sync offset slider
+            const adjustedTime = t - subtitleSyncOffset;
+
+            const hits = subtitleCues.filter(c => adjustedTime >= c.start && adjustedTime <= c.end);
             if (!hits.length) {
                 overlay.innerHTML = '';
                 return;
@@ -8299,7 +8315,6 @@ async def _run_ffprobe_json(input_url, fast=True):
         except Exception as exc:
             last_error = str(exc)
     raise RuntimeError(last_error or 'ffprobe failed')
-
 
 # ------------------------------------------------------------------------------
 # Telegram access/pool cache. This avoids probing every bot for every Range
