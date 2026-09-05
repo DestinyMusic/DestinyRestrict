@@ -8195,8 +8195,9 @@ async def _api_direct_stream_handler(request):
                 await response.write(chunk)
         await response.write_eof()
         return response
-    except (ConnectionResetError, asyncio.CancelledError, aiohttp.ClientConnectionError):
-        raise
+    except (ConnectionResetError, asyncio.CancelledError, aiohttp.ClientConnectionError, aiohttp.client_exceptions.ClientConnectionResetError):
+        # Gracefully exit on seek/close rather than raising an uncaught exception
+        return response
     except Exception as exc:
         logger.debug(f"Direct stream disconnect/error: {exc}")
         return response
