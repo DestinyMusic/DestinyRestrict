@@ -6699,60 +6699,86 @@ HTML_DASHBOARD = """
             wakeHUD();
         }
 
-        function toggleFullScreen() {
+        async function toggleFullScreen() {
             const vp = document.getElementById('cinema-viewport');
-            if (!vp) return;
+            if (!vp) return false;
             
-            // Detect iOS/iPadOS and PWA Standalone Mode
+            // Device detection for optimal rendering across all ecosystems
             const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
             const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 
-            // Apple completely blocks native fullscreen in PWAs. Use CSS-based faux-fullscreen.
-            if (isIOS || isStandalone) {
-                vp.classList.toggle('ios-fullscreen');
-                updateViewportBox();
-                resizePlayerSurface();
-                
-                // Try to force landscape orientation if possible
-                if (vp.classList.contains('ios-fullscreen') && screen.orientation && screen.orientation.lock) {
-                    screen.orientation.lock('landscape').catch(() => {});
-                } else if (screen.orientation && screen.orientation.unlock) {
-                    screen.orientation.unlock();
-                }
-                return;
-            }
+            const isCurrentlyFullscreen = document.fullscreenElement || document.webkitFullscreenElement || vp.classList.contains('ios-fullscreen');
 
-            // Standard Native Fullscreen for Android, Windows, Mac
-            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
-                if (vp.requestFullscreen) vp.requestFullscreen();
-                else if (vp.webkitRequestFullscreen) vp.webkitRequestFullscreen();
+            if (!isCurrentlyFullscreen) {
+                // ENTER FULLSCREEN
+                if (isIOS || isStandalone) {
+                    vp.classList.add('ios-fullscreen');
+                    updateViewportBox(); resizePlayerSurface();
+                    return true;
+                } else {
+                    try {
+                        if (vp.requestFullscreen) {
+                            await vp.requestFullscreen();
+                        } else if (vp.webkitRequestFullscreen) {
+                            await vp.webkitRequestFullscreen();
+                        }
+                        return true;
+                    } catch (err) {
+                        console.warn("Fullscreen request rejected:", err);
+                        return false;
+                    }
+                }
             } else {
-                if (document.exitFullscreen) document.exitFullscreen();
-                else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                // EXIT FULLSCREEN
+                if (vp.classList.contains('ios-fullscreen')) {
+                    vp.classList.remove('ios-fullscreen');
+                    updateViewportBox(); resizePlayerSurface();
+                    if (screen.orientation && screen.orientation.unlock) {
+                        try { screen.orientation.unlock(); } catch(e){}
+                    }
+                    return false;
+                } else {
+                    if (document.exitFullscreen) {
+                        await document.exitFullscreen();
+                    } else if (document.webkitExitFullscreen) {
+                        await document.webkitExitFullscreen();
+                    }
+                    return false;
+                }
             }
         }
 
         async function toggleOrientation() {
             const vp = document.getElementById('cinema-viewport');
             const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
+            const isNativeFullscreen = document.fullscreenElement || document.webkitFullscreenElement;
             
-            if (!document.fullscreenElement && !document.webkitFullscreenElement && !isIosFullscreen) {
-                toggleFullScreen();
-                await new Promise(r => setTimeout(r, 200));
+            // 🟢 THE FIX: Wait safely for the browser to finish entering fullscreen before forcing rotation!
+            if (!isNativeFullscreen && !isIosFullscreen) {
+                await toggleFullScreen();
+                // We add a 400ms buffer so slow Android OS animations can finish safely
+                await new Promise(r => setTimeout(r, 400));
             }
             
             try {
+                // Check if device is currently standing up or sideways
+                const isPortrait = window.innerHeight > window.innerWidth;
+                const targetRotation = isPortrait ? 'landscape' : 'portrait';
+
+                // Cross-browser orientation logic (handles Android, Chrome, Edge, and older APIs)
                 if (screen.orientation && screen.orientation.lock) {
-                    const currentType = screen.orientation.type;
-                    if (currentType.startsWith('portrait')) {
-                        await screen.orientation.lock('landscape');
-                    } else {
-                        await screen.orientation.lock('portrait');
-                    }
+                    await screen.orientation.lock(targetRotation);
+                } else if (screen.lockOrientation) {
+                    screen.lockOrientation(targetRotation);
+                } else if (screen.mozLockOrientation) {
+                    screen.mozLockOrientation(targetRotation);
+                } else if (screen.msLockOrientation) {
+                    screen.msLockOrientation(targetRotation);
+                } else {
+                    console.warn("Screen rotation lock is not natively supported by this device/browser.");
                 }
             } catch (err) {
-                // 🟢 FIX: Catch the sandbox error silently instead of throwing annoying alerts!
-                console.warn("Orientation lock restricted by browser sandbox:", err);
+                console.warn("Orientation lock restricted by browser sandbox/policy:", err);
             }
         }
 
@@ -8359,8 +8385,8 @@ async def _api_spectrogram_web_handler(request):
             msg = await uclient.get_messages(chat_id, msg_id)
             if msg.empty: return web.json_response({"status": "error", "message": "Message not found or inaccessible"})
             
-            # 🟢 FIX: Use fast partial snippet so we don't try to download 15GB files into RAM!
-            await partial_download_tg(uclient, msg, str(original_file), limit_mb=25)
+            # 🟢 FIX: Audio MUST be downloaded continuously (no gaps), otherwise FFmpeg outputs a broken/silent WAV!
+            await download_audio_snippet_tg(uclient, msg, str(original_file), limit_mb=25)
         elif url.startswith("http"):
             await full_download_http(url, original_file)
         else:
@@ -10090,7 +10116,6 @@ async def partial_download_tg(client, message, file_path, limit_mb=15):
     edge_chunks = min(edge_chunks, total_chunks // 2)
 
     with open(file_path, "wb") as f:
-        # 🟢 FIX: Break loop manually without limit param to prevent Pyrogram crashing
         chunks_written = 0
         async for chunk in client.stream_media(message):
             f.write(chunk)
@@ -10102,15 +10127,26 @@ async def partial_download_tg(client, message, file_path, limit_mb=15):
             offset_chunk = max(edge_chunks, total_chunks - edge_chunks)
             tail_limit = total_chunks - offset_chunk
             if tail_limit > 0:
-                aligned_offset = offset_chunk * chunk_size
-                f.seek(aligned_offset)
+                # We must seek the local file pointer in BYTES
+                f.seek(offset_chunk * chunk_size)
                 chunks_written = 0
-                # 🟢 FIX: Must pass perfectly aligned byte offsets!
-                async for chunk in client.stream_media(message, offset=aligned_offset):
+                # 🟢 THE REAL FIX: Pyrogram expects the chunk index (offset_chunk), NOT aligned bytes!
+                async for chunk in client.stream_media(message, offset=offset_chunk):
                     f.write(chunk)
                     chunks_written += 1
                     if chunks_written >= tail_limit:
                         break
+
+async def download_audio_snippet_tg(client_to_use, message, file_path, limit_mb=15):
+    """Continuous download of the first X MB so SoX/FFmpeg reads it as a valid truncated audio file."""
+    limit_bytes = int(limit_mb * 1024 * 1024)
+    with open(file_path, "wb") as f:
+        current_bytes = 0
+        async for chunk in client_to_use.stream_media(message):
+            f.write(chunk)
+            current_bytes += len(chunk)
+            if current_bytes >= limit_bytes:
+                break
 
 async def partial_download_http(url, file_path, limit_mb=15):
     """Robust bounded HTTP sampler used by MediaInfo/probing.
