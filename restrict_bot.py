@@ -9307,19 +9307,23 @@ async def _api_tg_stream_handler(request):
                 await response.write(chunk)
             await response.write_eof()
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
-            return response
+            pass
         except Exception as exc:
             logger.debug(f"Telegram stream disconnect/error: {exc}")
-            return response
         finally:
             try: await gen.aclose() # Force generator destruction
             except: pass
+            
+        # 🟢 FIX: Prevent 500 error crashes if the browser abruptly disconnects before preparation
+        if not response.prepared:
+            return web.Response(status=499, text="Client Closed Request")
+        return response
 
     except asyncio.CancelledError:
         raise
     except Exception as exc:
         logger.exception(f"Telegram stream failed: {exc}")
-        if response is None:
+        if response is None or not getattr(response, 'prepared', False):
             return web.Response(status=502, text="Telegram stream failed")
         return response
     finally:
@@ -9515,10 +9519,8 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
         msg = await get_client_msg(client, chat_id, msg_id)
         data = bytearray()
         
-        # 🟢 FIX: Pyrofork requires BYTES aligned to 1MB (1048576)
-        aligned_byte_offset = chunk_index * 1048576
-        
-        async for chunk in client.stream_media(msg, offset=aligned_byte_offset):
+        # 🟢 THE REAL FIX: Pass raw chunk_index and limit to Pyrogram! No multiplication!
+        async for chunk in client.stream_media(msg, offset=chunk_index, limit=1):
             data.extend(chunk)
             break 
             
@@ -9632,12 +9634,15 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         chunk_index = internal_offset // CHUNK_SIZE
                         skip_bytes = internal_offset % CHUNK_SIZE
                         
-                        aligned_byte_offset = chunk_index * 1048576
+                        import math
+                        total_to_pull = skip_bytes + internal_limit
+                        chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
                         
                         msg = await get_client_msg(client, chat_id, part["msg_id"])
                         bytes_yielded_this_part = 0
                         
-                        async for chunk in client.stream_media(msg, offset=aligned_byte_offset):
+                        # 🟢 THE REAL FIX: Pass the raw chunk_index and the calculated chunk limit!
+                        async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
                             if skip_bytes > 0:
                                 if len(chunk) <= skip_bytes:
                                     skip_bytes -= len(chunk)
