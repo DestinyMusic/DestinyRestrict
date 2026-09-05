@@ -6522,7 +6522,6 @@ HTML_DASHBOARD = """
 
         async function togglePlayback() {
             const video = document.getElementById('hidden-video');
-            const extAudio = document.getElementById('ext-audio-player');
             if (!video) return;
             wakeHUD();
 
@@ -6531,17 +6530,9 @@ HTML_DASHBOARD = """
                     if (video.ended) {
                         try { video.currentTime = 0; } catch (_) {}
                     }
-                    
-                    // 🟢 Apple iOS Safari Fix: External audio MUST be played inside this user-click event!
-                    if (extAudio && extAudio.src) {
-                        extAudio.currentTime = video.currentTime;
-                        extAudio.play().catch(e => console.warn("External Audio Play blocked:", e));
-                    }
-                    
                     await video.play();
                 } else {
                     video.pause();
-                    if (extAudio && extAudio.src) extAudio.pause();
                 }
             } catch (err) {
                 console.warn('Playback toggle failed:', err);
@@ -6711,18 +6702,27 @@ HTML_DASHBOARD = """
         function toggleFullScreen() {
             const vp = document.getElementById('cinema-viewport');
             if (!vp) return;
-
+            
+            // Detect iOS/iPadOS and PWA Standalone Mode
             const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
             const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 
-            // iOS PWA Standalone Mode blocks HTML5 requestFullscreen; use CSS fixed overlay
+            // Apple completely blocks native fullscreen in PWAs. Use CSS-based faux-fullscreen.
             if (isIOS || isStandalone) {
                 vp.classList.toggle('ios-fullscreen');
                 updateViewportBox();
                 resizePlayerSurface();
+                
+                // Try to force landscape orientation if possible
+                if (vp.classList.contains('ios-fullscreen') && screen.orientation && screen.orientation.lock) {
+                    screen.orientation.lock('landscape').catch(() => {});
+                } else if (screen.orientation && screen.orientation.unlock) {
+                    screen.orientation.unlock();
+                }
                 return;
             }
 
+            // Standard Native Fullscreen for Android, Windows, Mac
             if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                 if (vp.requestFullscreen) vp.requestFullscreen();
                 else if (vp.webkitRequestFullscreen) vp.webkitRequestFullscreen();
@@ -7181,6 +7181,7 @@ HTML_DASHBOARD = """
                 updateViewportBox();
                 resizePlayerSurface();
                 
+                // 🟢 FIX: Forcefully apply the target timestamp across both transcode and direct modes
                 try {
                     const targetSeek = Number(preserveTime) || 0;
                     if (targetSeek > 0) {
@@ -7191,30 +7192,12 @@ HTML_DASHBOARD = """
                 }
 
                 if (shouldPlay) {
-                    try { 
-                        await video.play(); 
-                        const bigPlayBtn = document.getElementById('big-play-overlay');
-                        if (bigPlayBtn) bigPlayBtn.style.display = 'none';
-                    } catch (err) { 
-                        console.warn('Autoplay blocked; displaying play overlay:', err);
-                        const bigPlayBtn = document.getElementById('big-play-overlay');
-                        if (bigPlayBtn) {
-                            bigPlayBtn.style.display = 'flex';
-                            wakeHUD();
-                        }
-                    }
+                    try { await video.play(); }
+                    catch (err) { console.warn('Autoplay after track switch failed:', err); }
                 }
                 renderCurrentSubtitle();
             };
             video.addEventListener('loadedmetadata', onMetadata, { once: true });
-            
-            // 🍏 SAFARI FALLBACK: If loadedmetadata stalls on iOS, force-trigger after 800ms using playerTotalDuration
-            setTimeout(() => {
-                if (video.readyState < 1 && playerTotalDuration > 0) {
-                    console.warn("Safari metadata event stalled; forcing fallback initialization.");
-                    onMetadata();
-                }
-            }, 800);
         }
 
         function buildStreamUrl(startTime = null) {
@@ -7476,11 +7459,13 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('play', () => {
                 if (hudPlay) hudPlay.innerHTML = smallPauseSvg;
                 if (bigPlay) bigPlay.innerHTML = pauseSvg;
+                if (extAudio && extAudio.src) extAudio.play().catch(e => console.warn(e));
                 wakeHUD();
             });
             vidElem.addEventListener('pause', () => {
                 if (hudPlay) hudPlay.innerHTML = smallPlaySvg;
                 if (bigPlay) bigPlay.innerHTML = playSvg;
+                if (extAudio && extAudio.src) extAudio.pause();
                 wakeHUD();
             });
             vidElem.addEventListener('ratechange', () => {
@@ -9113,21 +9098,11 @@ async def _api_stream_handler(request):
     cache_key = _media_cache_key(user_id, link)
     cached_meta = MEDIA_META_CACHE.get(cache_key)
     video_codec = ""
-    audio_channels = 2
     if cached_meta:
         meta = cached_meta[0]
         if not audio_codec:
             audio_codec = meta.get("audio_codec", "").lower()
         video_codec = meta.get("video_codec", "").lower()
-        
-        # Determine original channel count for hybrid audio preservation
-        tracks = meta.get("audio_tracks", [])
-        for t in tracks:
-            if str(t.get("index")) == str(audio_idx):
-                audio_channels = int(t.get("channels") or 2)
-                break
-        if not audio_idx and tracks:
-            audio_channels = int(tracks[0].get("channels") or 2)
 
     # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
     bad_audio = {"dts", "truehd", "ac3", "eac3"}
@@ -9141,15 +9116,12 @@ async def _api_stream_handler(request):
     scale_filter = res_scale_map.get(quality)
 
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning",
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0",
-        "-rw_timeout", "30000000",
-        "-seekable", "0",
-        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-probesize", "5M", "-analyzeduration", "5M", 
-        "-fflags", "+nobuffer+flush_packets+igndts",
-        "-err_detect", "ignore_err",
-        "-re", # 🟢 PREVENTS TELEGRAM CRASH: Forces FFmpeg to read at 1x speed so Telegram doesn't drop the connection
+        "-rw_timeout", "12000000",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+        "-probesize", "10M", "-analyzeduration", "5M", # 🟢 FAST 4K PROBE: Enough for Dolby Vision, but loads instantly
+        "-fflags", "+nobuffer+flush_packets",
     ]
 
     if start_time is not None:
@@ -9198,14 +9170,9 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            if audio_channels > 2:
-                # HYBRID: Preserve 5.1/7.1 Surround, just translate to Apple-friendly AAC codec
-                cmd += ["-c:a", "aac", "-b:a", "384k"]
-            else:
-                # Standard Stereo fallback
-                cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+            cmd += ["-c:a", "aac", "-b:a", "192k"]
 
-        cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "empty_moov+omit_tfhd_offset+frag_keyframe+default_base_moof", "-f", "mp4", "pipe:1"]
+        cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -9213,40 +9180,24 @@ async def _api_stream_handler(request):
         stderr=asyncio.subprocess.PIPE,
     )
     import aiohttp
-    
-    # 🟢 iOS SAFARI FIX: Safari rejects 200 OK video streams. We must fake a 206 Partial Content response.
-    range_header = request.headers.get("Range", "")
-    headers = {
+    response = web.StreamResponse(status=200, headers={
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Type",
+        "Access-Control-Expose-Headers": "Content-Type",
         "Cache-Control": "no-store",
-        "Accept-Ranges": "bytes",
-    }
-    status_code = 200
+        "Accept-Ranges": "none",
+    })
     
-    if range_header:
-        status_code = 206
-        match = re.match(r"bytes=(\d*)-(\d*)", range_header)
-        start_byte = match.group(1) if match and match.group(1) else "0"
-        # Trick Safari into thinking this is a massive seekable file so it accepts the live MP4 chunks
-        headers["Content-Range"] = f"bytes {start_byte}-99999999999/100000000000"
-        headers["Content-Length"] = str(100000000000 - int(start_byte))
-        
-    response = web.StreamResponse(status=status_code, headers=headers)
-
     try:
         await response.prepare(request)
         while True:
-            buf = await proc.stdout.read(262144)
+            buf = await proc.stdout.read(262144) # 🟢 SMOOTH STREAMING: 256KB chunks deliver frames to the browser instantly
             if not buf:
                 break
             await response.write(buf)
         await response.write_eof()
-    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError, aiohttp.client_exceptions.ClientPayloadError):
-        raise asyncio.CancelledError()
-    except asyncio.CancelledError:
-        raise
+    except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+        pass
     except Exception:
         pass
     finally:
@@ -9256,6 +9207,7 @@ async def _api_stream_handler(request):
         except Exception:
             pass
     return response
+
 
 CLIENT_MSG_CACHE = {}
 CLIENT_MSG_CACHE_MAX = 2048
@@ -9456,25 +9408,7 @@ async def _api_tg_stream_handler(request):
             return web.Response(status=404)
 
         filename = str(getattr(media, "file_name", "") or "").lower()
-        raw_mime = getattr(media, "mime_type", "") or ""
-        
-        # Resolve accurate MIME types so iOS Safari does not reject playback
-        guessed_type, _ = mimetypes.guess_type(filename)
-        if guessed_type:
-            mime_type = guessed_type
-        elif raw_mime and raw_mime != "application/octet-stream":
-            mime_type = raw_mime
-        else:
-            if filename.endswith((".mp4", ".m4v", ".mov")):
-                mime_type = "video/mp4"
-            elif filename.endswith(".webm"):
-                mime_type = "video/webm"
-            elif filename.endswith(".mkv"):
-                mime_type = "video/x-matroska"
-            elif filename.endswith((".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg")):
-                mime_type = "audio/mp4" if filename.endswith((".m4a", ".aac")) else "audio/mpeg"
-            else:
-                mime_type = "video/mp4"
+        mime_type = getattr(media, "mime_type", "application/octet-stream") or "application/octet-stream"
 
         parts_map = []
         global_offset = 0
@@ -9568,7 +9502,20 @@ async def _api_tg_stream_handler(request):
 
         chunk_len = end_byte - start_byte + 1
         
-        # Allow concurrent range requests without self-canceling ongoing connections
+        # 🟢 SMART SCRUB-KILLER: Only cancel ghost tasks if it's a massive video stream!
+        # Ignores tiny metadata probes so the browser accurately displays the Total Duration.
+        if "GLOBAL_STREAM_TASKS" not in globals():
+            global GLOBAL_STREAM_TASKS
+            GLOBAL_STREAM_TASKS = {}
+            
+        is_metadata_probe = chunk_len < 5242880 # 5 MB
+        lock_key = f"{user_id}_{chat_id}_{msg_id}"
+        
+        if not is_metadata_probe:
+            old_task = GLOBAL_STREAM_TASKS.get(lock_key)
+            if old_task and not old_task.done():
+                old_task.cancel() # Safely kill the old ghost download
+            GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
 
         headers = {
             "Accept-Ranges": "bytes",
@@ -9591,16 +9538,17 @@ async def _api_tg_stream_handler(request):
             async for chunk in gen:
                 await response.write(chunk)
             await response.write_eof()
-        except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError, aiohttp.client_exceptions.ClientPayloadError):
-            raise asyncio.CancelledError() # Force natural cancellation
-        except asyncio.CancelledError:
-            raise
+        except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+            pass
         except Exception as exc:
             logger.debug(f"Telegram stream disconnect/error: {exc}")
         finally:
             try: await gen.aclose() # Force generator destruction
             except: pass
             
+        # 🟢 FIX: Prevent 500 error crashes if the browser abruptly disconnects before preparation
+        if not response.prepared:
+            return web.Response(status=499, text="Client Closed Request")
         return response
 
     except asyncio.CancelledError:
@@ -9661,13 +9609,11 @@ async def _api_subtitles_handler(request):
         actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
 
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "warning",
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0",
-        "-rw_timeout", "30000000",
-        "-seekable", "0",
-        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        "-rw_timeout", "12000000",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
         "-probesize", "4M", "-analyzeduration", "2M",
-        "-err_detect", "ignore_err",
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
         "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
