@@ -9129,6 +9129,7 @@ async def _api_stream_handler(request):
         "-probesize", "5M", "-analyzeduration", "5M", 
         "-fflags", "+nobuffer+flush_packets+igndts",
         "-err_detect", "ignore_err",
+        "-re", # 🟢 PREVENTS TELEGRAM CRASH: Forces FFmpeg to read at 1x speed so Telegram doesn't drop the connection
     ]
 
     if start_time is not None:
@@ -9184,7 +9185,7 @@ async def _api_stream_handler(request):
                 # Standard Stereo fallback
                 cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
 
-        cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "empty_moov+omit_tfhd_offset+frag_keyframe+default_base_moof", "-f", "mp4", "pipe:1"]
 
     proc = await asyncio.create_subprocess_exec(
         *cmd,
@@ -9192,13 +9193,27 @@ async def _api_stream_handler(request):
         stderr=asyncio.subprocess.PIPE,
     )
     import aiohttp
-    response = web.StreamResponse(status=200, headers={
+    
+    # 🟢 iOS SAFARI FIX: Safari rejects 200 OK video streams. We must fake a 206 Partial Content response.
+    range_header = request.headers.get("Range", "")
+    headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Type",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Type",
         "Cache-Control": "no-store",
-        "Accept-Ranges": "none",
-    })
+        "Accept-Ranges": "bytes",
+    }
+    status_code = 200
+    
+    if range_header:
+        status_code = 206
+        match = re.match(r"bytes=(\d*)-(\d*)", range_header)
+        start_byte = match.group(1) if match and match.group(1) else "0"
+        # Trick Safari into thinking this is a massive seekable file so it accepts the live MP4 chunks
+        headers["Content-Range"] = f"bytes {start_byte}-99999999999/100000000000"
+        headers["Content-Length"] = str(100000000000 - int(start_byte))
+        
+    response = web.StreamResponse(status=status_code, headers=headers)
     
     try:
         await response.prepare(request)
@@ -9208,7 +9223,7 @@ async def _api_stream_handler(request):
                 break
             await response.write(buf)
         await response.write_eof()
-    except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+    except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError, aiohttp.client_exceptions.ClientPayloadError):
         pass
     except Exception:
         pass
