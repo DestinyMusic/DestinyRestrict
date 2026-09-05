@@ -8227,6 +8227,48 @@ def _guess_filename_from_url(url, fallback="Direct_Stream_Media"):
         return fallback
 
 
+def _guess_browser_compatibility(mime_type, filename, streams):
+    """Conservative browser-compatibility check used by the native player path."""
+    mime = (mime_type or "").lower().split(";", 1)[0]
+    ext = Path(str(filename or "")).suffix.lower()
+    videos = [s for s in (streams or []) if s.get("codec_type") == "video"]
+    audios = [s for s in (streams or []) if s.get("codec_type") == "audio"]
+    vc = str(videos[0].get("codec_name") if videos else "").lower()
+    ac = str(audios[0].get("codec_name") if audios else "").lower()
+
+    # These audio codecs are deliberately kept off the native browser path.
+    # They need the compatibility/FFmpeg route for reliable playback.
+    bad_audio = {"dts", "truehd", "ac3", "eac3"}
+
+    # Standalone audio: preserve the original stream whenever its codec/MIME
+    # is something the browser can consume.
+    if not videos:
+        if mime in {
+            "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg",
+            "audio/webm", "audio/wav", "audio/flac", "audio/opus"
+        }:
+            return ac not in {"dts", "truehd", "ac3", "eac3"}
+        return ac in {
+            "mp3", "aac", "flac", "opus", "vorbis",
+            "pcm_s16le", "pcm_s24le", "pcm_s32le",
+            "pcm_s16be", "pcm_s24be", "pcm_s32be",
+            "alac", "wavpack"
+        }
+
+    # WebM native route.
+    if mime == "video/webm" or ext == ".webm":
+        return vc in {"vp8", "vp9", "av1"} and ac not in bad_audio
+
+    # MP4/M4V native route. H.264/HEVC/VP9/AV1 are allowed here; the
+    # browser-side player separately remains conservative about audio.
+    if ext in {".mp4", ".m4v"} or mime in {"video/mp4", "application/mp4"}:
+        return vc in {
+            "h264", "avc", "avc1", "hevc", "h265", "hvc1", "vp9", "av1"
+        } and ac not in bad_audio
+
+    return False
+
+
 async def _run_ffprobe_json(input_url, fast=True):
     """Fast probe first; retry with a larger probe only when the small probe fails."""
     probe_pairs = ((2 * 1024 * 1024, 1024 * 1024), (8 * 1024 * 1024, 4 * 1024 * 1024)) if fast else ((8 * 1024 * 1024, 4 * 1024 * 1024),)
@@ -8272,7 +8314,7 @@ def _tg_client_cache_name(client):
 
 
 async def _get_user_stream_client(user_id):
-    """Return an already-connected user session, creating it only when required."""
+    """Return the single persistent user session used as Telegram streaming fallback."""
     uclient = USER_CLIENTS.get(user_id)
     if uclient and getattr(uclient, "is_connected", False):
         return uclient, False
@@ -9373,155 +9415,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 
         current_block += batch_count
 
-async def _api_tg_stream_handler(request):
-    """High-Speed File-to-Link Proxy with Parallel Chunking, Split Files & ZIP Extraction."""
-    user_id = int(request.query.get("user_id", 0))
-    
-    # 🟢 THE FIX: Handle direct links sent from the frontend WASM player
-    link = request.query.get("link")
-    if link:
-        parsed = _parse_source_link(link)
-        chat_id = parsed.get("chat_id")
-        msg_id = parsed.get("msg_id")
-    else:
-        chat_id = request.query.get("chat_id")
-        msg_id = request.query.get("msg_id")
-        
-    if chat_id is None or msg_id is None:
-        return web.Response(status=400, text="Missing chat_id/msg_id or link")
-        
-    msg_id = int(msg_id)
-    chat_id = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
-    
-    msg = None
-    is_temp = False
-    uclient = USER_CLIENTS.get(user_id)
-    
-    try:
-        # Step 1: Try Primary Bot Pool First (Zero User Session touch)
-        try:
-            msg = await app.get_messages(chat_id, msg_id)
-        except Exception:
-            msg = None
-
-        # Step 2: Fallback to User Session if Bot failed
-        if getattr(msg, "empty", True) or not msg:
-            if not uclient or not getattr(uclient, "is_connected", False):
-                session_str = await db.get_session(user_id)
-                if not session_str: return web.Response(status=401)
-                try:
-                    uclient = Client(":memory:", session_string=session_str, api_id=API_ID, api_hash=API_HASH, no_updates=True, ipv6=False)
-                    await uclient.connect()
-                    is_temp = True
-                except Exception: return web.Response(status=400)
-            
-            msg = await uclient.get_messages(chat_id, msg_id)
-
-        media = msg.document or msg.video or msg.audio
-        if not media: return web.Response(status=404)
-        
-        filename = getattr(media, "file_name", "").lower()
-        mime_type = getattr(media, "mime_type", "application/octet-stream")
-        
-        parts_map = []
-        global_offset = 0
-        
-        range_spec = request.query.get("range", "")
-        range_match = re.match(r"^(\d+)-(\d+)$", range_spec)
-        
-        if range_match:
-            start_id, end_id = int(range_match.group(1)), int(range_match.group(2))
-            for mid in range(start_id, end_id + 1):
-                try:
-                    m = await uclient.get_messages(chat_id, mid)
-                    doc = m.document or m.video or m.audio
-                    if doc:
-                        psz = doc.file_size
-                        parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
-                        global_offset += psz
-                except Exception: continue
-        else:
-            match = re.search(r'\.(\d{2,3})$', filename)
-            if match and int(match.group(1)) == 1:
-                current_id = msg_id
-                while True:
-                    try:
-                        m = await uclient.get_messages(chat_id, current_id)
-                        doc = m.document or m.video
-                        if not doc: break
-                        psz = doc.file_size
-                        parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
-                        global_offset += psz
-                        current_id += 1
-                        next_m = await uclient.get_messages(chat_id, current_id)
-                        next_doc = next_m.document or next_m.video
-                        if not next_doc or not re.search(r'\.\d{2,3}$', next_doc.file_name or ""):
-                            break
-                    except Exception: break
-            else:
-                part_size = getattr(media, "file_size", 0)
-                parts_map.append({"msg_id": msg_id, "start": 0, "end": part_size, "size": part_size})
-                global_offset = part_size
-                
-        virtual_size = global_offset
-        virtual_data_offset = 0
-
-        is_zip = filename.endswith(".zip") or ".zip." in filename
-        if is_zip:
-            async def zip_read(off, length):
-                buf = bytearray()
-                async for chunk in parallel_stream_generator(uclient, chat_id, parts_map, off, length, concurrency=4): buf.extend(chunk)
-                return bytes(buf[:length])
-                
-            entry = await resolve_zip_entry(zip_read, virtual_size)
-            if entry and entry["method"] == 0:
-                virtual_size = entry["size"]
-                virtual_data_offset = entry["data_offset"]
-                mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
-
-        range_header = request.headers.get("Range", "")
-        start_byte = 0
-        end_byte = virtual_size - 1
-
-        if range_header:
-            match = re.match(r"bytes=(\d+)-(\d*)", range_header)
-            if match:
-                start_byte = int(match.group(1))
-                if match.group(2): end_byte = min(int(match.group(2)), virtual_size - 1)
-        
-        if start_byte >= virtual_size: return web.Response(status=416, headers={"Content-Range": f"bytes */{virtual_size}"})
-            
-        chunk_len = end_byte - start_byte + 1
-        headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(chunk_len),
-            "Content-Type": mime_type,
-            "Content-Range": f"bytes {start_byte}-{end_byte}/{virtual_size}",
-            "Access-Control-Allow-Origin": "*"
-        }
-        
-        response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
-        await response.prepare(request)
-        
-        adjusted_start = start_byte + virtual_data_offset
-        
-        try:
-            # Multi-Threaded Dispatch
-            async for chunk in parallel_stream_generator(uclient, chat_id, parts_map, adjusted_start, chunk_len, concurrency=4):
-                await response.write(chunk)
-            await response.write_eof()
-        except Exception: 
-            # Client disconnected (e.g. FFprobe closed early, or user closed tab)
-            pass
-        
-    except Exception:
-        pass
-    finally:
-        if is_temp:
-            try: await uclient.disconnect()
-            except: pass
-            
-    return response
 
 MULTI_BOT_CLIENTS = []
 
