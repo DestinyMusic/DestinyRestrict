@@ -7167,7 +7167,6 @@ HTML_DASHBOARD = """
                 updateViewportBox();
                 resizePlayerSurface();
                 
-                // 🟢 FIX: Forcefully apply the target timestamp across both transcode and direct modes
                 try {
                     const targetSeek = Number(preserveTime) || 0;
                     if (targetSeek > 0) {
@@ -7178,11 +7177,12 @@ HTML_DASHBOARD = """
                 }
 
                 if (shouldPlay) {
-                    try {
-                        await video.play();
-                    } catch (err) {
-                        // iOS Safari blocks unmuted programmatic playback; mute briefly to start pipeline if blocked
-                        console.warn('Playback blocked by iOS policy; prompting user interaction.', err);
+                    try { 
+                        await video.play(); 
+                        const bigPlayBtn = document.getElementById('big-play-overlay');
+                        if (bigPlayBtn) bigPlayBtn.style.display = 'none';
+                    } catch (err) { 
+                        console.warn('Autoplay blocked; displaying play overlay:', err);
                         const bigPlayBtn = document.getElementById('big-play-overlay');
                         if (bigPlayBtn) {
                             bigPlayBtn.style.display = 'flex';
@@ -7193,6 +7193,14 @@ HTML_DASHBOARD = """
                 renderCurrentSubtitle();
             };
             video.addEventListener('loadedmetadata', onMetadata, { once: true });
+            
+            // 🍏 SAFARI FALLBACK: If loadedmetadata stalls on iOS, force-trigger after 800ms using playerTotalDuration
+            setTimeout(() => {
+                if (video.readyState < 1 && playerTotalDuration > 0) {
+                    console.warn("Safari metadata event stalled; forcing fallback initialization.");
+                    onMetadata();
+                }
+            }, 800);
         }
 
         function buildStreamUrl(startTime = null) {
