@@ -6522,6 +6522,7 @@ HTML_DASHBOARD = """
 
         async function togglePlayback() {
             const video = document.getElementById('hidden-video');
+            const extAudio = document.getElementById('ext-audio-player');
             if (!video) return;
             wakeHUD();
 
@@ -6530,9 +6531,17 @@ HTML_DASHBOARD = """
                     if (video.ended) {
                         try { video.currentTime = 0; } catch (_) {}
                     }
+                    
+                    // 🟢 Apple iOS Safari Fix: External audio MUST be played inside this user-click event!
+                    if (extAudio && extAudio.src) {
+                        extAudio.currentTime = video.currentTime;
+                        extAudio.play().catch(e => console.warn("External Audio Play blocked:", e));
+                    }
+                    
                     await video.play();
                 } else {
                     video.pause();
+                    if (extAudio && extAudio.src) extAudio.pause();
                 }
             } catch (err) {
                 console.warn('Playback toggle failed:', err);
@@ -6727,10 +6736,14 @@ HTML_DASHBOARD = """
             const vp = document.getElementById('cinema-viewport');
             const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
             
+            // 🟢 FIX: Mobile browsers require active fullscreen BEFORE they allow orientation locking.
+            // If not in fullscreen, force fullscreen first!
             if (!document.fullscreenElement && !document.webkitFullscreenElement && !isIosFullscreen) {
-                alert("Please enter Fullscreen mode first to rotate the screen!");
-                return;
+                toggleFullScreen();
+                // Wait briefly for fullscreen to apply
+                await new Promise(r => setTimeout(r, 200));
             }
+            
             try {
                 if (screen.orientation && screen.orientation.lock) {
                     const currentType = screen.orientation.type;
@@ -6740,7 +6753,8 @@ HTML_DASHBOARD = """
                         await screen.orientation.lock('portrait');
                     }
                 } else {
-                    alert("Screen rotation lock is not natively supported on this browser (common on iOS Safari).");
+                    // Fallback for browsers that don't support lock (like iOS Safari)
+                    alert("Screen rotation lock is not natively supported on this browser. Please rotate your device manually.");
                 }
             } catch (err) {
                 console.warn("Orientation lock failed:", err);
@@ -7462,13 +7476,11 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('play', () => {
                 if (hudPlay) hudPlay.innerHTML = smallPauseSvg;
                 if (bigPlay) bigPlay.innerHTML = pauseSvg;
-                if (extAudio && extAudio.src) extAudio.play().catch(e => console.warn(e));
                 wakeHUD();
             });
             vidElem.addEventListener('pause', () => {
                 if (hudPlay) hudPlay.innerHTML = smallPlaySvg;
                 if (bigPlay) bigPlay.innerHTML = playSvg;
-                if (extAudio && extAudio.src) extAudio.pause();
                 wakeHUD();
             });
             vidElem.addEventListener('ratechange', () => {
@@ -9222,17 +9234,19 @@ async def _api_stream_handler(request):
         headers["Content-Length"] = str(100000000000 - int(start_byte))
         
     response = web.StreamResponse(status=status_code, headers=headers)
-    
+
     try:
         await response.prepare(request)
         while True:
-            buf = await proc.stdout.read(262144) # 🟢 SMOOTH STREAMING: 256KB chunks deliver frames to the browser instantly
+            buf = await proc.stdout.read(262144)
             if not buf:
                 break
             await response.write(buf)
         await response.write_eof()
-    except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError, aiohttp.client_exceptions.ClientPayloadError):
-        pass
+    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError, aiohttp.client_exceptions.ClientPayloadError):
+        raise asyncio.CancelledError()
+    except asyncio.CancelledError:
+        raise
     except Exception:
         pass
     finally:
@@ -9242,7 +9256,6 @@ async def _api_stream_handler(request):
         except Exception:
             pass
     return response
-
 
 CLIENT_MSG_CACHE = {}
 CLIENT_MSG_CACHE_MAX = 2048
@@ -9578,17 +9591,16 @@ async def _api_tg_stream_handler(request):
             async for chunk in gen:
                 await response.write(chunk)
             await response.write_eof()
-        except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
-            pass
+        except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError, aiohttp.client_exceptions.ClientPayloadError):
+            raise asyncio.CancelledError() # Force natural cancellation
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
             logger.debug(f"Telegram stream disconnect/error: {exc}")
         finally:
             try: await gen.aclose() # Force generator destruction
             except: pass
             
-        # 🟢 FIX: Prevent 500 error crashes if the browser abruptly disconnects before preparation
-        if not response.prepared:
-            return web.Response(status=499, text="Client Closed Request")
         return response
 
     except asyncio.CancelledError:
