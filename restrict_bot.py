@@ -8778,42 +8778,38 @@ async def get_client_msg(client, chat_id, msg_id):
         return msg
 
 
-async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetch a precise aligned Telegram chunk with short transient retries."""
-    ALIGNMENT = 4096
-    aligned_offset = (max(0, int(offset)) // ALIGNMENT) * ALIGNMENT
-    target_bytes = max(0, int(limit))
-    if target_bytes <= 0:
-        return b""
-
-    for attempt in range(3):
-        skip_bytes = int(offset) - aligned_offset
+asasync def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
+    """Fetches a chunk strictly. Retries on transient errors with clean byte skipping."""
+    # 🟢 FIX: Dynamic Alignment - Scales perfectly based on requested limit to prevent OFFSET_INVALID
+    ALIGNMENT = min(1048576, max(4096, (limit // 4096) * 4096)) if limit >= 4096 else 4096
+    aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
+    target_bytes = limit
+    
+    for attempt in range(4):
+        # MUST reset skip_bytes on every retry loop to prevent data corruption
+        skip_bytes = offset - aligned_offset
+        fetch_limit = target_bytes + skip_bytes
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
-            async for chunk in client.stream_media(msg, offset=aligned_offset):
+            
+            # 🟢 FIX: Pass fetch_limit to let Pyrogram safely close the connection automatically
+            async for chunk in client.stream_media(msg, offset=aligned_offset, limit=fetch_limit):
                 if skip_bytes > 0:
                     if len(chunk) <= skip_bytes:
                         skip_bytes -= len(chunk)
                         continue
-                    chunk = chunk[skip_bytes:]
-                    skip_bytes = 0
-                if chunk:
-                    data.extend(chunk)
-                    if len(data) >= target_bytes:
-                        break
-            if not data:
+                    else:
+                        chunk = chunk[skip_bytes:]
+                        skip_bytes = 0
+                        
+                data.extend(chunk)
+                # Removed manual 'break' to stop severing sockets mid-stream
+                    
+            if not data: 
                 raise ValueError("EOF Reached or Empty Chunk")
+                
             return bytes(data[:target_bytes])
-        except FloodWait as e:
-            logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
-            await asyncio.sleep(e.value + 1)
-        except Exception:
-            if attempt >= 2:
-                raise
-            await asyncio.sleep(0.25 * (attempt + 1))
-    raise TimeoutError("Exceeded max retries for chunk")
-
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=2 * 1024 * 1024, concurrency=6):
     """Fast Telegram range generator with cached client selection and split-safe work units."""
@@ -9325,7 +9321,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         client = working_pool[0]
         bytes_needed = total_length
         current_offset = start_byte
-        ALIGNMENT = 524288
         
         for part in msg_parts:
             if bytes_needed <= 0: break
@@ -9333,15 +9328,18 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 internal_offset = current_offset - part["start"]
                 internal_limit = min(bytes_needed, part["size"] - internal_offset)
                 
-                # 🟢 FIX: Align perfectly to 512KB
+                # 🟢 FIX: Dynamic Alignment - Derives safely from the actual internal limit 
+                ALIGNMENT = min(1048576, max(4096, (internal_limit // 4096) * 4096)) if internal_limit >= 4096 else 4096
                 aligned_offset = (internal_offset // ALIGNMENT) * ALIGNMENT
+                skip_bytes = internal_offset - aligned_offset
+                fetch_limit = internal_limit + skip_bytes
                 
                 try:
                     msg = await get_client_msg(client, chat_id, part["msg_id"])
                     bytes_yielded_this_part = 0
-                    skip_bytes = internal_offset - aligned_offset
                     
-                    async for chunk in client.stream_media(msg, offset=aligned_offset):
+                    # 🟢 FIX: Pass fetch_limit to let Pyrogram safely close the connection
+                    async for chunk in client.stream_media(msg, offset=aligned_offset, limit=fetch_limit):
                         if skip_bytes > 0:
                             if len(chunk) <= skip_bytes:
                                 skip_bytes -= len(chunk)
@@ -9357,15 +9355,10 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                             yield chunk_to_yield
                             bytes_yielded_this_part += len(chunk_to_yield)
                             
-                        if bytes_yielded_this_part >= internal_limit:
-                            break
+                        # Removed manual 'break' to stop severing sockets mid-stream
                             
                     current_offset += internal_limit
                     bytes_needed -= internal_limit
-                except Exception as e:
-                    logger.error(f"Fast-path stream failed: {e}")
-                    raise e
-        return
 
     # ==========================================
     # MULTI-BOT PARALLEL PATH (Worker Bots Only)
