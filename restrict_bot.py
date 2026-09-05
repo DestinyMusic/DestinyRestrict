@@ -5101,6 +5101,7 @@ HTML_DASHBOARD = """
                                 <span class="time-badge" id="hud-time">00:00 / 00:00</span>
                             </div>
                             <div class="ctrl-group">
+                                <button class="cinema-btn" id="hud-rotate-btn" onclick="toggleOrientation()" title="Rotate Screen">🔄</button>
                                 <button class="cinema-btn" id="hud-3d-btn" onclick="toggleMatrixPopup()" title="3D Matrix">👓</button>
                                 <button class="cinema-btn" id="hud-settings-btn" onclick="toggleSettingsPopup()" title="Tracks, subtitles & aspect">⚙️</button>
                                 <button class="cinema-btn" id="hud-fullscreen-btn" onclick="toggleFullScreen()" title="Fullscreen">⛶</button>
@@ -6474,6 +6475,28 @@ HTML_DASHBOARD = """
             }
         }
 
+        async function toggleOrientation() {
+            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+                alert("Please enter Fullscreen mode first to rotate the screen!");
+                return;
+            }
+            try {
+                if (screen.orientation && screen.orientation.lock) {
+                    const currentType = screen.orientation.type;
+                    if (currentType.startsWith('portrait')) {
+                        await screen.orientation.lock('landscape');
+                    } else {
+                        await screen.orientation.lock('portrait');
+                    }
+                } else {
+                    alert("Screen rotation lock is not natively supported on this browser (common on iOS Safari).");
+                }
+            } catch (err) {
+                console.warn("Orientation lock failed:", err);
+                alert("Orientation lock failed. Your device might restrict this action.");
+            }
+        }
+
         // ======================================================================
         // ROBUST ASPECT-RATIO / SURFACE SIZING
         // ======================================================================
@@ -7150,8 +7173,20 @@ HTML_DASHBOARD = """
             : null;
         resizeObserver?.observe(vpElement);
         window.addEventListener('resize', () => { updateViewportBox(); resizePlayerSurface(); });
-        document.addEventListener('fullscreenchange', () => { updateViewportBox(); resizePlayerSurface(); });
-        document.addEventListener('webkitfullscreenchange', () => { updateViewportBox(); resizePlayerSurface(); });
+        
+        document.addEventListener('fullscreenchange', () => { 
+            updateViewportBox(); resizePlayerSurface(); 
+            if (!document.fullscreenElement && screen.orientation && screen.orientation.unlock) {
+                try { screen.orientation.unlock(); } catch(e){}
+            }
+        });
+        
+        document.addEventListener('webkitfullscreenchange', () => { 
+            updateViewportBox(); resizePlayerSurface(); 
+            if (!document.webkitFullscreenElement && screen.orientation && screen.orientation.unlock) {
+                try { screen.orientation.unlock(); } catch(e){}
+            }
+        });
 
         // Initial state: hidden while idle, visible on first interaction/playback.
         if (vpElement) vpElement.classList.add('idle-hide');
@@ -8699,7 +8734,7 @@ async def _api_stream_handler(request):
         "-user_agent", "Mozilla/5.0",
         "-rw_timeout", "12000000",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-        "-probesize", "2M", "-analyzeduration", "1M",
+        "-probesize", "32M", "-analyzeduration", "15M", # 🟢 FIX: Massively increased to support 4K Dolby Vision headers
         "-fflags", "+nobuffer+flush_packets",
     ]
 
@@ -8768,10 +8803,9 @@ async def _api_stream_handler(request):
     })
     
     try:
-        # 🟢 FIX: Wrap prepare() inside the try block here too
         await response.prepare(request)
         while True:
-            buf = await proc.stdout.read(512 * 1024)
+            buf = await proc.stdout.read(1048576) # 🟢 FIX: Increased to 1MB chunks to prevent 4K buffering
             if not buf:
                 break
             await response.write(buf)
@@ -8950,6 +8984,8 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         cursor += len(batch)
 
 
+GLOBAL_STREAM_TASKS = {}
+
 async def _api_tg_stream_handler(request):
     """High-speed Telegram Range proxy with multi-bot routing, user fallback, split files and ZIP extraction."""
     try:
@@ -8958,6 +8994,21 @@ async def _api_tg_stream_handler(request):
         user_id = 0
 
     link = request.query.get("link")
+    
+    # 🟢 SCURB-KILLER: Extract parameters early to cancel ghost tasks
+    tmp_chat_id = request.query.get("chat_id")
+    tmp_msg_id = request.query.get("msg_id")
+    if link:
+        parsed_tmp = _parse_source_link(link)
+        tmp_chat_id = parsed_tmp.get("chat_id")
+        tmp_msg_id = parsed_tmp.get("msg_id")
+        
+    if tmp_chat_id and tmp_msg_id:
+        lock_key = f"{user_id}_{tmp_chat_id}_{tmp_msg_id}"
+        old_task = GLOBAL_STREAM_TASKS.get(lock_key)
+        if old_task and not old_task.done():
+            old_task.cancel() # Instantly kill the previous Pyrogram download when user scrubs!
+        GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
     if link:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
@@ -9094,19 +9145,22 @@ async def _api_tg_stream_handler(request):
         import aiohttp
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
+        adjusted_start = start_byte + virtual_data_offset
+        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
+        
         try:
-            # 🟢 FIX: Wrap prepare() and write() together so scrubber disconnects are caught safely
             await response.prepare(request)
-            adjusted_start = start_byte + virtual_data_offset
-            async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6):
+            async for chunk in gen:
                 await response.write(chunk)
             await response.write_eof()
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
-            # Gracefully handle when the browser cancels the connection during seeking/scrubbing
             return response
         except Exception as exc:
             logger.debug(f"Telegram stream disconnect/error: {exc}")
-        return response
+            return response
+        finally:
+            try: await gen.aclose() # Force generator destruction
+            except: pass
 
     except asyncio.CancelledError:
         raise
