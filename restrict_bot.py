@@ -9137,61 +9137,67 @@ async def _api_subtitles_handler(request):
             "Cache-Control": "public, max-age=3600",
         })
 
-    async with SUBTITLE_LOCKS[cache_key]:
-        cached = SUBTITLE_CACHE.get(cache_key)
-        if cached and cached[1] > time.time():
-            body = cached[0]
-            return web.Response(body=body, status=200, headers={
-                "Content-Type": "text/vtt; charset=utf-8",
-                "Content-Length": str(len(body)),
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "public, max-age=3600",
-            })
+    is_tg = "t.me" in link or "telegram.me" in link
+    actual_url = link
+    if is_tg:
+        parsed = _parse_source_link(link)
+        chat_id = parsed.get("chat_id")
+        msg_id = parsed.get("msg_id")
+        if chat_id is None or msg_id is None:
+            return web.Response(status=400, text="Invalid Telegram link")
+        actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+    else:
+        actual_url = await resolve_direct_link(link)
+        actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
 
-        is_tg = "t.me" in link or "telegram.me" in link
-        actual_url = link
-        if is_tg:
-            parsed = _parse_source_link(link)
-            chat_id = parsed.get("chat_id")
-            msg_id = parsed.get("msg_id")
-            if chat_id is None or msg_id is None:
-                return web.Response(status=400, text="Invalid Telegram link")
-            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
-        else:
-            actual_url = await resolve_direct_link(link)
-            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
-
-        cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-user_agent", "Mozilla/5.0",
-            "-rw_timeout", "12000000",
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-            "-probesize", "4M", "-analyzeduration", "2M",
-            "-i", actual_url,
-            "-map", f"0:{sub_idx}",
-            "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
-        ]
-        try:
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            stdout, stderr = await proc.communicate()
-            if proc.returncode != 0 or not stdout:
-                err = stderr.decode('utf-8', errors='ignore').strip() or "subtitle extraction failed"
-                return web.Response(status=502, text=err)
-            body = bytes(stdout)
-            SUBTITLE_CACHE[cache_key] = (body, time.time() + SUBTITLE_CACHE_TTL)
+    cmd = [
+        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "-user_agent", "Mozilla/5.0",
+        "-rw_timeout", "12000000",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+        "-probesize", "4M", "-analyzeduration", "2M",
+        "-i", actual_url,
+        "-map", f"0:{sub_idx}",
+        "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
+    ]
+    
+    import aiohttp
+    response = web.StreamResponse(status=200, headers={
+        "Content-Type": "text/vtt; charset=utf-8",
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "no-cache",
+    })
+    
+    try:
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        await response.prepare(request)
+        
+        body_buffer = bytearray()
+        while True:
+            chunk = await proc.stdout.read(8192)
+            if not chunk:
+                break
+            body_buffer.extend(chunk)
+            await response.write(chunk)
+            
+        await response.write_eof()
+        await proc.wait()
+        
+        if proc.returncode == 0 and body_buffer:
+            SUBTITLE_CACHE[cache_key] = (bytes(body_buffer), time.time() + SUBTITLE_CACHE_TTL)
             if len(SUBTITLE_CACHE) > 128:
                 oldest = min(SUBTITLE_CACHE.items(), key=lambda kv: kv[1][1])[0]
                 SUBTITLE_CACHE.pop(oldest, None)
-            return web.Response(body=body, status=200, headers={
-                "Content-Type": "text/vtt; charset=utf-8",
-                "Content-Length": str(len(body)),
-                "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "public, max-age=3600",
-            })
-        except Exception as exc:
-            return web.Response(status=500, text=str(exc))
-
-
+        return response
+    except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+        return response
+    except Exception as exc:
+        try: proc.kill()
+        except: pass
+        if not response.prepared:
+            return web.Response(status=502, text=str(exc))
+        return response
+            
 import mimetypes
 import math
 import re
@@ -9275,20 +9281,23 @@ async def get_client_msg(client, chat_id, msg_id):
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     """Fetches a chunk strictly. Retries on transient errors with clean byte skipping."""
-    # 🟢 FIX: Align perfectly to Telegram's 512KB chunk size to prevent OFFSET_INVALID
-    ALIGNMENT = 524288
-    aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
-    target_bytes = limit
+    import math
+    
+    # 🟢 FIX: Pyrogram expects offset and limit in CHUNKS (1MB), NOT BYTES.
+    CHUNK_SIZE = 1048576
+    chunk_index = offset // CHUNK_SIZE
     
     for attempt in range(4):
-        # MUST reset skip_bytes on every retry loop to prevent data corruption
-        skip_bytes = offset - aligned_offset
+        skip_bytes = offset % CHUNK_SIZE
+        total_to_pull = skip_bytes + limit
+        chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
+        
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
-            # Pass the 4096-aligned byte offset
-            async for chunk in client.stream_media(msg, offset=aligned_offset):
+            # Pass chunk index and chunk limit!
+            async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
                 if skip_bytes > 0:
                     if len(chunk) <= skip_bytes:
                         skip_bytes -= len(chunk)
@@ -9298,13 +9307,13 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
                         skip_bytes = 0
                         
                 data.extend(chunk)
-                if len(data) >= target_bytes:
+                if len(data) >= limit:
                     break
                     
             if not data: 
                 raise ValueError("EOF Reached or Empty Chunk")
                 
-            return bytes(data[:target_bytes])
+            return bytes(data[:limit])
             
         except FloodWait as e:
             logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
@@ -9315,7 +9324,6 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             await asyncio.sleep(1)
             
     raise TimeoutError("Exceeded max retries for chunk")
-
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
     """Distributes HTTP range requests evenly. Includes a Fast-Path for single clients."""
@@ -9365,18 +9373,19 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 internal_offset = current_offset - part["start"]
                 internal_limit = min(bytes_needed, part["size"] - internal_offset)
                 
-                # 🟢 FIX: Universal 1MB Alignment - Rock solid for Telegram MTProto
-                ALIGNMENT = 1048576
-                aligned_offset = (internal_offset // ALIGNMENT) * ALIGNMENT
-                skip_bytes = internal_offset - aligned_offset
-                fetch_limit = internal_limit + skip_bytes
+                import math
+                CHUNK_SIZE = 1048576
+                chunk_index = internal_offset // CHUNK_SIZE
+                skip_bytes = internal_offset % CHUNK_SIZE
+                
+                total_to_pull = skip_bytes + internal_limit
+                chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
                 
                 try:
                     msg = await get_client_msg(client, chat_id, part["msg_id"])
                     bytes_yielded_this_part = 0
                     
-                    # 🟢 FIX: Pass fetch_limit to let Pyrogram safely close the connection
-                    async for chunk in client.stream_media(msg, offset=aligned_offset, limit=fetch_limit):
+                    async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
                         if skip_bytes > 0:
                             if len(chunk) <= skip_bytes:
                                 skip_bytes -= len(chunk)
@@ -9392,7 +9401,8 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                             yield chunk_to_yield
                             bytes_yielded_this_part += len(chunk_to_yield)
                             
-                        # Removed manual 'break' to stop severing sockets mid-stream
+                        if bytes_yielded_this_part >= internal_limit:
+                            break
                             
                     current_offset += internal_limit
                     bytes_needed -= internal_limit
