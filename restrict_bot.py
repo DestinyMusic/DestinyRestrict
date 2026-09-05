@@ -9375,6 +9375,10 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                             
                     current_offset += internal_limit
                     bytes_needed -= internal_limit
+                except Exception as e:
+                    logger.error(f"Fast-path stream failed: {e}")
+                    raise e
+        return
 
     # ==========================================
     # MULTI-BOT PARALLEL PATH (Worker Bots Only)
