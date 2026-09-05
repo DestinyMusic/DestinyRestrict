@@ -6724,7 +6724,10 @@ HTML_DASHBOARD = """
         }
 
         async function toggleOrientation() {
-            if (!document.fullscreenElement && !document.webkitFullscreenElement) {
+            const vp = document.getElementById('cinema-viewport');
+            const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
+            
+            if (!document.fullscreenElement && !document.webkitFullscreenElement && !isIosFullscreen) {
                 alert("Please enter Fullscreen mode first to rotate the screen!");
                 return;
             }
@@ -9090,11 +9093,21 @@ async def _api_stream_handler(request):
     cache_key = _media_cache_key(user_id, link)
     cached_meta = MEDIA_META_CACHE.get(cache_key)
     video_codec = ""
+    audio_channels = 2
     if cached_meta:
         meta = cached_meta[0]
         if not audio_codec:
             audio_codec = meta.get("audio_codec", "").lower()
         video_codec = meta.get("video_codec", "").lower()
+        
+        # Determine original channel count for hybrid audio preservation
+        tracks = meta.get("audio_tracks", [])
+        for t in tracks:
+            if str(t.get("index")) == str(audio_idx):
+                audio_channels = int(t.get("channels") or 2)
+                break
+        if not audio_idx and tracks:
+            audio_channels = int(tracks[0].get("channels") or 2)
 
     # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
     bad_audio = {"dts", "truehd", "ac3", "eac3"}
@@ -9108,12 +9121,13 @@ async def _api_stream_handler(request):
     scale_filter = res_scale_map.get(quality)
 
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "ffmpeg", "-hide_banner", "-loglevel", "warning",
         "-user_agent", "Mozilla/5.0",
-        "-rw_timeout", "12000000",
-        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-        "-probesize", "10M", "-analyzeduration", "5M", # 🟢 FAST 4K PROBE: Enough for Dolby Vision, but loads instantly
-        "-fflags", "+nobuffer+flush_packets",
+        "-rw_timeout", "30000000",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        "-probesize", "5M", "-analyzeduration", "5M", 
+        "-fflags", "+nobuffer+flush_packets+igndts",
+        "-err_detect", "ignore_err",
     ]
 
     if start_time is not None:
@@ -9162,7 +9176,12 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            cmd += ["-c:a", "aac", "-b:a", "192k"]
+            if audio_channels > 2:
+                # HYBRID: Preserve 5.1/7.1 Surround, just translate to Apple-friendly AAC codec
+                cmd += ["-c:a", "aac", "-b:a", "384k"]
+            else:
+                # Standard Stereo fallback
+                cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
 
         cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
