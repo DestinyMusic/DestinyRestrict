@@ -85,7 +85,7 @@ import traceback
 import html
 import math
 import aiohttp
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, quote
 import platform
 import socket
 import logging                          
@@ -6065,6 +6065,9 @@ HTML_DASHBOARD = """
         let matrix3DOut = 'rc';
         let isRightFirst = false;
         let activeMediaLink = "";
+        let playerSourceKind = 'tg'; // 'tg' or 'direct'
+        let playerNativeUrl = '';
+        let playerFallbackAttempted = false;
         let gl, glProgram, glTexture;
 
         const vsSource = `
@@ -6677,43 +6680,44 @@ HTML_DASHBOARD = """
 
             subtitleAbortController = new AbortController();
             try {
-                const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}&t=${Date.now()}`;
-                const response = await fetch(url, { signal: subtitleAbortController.signal });
+                const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}`;
+                const response = await fetch(url, { signal: subtitleAbortController.signal, cache: 'force-cache' });
                 if (!response.ok) throw new Error(`Subtitle server returned ${response.status}`);
-                
-                // 🟢 STREAMING PARSER: Loads subtitles instantly chunk-by-chunk!
-                const reader = response.body.getReader();
+
+                // The server caches extracted WebVTT.  Read it progressively so the
+                // first cues can appear before the entire file has arrived.
+                const reader = response.body?.getReader();
+                if (!reader) {
+                    subtitleCues = parseWebVTT(await response.text());
+                    renderCurrentSubtitle();
+                    return;
+                }
+
                 const decoder = new TextDecoder('utf-8');
                 let buffer = '';
 
                 while (true) {
                     const { done, value } = await reader.read();
                     if (done) break;
-                    
                     buffer += decoder.decode(value, { stream: true });
-                    
-                    // WebVTT blocks are separated by double blank lines
-                    const blocks = buffer.split(/\\n\\s*\\n/);
-                    
-                    // Keep the last incomplete block in the buffer
+
+                    const blocks = buffer.split(/\n\s*\n/);
                     buffer = blocks.pop() || '';
-                    
                     for (const block of blocks) {
-                        const cues = parseWebVTT(block + '\\n\\n');
-                        if (cues.length > 0) subtitleCues.push(...cues);
+                        const cues = parseWebVTT(block + '\n\n');
+                        if (cues.length) subtitleCues.push(...cues);
                     }
-                    
-                    // Instantly render if we downloaded the current timestamp
-                    renderCurrentSubtitle();
-                }
-                
-                // Parse whatever is left in the final buffer
-                if (buffer.trim()) {
-                    const cues = parseWebVTT(buffer + '\\n\\n');
-                    if (cues.length > 0) subtitleCues.push(...cues);
+                    subtitleCues.sort((a, b) => a.start - b.start);
                     renderCurrentSubtitle();
                 }
 
+                buffer += decoder.decode();
+                if (buffer.trim()) {
+                    const cues = parseWebVTT(buffer + '\n\n');
+                    if (cues.length) subtitleCues.push(...cues);
+                }
+                subtitleCues.sort((a, b) => a.start - b.start);
+                renderCurrentSubtitle();
             } catch (err) {
                 if (err?.name !== 'AbortError') {
                     console.warn('Subtitle load failed:', err);
@@ -6788,17 +6792,27 @@ HTML_DASHBOARD = """
 
         function buildStreamUrl(startTime = null) {
             const quality = document.getElementById('pop-quality-select')?.value || 'Original';
-            const audioIdx = document.getElementById('pop-audio-select')?.value || '';
+            const audioSelect = document.getElementById('pop-audio-select');
+            const audioIdx = audioSelect?.value || '';
+            const option = audioSelect?.selectedOptions?.[0];
+            const audioCodec = option?.dataset?.codec || '';
             const params = new URLSearchParams({
                 user_id: String(currentUser || ''),
                 link: activeMediaLink,
                 quality,
-                transcode: playerRequiresTranscode ? '1' : '0',
-                t: String(Date.now())
+                transcode: playerRequiresTranscode ? '1' : '0'
             });
             if (audioIdx !== '') params.set('audio_idx', audioIdx);
+            if (audioCodec) params.set('audio_codec', audioCodec);
             if (Number.isFinite(startTime) && startTime > 0) params.set('start', String(startTime));
             return `/api/stream?${params.toString()}`;
+        }
+
+        function buildNativeUrl() {
+            if (playerSourceKind === 'tg') {
+                return `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`;
+            }
+            return `/api/direct_stream?user_id=${encodeURIComponent(currentUser)}&url=${encodeURIComponent(activeMediaLink)}`;
         }
 
         function openExternalPlayer(appType) {
@@ -6817,41 +6831,63 @@ HTML_DASHBOARD = """
             if (!video) return;
 
             const quality = document.getElementById('pop-quality-select')?.value || 'Original';
-            const audioIdx = document.getElementById('pop-audio-select')?.value || '';
-            const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
+            const audioSelect = document.getElementById('pop-audio-select');
+            const audioIdx = audioSelect?.value || '';
+            const current = playerRequiresTranscode
+                ? (playerTimelineOffset + (Number.isFinite(video.currentTime) ? video.currentTime : 0))
+                : (Number.isFinite(video.currentTime) ? video.currentTime : 0);
             const wasPlaying = !video.paused && !video.ended;
 
-            // Any explicit quality or non-default audio requires FFmpeg. MKV/AVI/etc.
-            // also require FFmpeg even when "Original" is selected.
-            playerRequiresTranscode = !playerDirectCompatible || quality !== 'Original' || audioIdx !== '';
+            // Native/original path: do not spawn FFmpeg.
+            const canStayNative = quality === 'Original' && audioIdx === '' && playerDirectCompatible;
+            if (canStayNative) {
+                playerRequiresTranscode = false;
+                playerTimelineOffset = 0;
+                isTranscodeSeeking = false;
+                playerNativeUrl = buildNativeUrl();
+                await setVideoSource(playerNativeUrl, current, wasPlaying || video.readyState < 2);
+                wakeHUD();
+                return;
+            }
 
-            const serverStart = playerRequiresTranscode && current > 0 ? current : null;
+            // Explicit quality or alternate audio requires a server media pipeline.
+            // The pipeline prefers remux/copy for the original video and compatible
+            // selected audio, and encodes only when the requested output needs it.
+            playerRequiresTranscode = true;
+            const serverStart = current > 0 ? current : null;
             playerTimelineOffset = serverStart || 0;
-            const streamUrl = buildStreamUrl(serverStart);
-            await setVideoSource(streamUrl, serverStart ? 0 : current, wasPlaying || video.readyState < 2);
+            await setVideoSource(buildStreamUrl(serverStart), 0, wasPlaying || video.readyState < 2);
             wakeHUD();
         }
 
-        async function restartStreamAt(target) {
+        function restartStreamAt(target) {
             const video = document.getElementById('hidden-video');
             if (!video || !activeMediaLink) return;
-            const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity;
+            const duration = playerTotalDuration > 0
+                ? playerTotalDuration
+                : (Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity);
             const safeTarget = Math.max(0, Math.min(duration, Number(target) || 0));
             playerTimelineOffset = safeTarget;
-            await setVideoSource(buildStreamUrl(safeTarget), 0, true);
-            // Server-side -ss is applied after input decode; currentTime starts from the requested position.
-            renderCurrentSubtitle();
+            isTranscodeSeeking = true;
+            setVideoSource(buildStreamUrl(safeTarget), 0, true);
+            renderCurrentSubtitle(safeTarget);
         }
 
         // ======================================================================
         // MEDIA PROBE + LOAD & HYBRID FALLBACK WATCHDOG
         // ======================================================================
-        function canBrowserDirectPlay(mimeType, videoCodec, audioCodec) {
-            if (!window.MediaSource) return false;
-            const vCodec = videoCodec === 'hevc' ? 'hvc1.1.6.L93.B0' : 'avc1.640028';
-            const aCodec = audioCodec === 'aac' ? 'mp4a.40.2' : (audioCodec === 'mp3' ? 'mp4a.40.34' : '');
-            if (!aCodec || ['ac3', 'eac3', 'dts', 'truehd', 'flac'].includes(audioCodec?.toLowerCase())) return false;
-            return MediaSource.isTypeSupported(`video/mp4; codecs="${vCodec}, ${aCodec}"`);
+        function canBrowserDirectPlay(mimeType, videoCodec, audioCodec, isAudioOnly = false) {
+            const mime = String(mimeType || '').toLowerCase().split(';')[0];
+            const v = String(videoCodec || '').toLowerCase();
+            const a = String(audioCodec || '').toLowerCase();
+            const badAudio = new Set(['ac3','eac3','dts','truehd','flac','opus']);
+            if (isAudioOnly) {
+                return !badAudio.has(a) && ['audio/mpeg','audio/mp4','audio/aac','audio/ogg','audio/wav','audio/webm'].some(x => mime === x);
+            }
+            if (!['video/mp4','video/webm','application/mp4'].includes(mime)) return false;
+            if (badAudio.has(a)) return false;
+            if (mime === 'video/webm') return ['vp8','vp9','av1'].includes(v || 'vp9');
+            return ['h264','avc1','avc','vp9','av1','hevc','h265','hvc1'].includes(v || 'h264');
         }
 
         let playbackWatchdogTimer = null;
@@ -6859,20 +6895,22 @@ HTML_DASHBOARD = """
             clearTimeout(playbackWatchdogTimer);
             playbackWatchdogTimer = setTimeout(async () => {
                 const video = document.getElementById('hidden-video');
-                if (video && (video.paused || video.readyState < 2)) {
-                    console.warn("⚠️ Client WASM/Direct path stalled. Falling back to Server FFmpeg...");
+                if (!video || playerFallbackAttempted || playerRequiresTranscode) return;
+                if (video.error || video.readyState < 2) {
+                    playerFallbackAttempted = true;
                     playerRequiresTranscode = true;
-                    playerTimelineOffset = currentTargetTime;
+                    playerTimelineOffset = currentTargetTime || 0;
                     await setVideoSource(fallbackUrl, 0, true);
                 }
-            }, 2500);
+            }, 3500);
         }
         function disarmPlaybackWatchdog() { clearTimeout(playbackWatchdogTimer); }
 
-        function addOption(select, value, label) {
+        function addOption(select, value, label, dataset = null) {
             const option = document.createElement('option');
             option.value = String(value ?? '');
             option.textContent = label ?? String(value ?? '');
+            if (dataset) Object.entries(dataset).forEach(([k, v]) => option.dataset[k] = String(v ?? ''));
             select.appendChild(option);
         }
 
@@ -6882,6 +6920,8 @@ HTML_DASHBOARD = """
             if (!link) return alert('Provide a valid Telegram or HTTP media link!');
 
             activeMediaLink = link;
+            playerSourceKind = /(?:^|\/)t\.me\//i.test(link) || /telegram\.me\//i.test(link) ? 'tg' : 'direct';
+            playerFallbackAttempted = false;
             const vp = document.getElementById('cinema-viewport');
             const titleEl = document.getElementById('cinema-title');
             const btn = document.querySelector('button[onclick="loadTheaterMedia()"]');
@@ -6889,25 +6929,22 @@ HTML_DASHBOARD = """
             const aSelect = document.getElementById('pop-audio-select');
             const sSelect = document.getElementById('pop-sub-select');
 
-            if (titleEl) titleEl.innerText = '⏳ Probing routing...';
+            if (titleEl) titleEl.innerText = '⏳ Inspecting media...';
             if (vp) vp.classList.remove('idle-hide');
             if (btn) { btn.innerText = '⏳ Routing...'; btn.disabled = true; }
 
-            qSelect.innerHTML = '';
-            addOption(qSelect, 'Original', 'Original');
-            aSelect.innerHTML = '';
-            addOption(aSelect, '', 'Default Audio');
-            sSelect.innerHTML = '';
-            addOption(sSelect, 'off', 'Off');
+            qSelect.innerHTML = ''; addOption(qSelect, 'Original', 'Original');
+            aSelect.innerHTML = ''; addOption(aSelect, '', 'Default Audio');
+            sSelect.innerHTML = ''; addOption(sSelect, 'off', 'Off');
 
             try {
-                const probeRes = await fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}&t=${Date.now()}`);
+                const probeRes = await fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' });
                 const pdata = await probeRes.json();
                 if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
 
-                playerDirectCompatible = !Boolean(pdata.requires_transcode);
+                playerDirectCompatible = Boolean(pdata.browser_compatible);
                 playerTotalDuration = Number(pdata.duration) || 0;
-                if (titleEl) titleEl.innerText = pdata.file_name || 'Telegram Stream';
+                if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
 
                 qSelect.innerHTML = '';
                 (pdata.qualities?.length ? pdata.qualities : ['Original']).forEach(q => addOption(qSelect, q, q));
@@ -6917,7 +6954,7 @@ HTML_DASHBOARD = """
                 (pdata.audio_tracks || []).forEach((a, i) => {
                     const lang = a.language ? ` · ${a.language}` : '';
                     const ch = a.channels ? ` · ${a.channels}ch` : '';
-                    addOption(aSelect, a.index, `${a.label || `Track ${i + 1}`}${lang}${ch}`);
+                    addOption(aSelect, a.index, `${a.label || `Track ${i + 1}`}${lang}${ch}`, { codec: a.codec_name || '' });
                 });
 
                 sSelect.innerHTML = '';
@@ -6936,24 +6973,19 @@ HTML_DASHBOARD = """
                 if (aspectSelect) aspectSelect.value = savedAspect;
                 applyAspectRatio(savedAspect);
 
-                // --- HYBRID ROUTING LOGIC ---
-                // We use probe data to determine if the browser can play it natively
-                const vCodec = pdata.streams?.find(s => s.codec_type === 'video')?.codec_name || 'h264';
-                const aCodec = pdata.streams?.find(s => s.codec_type === 'audio')?.codec_name || 'aac';
-                const isClientCompatible = canBrowserDirectPlay(pdata.mime_type, vCodec, aCodec);
-                
-                const serverFfmpegUrl = buildStreamUrl(0);
+                playerRequiresTranscode = !playerDirectCompatible;
+                playerTimelineOffset = 0;
+                const nativeUrl = buildNativeUrl();
+                playerNativeUrl = nativeUrl;
+                const ffmpegUrl = buildStreamUrl(0);
 
-                if (isClientCompatible) {
-                    console.log("⚡ Route: FAST CLIENT-SIDE (WASM/Direct Stream)");
-                    playerRequiresTranscode = false;
-                    armPlaybackWatchdog(serverFfmpegUrl, 0); // Watchdog armed
-                    const directUrl = `/api/tg_stream?user_id=${currentUser}&link=${encodeURIComponent(link)}`;
-                    await setVideoSource(directUrl, 0, true);
+                if (playerDirectCompatible) {
+                    console.log('⚡ Route: native/range proxy', playerSourceKind);
+                    armPlaybackWatchdog(ffmpegUrl, 0);
+                    await setVideoSource(nativeUrl, 0, true);
                 } else {
-                    console.log("🛡️ Route: SERVER-SIDE FFMPEG (Codec conversion needed)");
-                    playerRequiresTranscode = true;
-                    await setVideoSource(serverFfmpegUrl, 0, true);
+                    console.log('🛡️ Route: FFmpeg compatibility pipeline');
+                    await setVideoSource(ffmpegUrl, 0, true);
                 }
 
                 if (!gl) initWebGL();
@@ -7039,9 +7071,15 @@ HTML_DASHBOARD = """
                 }
                 renderCurrentSubtitle(cur);
             });
-            vidElem.addEventListener('error', () => {
+            vidElem.addEventListener('error', async () => {
                 const mediaError = vidElem.error;
                 console.warn('Video element error:', mediaError);
+                if (!playerRequiresTranscode && !playerFallbackAttempted && activeMediaLink) {
+                    playerFallbackAttempted = true;
+                    playerRequiresTranscode = true;
+                    playerTimelineOffset = Number.isFinite(vidElem.currentTime) ? vidElem.currentTime : 0;
+                    try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
+                }
                 wakeHUD();
             });
         }
@@ -7924,393 +7962,616 @@ async def _api_spectrogram_web_handler(request):
 # --- HIGH-PERFORMANCE STREAMING, TRANSCODING & PROBE ENGINE ---
 # ==============================================================================
 
+DIRECT_URL_CACHE = {}
+DIRECT_URL_CACHE_TTL = 300
+
 async def resolve_direct_link(url):
+    """Resolve common file-host pages to a stream URL without requiring HEAD support."""
+    original = str(url or '').strip()
+    if not original:
+        return original
+    now = time.time()
+    cached = DIRECT_URL_CACHE.get(original)
+    if cached and cached[1] > now:
+        return cached[0]
+
     import re, aiohttp
-    
-    # 1. Google Drive (Converts regular drive link to your worker bypass)
-    gdrive_match = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", url)
+    result = original
+
+    # Google Drive worker/direct endpoint.
+    gdrive_match = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", original)
     if gdrive_match:
-        return f"https://gdrive-dd.bypased.workers.dev/direct.aspx?id={gdrive_match.group(1)}"
-        
-    # 2. GoFile (API Token extraction)
-    gofile_match = re.search(r"gofile\.io/d/([a-zA-Z0-9]+)", url)
-    if gofile_match:
-        try:
-            async with aiohttp.ClientSession() as s:
-                async with s.post("https://api.gofile.io/accounts") as r:
-                    token = (await r.json())["data"]["token"]
-                async with s.get(f"https://api.gofile.io/contents/{gofile_match.group(1)}?wt=4fd6sg89d7s6", headers={"Authorization": f"Bearer {token}"}) as r:
-                    children = (await r.json())["data"]["children"]
-                    for item in children.values():
-                        if item.get("type") == "file": return item["link"]
-        except Exception: pass
+        result = f"https://gdrive-dd.bypased.workers.dev/direct.aspx?id={gdrive_match.group(1)}"
 
-    # 3. Buzzheavier (Scrapes HTML for direct media source)
-    buzz_match = re.search(r"buzzheavier\.com/([a-zA-Z0-9]+)", url)
-    if buzz_match:
+    # GoFile API.
+    if result == original:
+        gofile_match = re.search(r"gofile\.io/d/([a-zA-Z0-9]+)", original)
+        if gofile_match:
+            try:
+                timeout = aiohttp.ClientTimeout(total=15)
+                async with aiohttp.ClientSession(timeout=timeout) as s:
+                    async with s.post("https://api.gofile.io/accounts") as r:
+                        token_data = await r.json(content_type=None)
+                    token = ((token_data.get('data') or {}).get('token') or '').strip()
+                    if token:
+                        async with s.get(
+                            f"https://api.gofile.io/contents/{gofile_match.group(1)}?wt=4fd6sg89d7s6",
+                            headers={"Authorization": f"Bearer {token}"},
+                        ) as r:
+                            data = await r.json(content_type=None)
+                        for item in ((data.get('data') or {}).get('children') or {}).values():
+                            if item.get('type') == 'file' and item.get('link'):
+                                result = item['link']
+                                break
+            except Exception as exc:
+                logger.warning(f"GoFile resolve failed: {exc}")
+
+    # Buzzheavier: accept direct media hrefs, download buttons, or source URLs.
+    if result == original:
+        buzz_match = re.search(r"buzzheavier\.com/([a-zA-Z0-9]+)", original)
+        if buzz_match:
+            try:
+                timeout = aiohttp.ClientTimeout(total=15)
+                headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/xhtml+xml"}
+                async with aiohttp.ClientSession(timeout=timeout) as s:
+                    async with s.get(original, headers=headers, allow_redirects=True) as r:
+                        html_text = await r.text(errors='ignore')
+                patterns = [
+                    r'href=["\'](https://[^"\']+\.(?:mp4|mkv|webm|m4v|mp3|m4a|flac)(?:\?[^"\']*)?)["\']',
+                    r'(https://[^\"\']+buzzheavier[^\"\']+)',
+                ]
+                for pat in patterns:
+                    m = re.search(pat, html_text, re.I)
+                    if m:
+                        result = m.group(1).replace('&amp;', '&')
+                        break
+            except Exception as exc:
+                logger.warning(f"Buzzheavier resolve failed: {exc}")
+
+    # Final fallback: GET one byte instead of HEAD. A surprising number of CDNs
+    # reject HEAD while accepting normal ranged GETs.
+    if result == original:
         try:
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}) as r:
-                    html_text = await r.text()
-                    m = re.search(r'href="(https://[^"]+\.(mp4|mkv|avi|webm)[^"]*)"', html_text)
-                    if m: return m.group(1)
-        except Exception: pass
-        
-    # 4. Fallback: Resolve basic HTTP redirects
+            timeout = aiohttp.ClientTimeout(total=8, connect=5, sock_read=8)
+            async with aiohttp.ClientSession(timeout=timeout) as s:
+                async with s.get(
+                    original,
+                    headers={"User-Agent": "Mozilla/5.0", "Range": "bytes=0-0", "Accept-Encoding": "identity"},
+                    allow_redirects=True,
+                ) as r:
+                    result = str(r.url)
+        except Exception:
+            result = original
+
+    DIRECT_URL_CACHE[original] = (result, now + DIRECT_URL_CACHE_TTL)
+    if len(DIRECT_URL_CACHE) > 256:
+        oldest = min(DIRECT_URL_CACHE.items(), key=lambda kv: kv[1][1])[0]
+        DIRECT_URL_CACHE.pop(oldest, None)
+    return result
+
+
+async def _direct_upstream_request(url, request):
+    """Open a direct HTTP media source while preserving Range semantics."""
+    resolved = await resolve_direct_link(url)
+    req_headers = {
+        "User-Agent": request.headers.get("User-Agent", "Mozilla/5.0"),
+        "Accept": request.headers.get("Accept", "*/*"),
+        "Accept-Encoding": "identity",
+        "Connection": "keep-alive",
+    }
+    if request.headers.get("Range"):
+        req_headers["Range"] = request.headers["Range"]
+    if request.headers.get("Referer"):
+        req_headers["Referer"] = request.headers["Referer"]
+
+    timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_connect=15, sock_read=120)
+    session = aiohttp.ClientSession(timeout=timeout)
     try:
-        async with aiohttp.ClientSession() as s:
-            async with s.head(url, allow_redirects=True, timeout=5) as r:
-                return str(r.url)
-    except: pass
-    
-    return url
-    
-async def _api_media_probe_handler(request):
-    """Lightning-fast HTTP Range probe."""
-    user_id = int(request.query.get("user_id", 0))
-    link = request.query.get("link", "").strip()
-    if not link: return web.json_response({"status": "error", "message": "Link required"}, status=400)
+        resp = await session.get(resolved, headers=req_headers, allow_redirects=True)
+        return session, resp, resolved
+    except Exception:
+        await session.close()
+        raise
 
-    is_tg = "t.me" in link
-    actual_url = link
-    real_file_name = "Unknown_Media"
-    mime_type = "video/mp4"
 
-    if is_tg:
-        parsed = _parse_source_link(link)
-        chat_id = parsed.get("chat_id")
-        msg_id = parsed.get("msg_id")
-        if chat_id is None or msg_id is None: return web.json_response({"status": "error"})
-        
-        uclient = USER_CLIENTS.get(user_id)
-        if not uclient or not uclient.is_connected:
-            session_str = await db.get_session(user_id)
-            if session_str:
-                try:
-                    api_id = await db.get_api_id(user_id) or API_ID
-                    api_hash = await db.get_api_hash(user_id) or API_HASH
-                    uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-                    uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
-                    await uclient.start()
-                    USER_CLIENTS[user_id] = uclient
-                except: uclient = app
-            else: uclient = app
+async def _api_direct_stream_handler(request):
+    """Native direct-link proxy with full HTTP Range support."""
+    url = request.query.get("url", "").strip()
+    if not url or not url.lower().startswith(("http://", "https://")):
+        return web.Response(status=400, text="Invalid direct media URL")
 
-        msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
-        media = msg.document or msg.video or msg.audio
-        if not media: return web.json_response({"status": "error", "message": "No media found"})
+    try:
+        session, remote, resolved = await _direct_upstream_request(url, request)
+    except Exception as exc:
+        return web.Response(status=502, text=f"Direct source connection failed: {exc}")
 
-        real_file_name = getattr(media, "file_name", None) or getattr(media, "title", None) or f"Telegram_Media_{msg_id}"
-        mime_type = getattr(media, "mime_type", "video/mp4")
-        
-        # Link the file to the new high-speed proxy
-        actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
-    else:
-        actual_url = await resolve_direct_link(link) # 🟢 Automatically fetches the raw MP4 from GoFile/GDrive/Buzzheavier
-        real_file_name = os.path.basename(urlparse(actual_url).path) or "Direct_Stream_Media"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.head(actual_url, allow_redirects=True, timeout=5) as resp:
-                    cd = resp.headers.get("Content-Disposition", "")
-                    if cd:
-                        m = re.search(r"filename\*=UTF-8''([^;]+)", cd, re.I)
-                        if m: real_file_name = unquote(m.group(1).strip().strip('"'))
-                        else:
-                            m = re.search(r'filename="?([^";]+)"?', cd, re.I)
-                            if m: real_file_name = m.group(1).strip()
-        except Exception: pass
+    copy_headers = (
+        "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges",
+        "Content-Disposition", "ETag", "Last-Modified", "Cache-Control", "Expires",
+    )
+    out_headers = {k: remote.headers[k] for k in copy_headers if remote.headers.get(k) is not None}
+    out_headers.setdefault("Content-Type", "application/octet-stream")
+    out_headers["Access-Control-Allow-Origin"] = "*"
+    out_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, ETag, Last-Modified"
+    out_headers["Cache-Control"] = remote.headers.get("Cache-Control", "public, max-age=300")
 
-    lower_name = str(real_file_name).lower()
-    is_audio = lower_name.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma")) or "audio" in mime_type.lower()
-    requires_transcode = is_audio or not lower_name.endswith((".mp4", ".webm"))
+    response = web.StreamResponse(status=remote.status, headers=out_headers)
+    try:
+        await response.prepare(request)
+        async for chunk in remote.content.iter_chunked(256 * 1024):
+            if chunk:
+                await response.write(chunk)
+        await response.write_eof()
+        return response
+    except (ConnectionResetError, asyncio.CancelledError, aiohttp.ClientConnectionError):
+        raise
+    except Exception as exc:
+        logger.debug(f"Direct stream disconnect/error: {exc}")
+        return response
+    finally:
+        try: remote.close()
+        finally: await session.close()
 
+
+
+MEDIA_META_CACHE = {}
+MEDIA_META_TTL = 300
+MEDIA_META_LOCKS = defaultdict(asyncio.Lock)
+
+
+def _media_cache_key(user_id, link):
+    return f"{user_id}:{link.strip()}"
+
+
+def _guess_filename_from_url(url, fallback="Direct_Stream_Media"):
+    try:
+        name = os.path.basename(urlparse(url).path)
+        return unquote(name) if name else fallback
+    except Exception:
+        return fallback
+
+
+def _guess_browser_compatibility(mime_type, filename, streams):
+    mime = (mime_type or '').lower().split(';')[0]
+    ext = Path(str(filename or '')).suffix.lower()
+    videos = [s for s in streams if s.get('codec_type') == 'video']
+    audios = [s for s in streams if s.get('codec_type') == 'audio']
+    vc = (videos[0].get('codec_name') if videos else '').lower()
+    ac = (audios[0].get('codec_name') if audios else '').lower()
+    bad_audio = {'ac3','eac3','dts','truehd','flac','opus'}
+    if audios and ac in bad_audio:
+        return False
+    if not videos:
+        return mime in {'audio/mpeg','audio/mp4','audio/aac','audio/ogg','audio/webm','audio/wav'} and ac not in bad_audio
+    if mime in {'video/webm'}:
+        return vc in {'vp8','vp9','av1'}
+    if ext in {'.mp4','.m4v'} or mime in {'video/mp4','application/mp4'}:
+        return vc in {'h264','avc','avc1','hevc','h265','hvc1','vp9','av1'} and ac not in bad_audio
+    return False
+
+
+async def _run_ffprobe_json(input_url):
     cmd = [
         "ffprobe", "-v", "error",
-        "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\nAccept: */*\r\n", # 🟢 Bypasses Cloudflare TLS blocks
-        "-probesize", "64M", "-analyzeduration", "20M",
-        "-show_entries", "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
-        "-of", "json", actual_url
+        "-hide_banner",
+        "-user_agent", "Mozilla/5.0",
+        "-rw_timeout", "8000000",
+        "-probesize", "4M", "-analyzeduration", "2M",
+        "-show_entries",
+        "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
+        "-of", "json", input_url,
     ]
-
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    proc = await asyncio.create_subprocess_exec(cmd[0], *cmd[1:], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     stdout, stderr = await proc.communicate()
-    
     if proc.returncode != 0:
-        err = stderr.decode("utf-8", errors="ignore").strip()
-        return web.json_response({"status": "error", "message": f"FFprobe failed: {err}"})
+        raise RuntimeError(stderr.decode('utf-8', errors='ignore').strip() or 'ffprobe failed')
+    return json.loads(stdout.decode('utf-8', errors='ignore') or '{}')
 
-    probe_data = json.loads(stdout.decode("utf-8", errors="ignore") or "{}")
-    streams = probe_data.get("streams", [])
-    video_streams = [s for s in streams if s.get("codec_type") == "video"]
-    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
-    sub_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
 
-    width = int(video_streams[0].get("width") or 1920) if video_streams else 1920
-    height = int(video_streams[0].get("height") or 1080) if video_streams else 1080
+async def _api_media_probe_handler(request):
+    """Metadata probe with caching and a direct HTTP range-probe fallback."""
+    try:
+        user_id = int(request.query.get("user_id", 0))
+    except Exception:
+        user_id = 0
+    link = request.query.get("link", "").strip()
+    if not link:
+        return web.json_response({"status": "error", "message": "Link required"}, status=400)
 
-    qualities = ["Original"]
-    if not is_audio:
-        if height >= 2160 or width >= 3840: qualities.extend(["4K", "1080p", "720p", "480p", "360p"])
-        elif height >= 1080 or width >= 1920: qualities.extend(["1080p", "720p", "480p", "360p"])
-        elif height >= 720: qualities.extend(["720p", "480p", "360p"])
-        elif height >= 480: qualities.extend(["480p", "360p"])
-        else: qualities.append("360p")
+    cache_key = _media_cache_key(user_id, link)
+    now = time.time()
+    cached = MEDIA_META_CACHE.get(cache_key)
+    if cached and cached[1] > now:
+        return web.json_response(cached[0])
 
-    audio_tracks = []
-    for i, s in enumerate(audio_streams):
-        tags = s.get("tags", {}) or {}
-        lang = tags.get("language") or tags.get("LANGUAGE")
-        title = tags.get("title") or tags.get("TITLE") or tags.get("handler_name")
-        label = title or lang or f"Track {i + 1}"
-        audio_tracks.append({"index": s.get("index"), "label": label})
+    lock = MEDIA_META_LOCKS[cache_key]
+    async with lock:
+        cached = MEDIA_META_CACHE.get(cache_key)
+        if cached and cached[1] > time.time():
+            return web.json_response(cached[0])
 
-    subtitles = []
-    for i, s in enumerate(sub_streams):
-        tags = s.get("tags", {}) or {}
-        lang = tags.get("language") or tags.get("LANGUAGE")
-        title = tags.get("title") or tags.get("TITLE") or tags.get("handler_name")
-        label = title or lang or f"Subtitle {i + 1}"
-        subtitles.append({"index": s.get("index"), "label": label})
+        is_tg = "t.me" in link or "telegram.me" in link
+        actual_url = link
+        real_file_name = "Unknown_Media"
+        mime_type = "video/mp4"
+        streams = []
+        duration_val = 0.0
 
-    duration_val = 0.0
-    try: duration_val = float(probe_data.get("format", {}).get("duration", 0))
-    except: pass
+        try:
+            if is_tg:
+                parsed = _parse_source_link(link)
+                chat_id = parsed.get("chat_id")
+                msg_id = parsed.get("msg_id")
+                if chat_id is None or msg_id is None:
+                    return web.json_response({"status": "error", "message": "Invalid Telegram link"}, status=400)
 
-    return web.json_response({
-        "status": "success",
-        "file_name": real_file_name,
-        "mime_type": mime_type,
-        "requires_transcode": requires_transcode,
-        "video_width": width,
-        "video_height": height,
-        "duration": duration_val,
-        "qualities": list(OrderedDict.fromkeys(qualities)),
-        "audio_tracks": audio_tracks,
-        "subtitles": subtitles,
-    })
+                uclient = USER_CLIENTS.get(user_id)
+                if not uclient or not uclient.is_connected:
+                    session_str = await db.get_session(user_id)
+                    if session_str:
+                        api_id = await db.get_api_id(user_id) or API_ID
+                        api_hash = await db.get_api_hash(user_id) or API_HASH
+                        uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+                        uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+                        await uclient.start()
+                        USER_CLIENTS[user_id] = uclient
+                    else:
+                        uclient = app
+
+                msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
+                media = msg.document or msg.video or msg.audio
+                if not media:
+                    return web.json_response({"status": "error", "message": "No media found"}, status=404)
+                real_file_name = getattr(media, "file_name", None) or getattr(media, "title", None) or f"Telegram_Media_{msg_id}"
+                mime_type = getattr(media, "mime_type", None) or "video/mp4"
+                actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+            else:
+                actual_url = await resolve_direct_link(link)
+                real_file_name = _guess_filename_from_url(actual_url)
+                # Pull headers/redirect destination with a single ranged GET.
+                try:
+                    timeout = aiohttp.ClientTimeout(total=10, connect=5, sock_read=8)
+                    async with aiohttp.ClientSession(timeout=timeout) as session:
+                        async with session.get(actual_url, headers={"User-Agent":"Mozilla/5.0", "Range":"bytes=0-0", "Accept-Encoding":"identity"}, allow_redirects=True) as resp:
+                            actual_url = str(resp.url)
+                            mime_type = resp.headers.get("Content-Type", mime_type).split(';')[0]
+                            cd = resp.headers.get("Content-Disposition", "")
+                            if cd:
+                                m = re.search(r"filename\\*=UTF-8''([^;]+)", cd, re.I)
+                                if m: real_file_name = unquote(m.group(1).strip().strip('"'))
+                                else:
+                                    m = re.search(r"filename=\"?([^\";]+)", cd, re.I)
+                                    if m: real_file_name = m.group(1).strip()
+                except Exception:
+                    pass
+
+            probe_input = actual_url
+            if not is_tg:
+                # Probe through our own range proxy. This fixes hosts that return EOF\n                # when ffprobe accesses their redirected URL directly.
+                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+
+            try:
+                pdata = await _run_ffprobe_json(probe_input)
+                streams = pdata.get("streams", []) or []
+                try:
+                    duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
+                except Exception:
+                    duration_val = 0.0
+            except Exception as probe_exc:
+                # A host can be perfectly streamable while refusing ffprobe. Do not
+                # make the whole player fail in that case; fall back to extension/mime.
+                logger.warning(f"Media probe fallback for {link[:120]}: {probe_exc}")
+                streams = []
+                duration_val = 0.0
+
+            videos = [s for s in streams if s.get("codec_type") == "video"]
+            audios = [s for s in streams if s.get("codec_type") == "audio"]
+            subs = [s for s in streams if s.get("codec_type") == "subtitle"]
+            filename_lower = str(real_file_name).lower()
+            is_audio = bool(audios and not videos) or filename_lower.endswith((".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus"))
+
+            qualities = ["Original"]
+            if not is_audio:
+                height = int((videos[0].get("height") or 0)) if videos else 0
+                width = int((videos[0].get("width") or 0)) if videos else 0
+                if height >= 2160 or width >= 3840: qualities.extend(["4K","1080p","720p","480p","360p"])
+                elif height >= 1080 or width >= 1920: qualities.extend(["1080p","720p","480p","360p"])
+                elif height >= 720: qualities.extend(["720p","480p","360p"])
+                elif height >= 480: qualities.extend(["480p","360p"])
+                else: qualities.append("360p")
+
+            audio_tracks = []
+            for i, st in enumerate(audios):
+                tags = st.get("tags", {}) or {}
+                lang = tags.get("language") or tags.get("LANGUAGE")
+                title = tags.get("title") or tags.get("TITLE") or tags.get("handler_name")
+                audio_tracks.append({
+                    "index": st.get("index"),
+                    "label": title or lang or f"Track {i+1}",
+                    "language": lang or "",
+                    "channels": st.get("channels") or 0,
+                    "codec_name": st.get("codec_name") or "",
+                })
+
+            subtitles = []
+            for i, st in enumerate(subs):
+                tags = st.get("tags", {}) or {}
+                lang = tags.get("language") or tags.get("LANGUAGE")
+                title = tags.get("title") or tags.get("TITLE") or tags.get("handler_name")
+                subtitles.append({
+                    "index": st.get("index"),
+                    "label": title or lang or f"Subtitle {i+1}",
+                    "language": lang or "",
+                })
+
+            video_codec = (videos[0].get("codec_name") if videos else "").lower()
+            audio_codec = (audios[0].get("codec_name") if audios else "").lower()
+            browser_compatible = _guess_browser_compatibility(mime_type, real_file_name, streams)
+            if not streams:
+                ext = Path(filename_lower).suffix
+                mime_guess = mime_type.lower().split(';')[0]
+                browser_compatible = (
+                    ext in {".mp4", ".m4v", ".webm", ".mp3", ".m4a", ".aac", ".ogg", ".wav"}
+                    or mime_guess in {"video/mp4", "video/webm", "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/webm", "audio/wav"}
+                )
+
+            result = {
+                "status": "success",
+                "file_name": real_file_name,
+                "mime_type": mime_type,
+                "requires_transcode": not browser_compatible,
+                "browser_compatible": browser_compatible,
+                "video_codec": video_codec,
+                "audio_codec": audio_codec,
+                "video_width": int(videos[0].get("width") or 0) if videos else 0,
+                "video_height": int(videos[0].get("height") or 0) if videos else 0,
+                "duration": duration_val,
+                "qualities": list(OrderedDict.fromkeys(qualities)),
+                "audio_tracks": audio_tracks,
+                "subtitles": subtitles,
+                "resolved_url": actual_url if not is_tg else "",
+                "streams": streams,
+            }
+            MEDIA_META_CACHE[cache_key] = (result, time.time() + MEDIA_META_TTL)
+            return web.json_response(result)
+        except Exception as exc:
+            logger.exception("Media probe failed")
+            return web.json_response({"status": "error", "message": str(exc)}, status=502)
+
 
 
 async def _api_stream_handler(request):
-    """High-speed Fast-Seek proxy engine."""
-    user_id = int(request.query.get("user_id", 0))
+    """Adaptive stream pipeline: remux/copy whenever possible, transcode only when required."""
+    try:
+        user_id = int(request.query.get("user_id", 0))
+    except Exception:
+        user_id = 0
     link = request.query.get("link", "")
     quality = request.query.get("quality", "Original")
     audio_idx = request.query.get("audio_idx", None)
+    audio_codec = request.query.get("audio_codec", "").lower().strip()
     start_time = request.query.get("start", None)
-    transcode_param = request.query.get("transcode", "")
-    force_transcode = transcode_param in ("1", "true")
+    force_transcode = request.query.get("transcode", "") in ("1", "true")
+    if not link:
+        return web.Response(status=400, text="No link provided")
 
-    if not link: return web.Response(status=400, text="No link provided")
-
-    is_tg = "t.me" in link
+    is_tg = "t.me" in link or "telegram.me" in link
     actual_url = link
+    mime_type = "video/mp4"
+    filename = "media"
     is_audio = False
-    is_unfriendly = False
+    video_codec = ""
 
-    if is_tg:
-        parsed = _parse_source_link(link)
-        chat_id = parsed.get("chat_id")
-        msg_id = parsed.get("msg_id")
-        if chat_id is None or msg_id is None: return web.Response(status=400)
-        
-        uclient = USER_CLIENTS.get(user_id)
-        if not uclient or not uclient.is_connected:
-            session_str = await db.get_session(user_id)
-            if session_str:
-                try:
+    try:
+        if is_tg:
+            parsed = _parse_source_link(link)
+            chat_id = parsed.get("chat_id")
+            msg_id = parsed.get("msg_id")
+            if chat_id is None or msg_id is None:
+                return web.Response(status=400, text="Invalid Telegram link")
+            uclient = USER_CLIENTS.get(user_id)
+            if not uclient or not uclient.is_connected:
+                session_str = await db.get_session(user_id)
+                if session_str:
                     api_id = await db.get_api_id(user_id) or API_ID
                     api_hash = await db.get_api_hash(user_id) or API_HASH
                     uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-                    uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
                     await uclient.start()
                     USER_CLIENTS[user_id] = uclient
-                except: uclient = app
-            else: uclient = app
-            
-        msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
-        media = msg.document or msg.video or msg.audio
-        if not media: return web.Response(status=404, text="Media not found")
-        
-        filename = str(getattr(media, 'file_name', '') or '').lower()
-        mime_type = getattr(media, 'mime_type', 'video/mp4').lower()
-        
-        actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
-        public_redirect_url = f"/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}" # 🟢 FIX: Browser needs relative path, not 127.0.0.1
-        is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma")) or "audio" in mime_type
-        is_unfriendly = filename.endswith((".mkv", ".avi", ".flv", ".vob", ".wmv", ".ts", ".webm"))
-        
-        # Super-fast direct bypass for standard MP4s
-        if quality == "Original" and audio_idx is None and not is_unfriendly and not is_audio and not force_transcode and not start_time:
-            raise web.HTTPFound(public_redirect_url) # 🟢 FIX: Stops redirecting the user to their own localhost
-
-    else:
-        actual_url = await resolve_direct_link(link) # 🟢 Extracts the raw MP4 from hosters
-        lower_link = actual_url.lower()
-        is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac)(?:$|[?#])", lower_link))
-        is_unfriendly = not bool(re.search(r"\.(mp4|m4a)(?:$|[?#])", lower_link))
-
-    needs_ffmpeg = force_transcode or quality != "Original" or (audio_idx is not None and str(audio_idx).strip() != "") or is_unfriendly or is_audio
-
-    if needs_ffmpeg:
-        res_scale_map = {"4K": "3840:-2", "1080p": "1920:-2", "720p": "1280:-2", "480p": "854:-2", "360p": "640:-2"}
-        scale_filter = res_scale_map.get(quality)
-
-        ffmpeg_cmd = [
-            "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-headers", "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36\r\nAccept: */*\r\n", # 🟢 Bypasses Cloudflare TLS blocks
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-            "-probesize", "5M", "-analyzeduration", "5M",
-            "-fflags", "+nobuffer+flush_packets"               # 🟢 FIX: Removed '+fastseek' to prevent 0-byte HTTP stream crashes
-        ]
-
-        # FAST SEEK (Placed BEFORE the input)
-        if start_time is not None:
-            try:
-                start_float = max(0.0, float(start_time))
-                if start_float > 0:
-                    ffmpeg_cmd.extend(["-ss", f"{start_float:.3f}"])
-            except: pass
-        
-        ffmpeg_cmd.extend(["-i", actual_url])
-
-        if is_audio:
-            # 🟢 FIX: Do NOT generate a black video! Just stream the audio purely!
-            if audio_idx is not None and str(audio_idx).strip() != "":
-                ffmpeg_cmd.extend(["-map", f"0:{audio_idx}"])
-            else:
-                ffmpeg_cmd.extend(["-map", "0:a:0?"])
+                else:
+                    uclient = app
+            msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
+            media = msg.document or msg.video or msg.audio
+            if not media:
+                return web.Response(status=404, text="Media not found")
+            filename = str(getattr(media, 'file_name', '') or '').lower()
+            mime_type = getattr(media, 'mime_type', 'video/mp4') or 'video/mp4'
+            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+            is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus")) or "audio" in mime_type
         else:
-            if scale_filter:
-                ffmpeg_cmd.extend(["-vf", f"scale={scale_filter}"])
-            if audio_idx is not None and str(audio_idx).strip() != "":
-                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", f"0:{audio_idx}"])
-            else:
-                ffmpeg_cmd.extend(["-map", "0:v:0?", "-map", "0:a:0?"])
+            actual_url = await resolve_direct_link(link)
+            filename = _guess_filename_from_url(actual_url, "direct_media").lower()
+            lower = actual_url.lower().split('?', 1)[0]
+            is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac|wma|opus)$", lower))
+            mime_type = "audio/mpeg" if filename.endswith('.mp3') else ("audio/mp4" if filename.endswith(('.m4a','.aac')) else ("video/webm" if filename.endswith('.webm') else "video/mp4"))
+    except Exception as exc:
+        return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
-        ffmpeg_cmd.extend(["-sn"])
+    # Original + default track should stay on native/range proxy. Normally the
+    # browser never enters this function for that case, but keep a safe fast path.
+    if quality == "Original" and (audio_idx is None or str(audio_idx).strip() == "") and not force_transcode:
+        if is_tg and not is_audio and filename.endswith('.mp4'):
+            raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}")
+        if not is_tg:
+            raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}")
 
-        if is_audio:
-            # 🟢 FIX: Drop video completely for pure fast audio loading
-            ffmpeg_cmd.extend(["-vn"]) 
-        else:
-            if quality == "Original":
-                ffmpeg_cmd.extend(["-c:v", "copy"])
-            else:
-                ffmpeg_cmd.extend(["-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"])
-
-        ffmpeg_cmd.extend([
-            "-c:a", "aac", "-b:a", "320k",
-            "-avoid_negative_ts", "make_zero",
-            "-movflags", "frag_keyframe+empty_moov+default_base_moof",
-            "-f", "mp4", "pipe:1"
-        ])
-
-        proc = await asyncio.create_subprocess_exec(*ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        response = web.StreamResponse(status=200, headers={"Content-Type": "video/mp4", "Access-Control-Allow-Origin": "*", "Accept-Ranges": "none", "Cache-Control": "no-store"})
-        await response.prepare(request)
-
-        try:
-            while True:
-                buf = await proc.stdout.read(64 * 1024)
-                if not buf: break
-                await response.write(buf)
-            await response.write_eof()
-        except Exception: pass
-        finally:
-            try: proc.kill(); await proc.wait()
-            except: pass
-        return response
-
-    # Fallback Native HTTP Proxy
-    headers = {"User-Agent": "Mozilla/5.0"}
-    if request.headers.get("Range"): headers["Range"] = request.headers["Range"]
-    timeout = aiohttp.ClientTimeout(total=None, sock_read=120)
-    session = aiohttp.ClientSession(timeout=timeout)
-    try:
-        remote = await session.get(actual_url, headers=headers, allow_redirects=True)
-        out_headers = {
-            "Content-Type": remote.headers.get("Content-Type", "video/mp4"),
-            "Access-Control-Allow-Origin": "*",
-            "Accept-Ranges": remote.headers.get("Accept-Ranges", "bytes"),
-            "Cache-Control": "no-store",
-        }
-        response = web.StreamResponse(status=remote.status, headers=out_headers)
-        await response.prepare(request)
-        async for chunk in remote.content.iter_chunked(128 * 1024):
-            await response.write(chunk)
-        await response.write_eof()
-        remote.close()
-        await session.close()
-        return response
-    except Exception as e:
-        return web.Response(status=502, text=f"Proxy failed: {e}")
-
-
-async def _api_subtitles_handler(request):
-    """Instant Subtitle Extraction using HTTP Range Requests (Real-Time Streaming)."""
-    user_id = int(request.query.get("user_id", 0))
-    link = request.query.get("link", "")
-    sub_idx = request.query.get("sub_idx", "0")
-    
-    if not link: return web.Response(status=400, text="Invalid Link")
-
-    is_tg = "t.me" in link
-    actual_url = link
-
-    if is_tg:
-        parsed = _parse_source_link(link)
-        chat_id = parsed.get("chat_id")
-        msg_id = parsed.get("msg_id")
-        if chat_id is None or msg_id is None: return web.Response(status=400)
-        
-        actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+    # For explicit audio-track selection at Original quality, prefer copying audio
+    # if the codec is already browser-friendly. Video is also copied. Conversion is
+    # used only when quality scaling or incompatible codecs require it.
+    copy_audio = audio_codec in {'aac', 'mp3'} or (audio_idx is None and quality == 'Original')
+    copy_video = quality == 'Original'
+    res_scale_map = {"4K":"3840:-2", "1080p":"1920:-2", "720p":"1280:-2", "480p":"854:-2", "360p":"640:-2"}
+    scale_filter = res_scale_map.get(quality)
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-headers", "User-Agent: Mozilla/5.0\r\n",
-        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-probesize", "5M", "-analyzeduration", "5M",
-        "-fflags", "+nobuffer+flush_packets",              # 🟢 FIX: Removed '+fastseek' to prevent EOF crashes
-        "-i", actual_url,
-        "-map", f"0:{sub_idx}",
-        "-vn", "-an",                                      # 🟢 FIX: Completely blind ffmpeg to heavy video/audio streams
-        "-c:s", "webvtt",
-        "-flush_packets", "1",                             # 🟢 FIX: Forces WebVTT to stream to frontend instantly
-        "-f", "webvtt", "pipe:1"
+        "-user_agent", "Mozilla/5.0",
+        "-rw_timeout", "15000000",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+        "-probesize", "2M", "-analyzeduration", "1M",
+        "-fflags", "+nobuffer+flush_packets",
     ]
 
-    try:
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-
-        # 🟢 THE FIX: Stream the WebVTT text to the frontend IN REAL TIME
-        response = web.StreamResponse(status=200, headers={
-            "Content-Type": "text/vtt",
-            "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-store"
-        })
-        await response.prepare(request)
-
+    if start_time is not None:
         try:
-            # Continuously read FFmpeg's output and stream it directly to the browser
-            while True:
-                buf = await proc.stdout.read(4096)
-                if not buf:
-                    break
-                await response.write(buf)
-            await response.write_eof()
+            start_float = max(0.0, float(start_time))
+            if start_float > 0:
+                cmd += ["-ss", f"{start_float:.3f}"]
         except Exception:
-            pass # Handle client disconnects gracefully
-        finally:
-            # Ensure the FFmpeg process is cleanly killed when done
-            try:
-                proc.kill()
-                await proc.wait()
-            except Exception:
-                pass
+            pass
 
-        return response
-    except Exception as e:
-        return web.Response(status=500, text=str(e))
+    cmd += ["-i", actual_url]
+
+    if is_audio:
+        if audio_idx is not None and str(audio_idx).strip():
+            cmd += ["-map", f"0:{audio_idx}"]
+        else:
+            cmd += ["-map", "0:a:0?"]
+        cmd += ["-vn", "-sn"]
+        if copy_audio:
+            cmd += ["-c:a", "copy"]
+        else:
+            cmd += ["-c:a", "aac", "-b:a", "192k"]
+        cmd += ["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+    else:
+        cmd += ["-map", "0:v:0?"]
+        if audio_idx is not None and str(audio_idx).strip():
+            cmd += ["-map", f"0:{audio_idx}"]
+        else:
+            cmd += ["-map", "0:a:0?"]
+        cmd += ["-sn"]
+
+        if copy_video and not scale_filter:
+            cmd += ["-c:v", "copy"]
+        else:
+            cmd += ["-vf", f"scale={scale_filter or 'trunc(iw/2)*2:trunc(ih/2)*2'}", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"]
+
+        if copy_audio:
+            cmd += ["-c:a", "copy"]
+        else:
+            cmd += ["-c:a", "aac", "-b:a", "192k"]
+
+        cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    response = web.StreamResponse(status=200, headers={
+        "Content-Type": "video/mp4",
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Type",
+        "Cache-Control": "no-store",
+        "Accept-Ranges": "none",
+    })
+    await response.prepare(request)
+
+    try:
+        while True:
+            buf = await proc.stdout.read(128 * 1024)
+            if not buf:
+                break
+            await response.write(buf)
+        await response.write_eof()
+    except Exception:
+        pass
+    finally:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
+    return response
+
+
+
+SUBTITLE_CACHE = {}
+SUBTITLE_CACHE_TTL = 3600
+SUBTITLE_LOCKS = defaultdict(asyncio.Lock)
+
+async def _api_subtitles_handler(request):
+    """Extract embedded subtitle once, cache the WebVTT, and serve it fast thereafter."""
+    try:
+        user_id = int(request.query.get("user_id", 0))
+    except Exception:
+        user_id = 0
+    link = request.query.get("link", "").strip()
+    sub_idx = request.query.get("sub_idx", "0").strip()
+    if not link:
+        return web.Response(status=400, text="Invalid Link")
+
+    cache_key = f"{user_id}:{link}:{sub_idx}"
+    now = time.time()
+    cached = SUBTITLE_CACHE.get(cache_key)
+    if cached and cached[1] > now:
+        body = cached[0]
+        return web.Response(body=body, status=200, headers={
+            "Content-Type": "text/vtt; charset=utf-8",
+            "Content-Length": str(len(body)),
+            "Access-Control-Allow-Origin": "*",
+            "Cache-Control": "public, max-age=3600",
+        })
+
+    async with SUBTITLE_LOCKS[cache_key]:
+        cached = SUBTITLE_CACHE.get(cache_key)
+        if cached and cached[1] > time.time():
+            body = cached[0]
+            return web.Response(body=body, status=200, headers={
+                "Content-Type": "text/vtt; charset=utf-8",
+                "Content-Length": str(len(body)),
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+            })
+
+        is_tg = "t.me" in link or "telegram.me" in link
+        actual_url = link
+        if is_tg:
+            parsed = _parse_source_link(link)
+            chat_id = parsed.get("chat_id")
+            msg_id = parsed.get("msg_id")
+            if chat_id is None or msg_id is None:
+                return web.Response(status=400, text="Invalid Telegram link")
+            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+        else:
+            actual_url = await resolve_direct_link(link)
+
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-user_agent", "Mozilla/5.0",
+            "-rw_timeout", "12000000",
+            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+            "-probesize", "4M", "-analyzeduration", "2M",
+            "-i", actual_url,
+            "-map", f"0:{sub_idx}",
+            "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            stdout, stderr = await proc.communicate()
+            if proc.returncode != 0 or not stdout:
+                err = stderr.decode('utf-8', errors='ignore').strip() or "subtitle extraction failed"
+                return web.Response(status=502, text=err)
+            body = bytes(stdout)
+            SUBTITLE_CACHE[cache_key] = (body, time.time() + SUBTITLE_CACHE_TTL)
+            if len(SUBTITLE_CACHE) > 128:
+                oldest = min(SUBTITLE_CACHE.items(), key=lambda kv: kv[1][1])[0]
+                SUBTITLE_CACHE.pop(oldest, None)
+            return web.Response(body=body, status=200, headers={
+                "Content-Type": "text/vtt; charset=utf-8",
+                "Content-Length": str(len(body)),
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+            })
+        except Exception as exc:
+            return web.Response(status=500, text=str(exc))
+
 
 import mimetypes
 import math
@@ -8792,6 +9053,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_post("/api/spectrogram", _api_spectrogram_web_handler)
     app_web.router.add_get("/api/media_probe", _api_media_probe_handler)
     app_web.router.add_get("/api/stream", _api_stream_handler)
+    app_web.router.add_get("/api/direct_stream", _api_direct_stream_handler)
     app_web.router.add_get("/api/subtitles", _api_subtitles_handler)
     app_web.router.add_get("/api/topics", _api_topics_handler)
     app_web.router.add_get("/api/tg_stream", _api_tg_stream_handler) # <-- ADD THIS LINE
