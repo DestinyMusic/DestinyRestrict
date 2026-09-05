@@ -6701,10 +6701,10 @@ HTML_DASHBOARD = """
                     if (done) break;
                     buffer += decoder.decode(value, { stream: true });
 
-                    const blocks = buffer.split(/\n\s*\n/);
+                    const blocks = buffer.split(/\\n\\s*\\n/);
                     buffer = blocks.pop() || '';
                     for (const block of blocks) {
-                        const cues = parseWebVTT(block + '\n\n');
+                        const cues = parseWebVTT(block + '\\n\\n');
                         if (cues.length) subtitleCues.push(...cues);
                     }
                     subtitleCues.sort((a, b) => a.start - b.start);
@@ -6713,7 +6713,7 @@ HTML_DASHBOARD = """
 
                 buffer += decoder.decode();
                 if (buffer.trim()) {
-                    const cues = parseWebVTT(buffer + '\n\n');
+                    const cues = parseWebVTT(buffer + '\\n\\n');
                     if (cues.length) subtitleCues.push(...cues);
                 }
                 subtitleCues.sort((a, b) => a.start - b.start);
