@@ -8723,6 +8723,7 @@ async def _api_stream_handler(request):
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+    import aiohttp
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
@@ -8730,15 +8731,18 @@ async def _api_stream_handler(request):
         "Cache-Control": "no-store",
         "Accept-Ranges": "none",
     })
-    await response.prepare(request)
-
+    
     try:
+        # 🟢 FIX: Wrap prepare() inside the try block here too
+        await response.prepare(request)
         while True:
             buf = await proc.stdout.read(512 * 1024)
             if not buf:
                 break
             await response.write(buf)
         await response.write_eof()
+    except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+        pass
     except Exception:
         pass
     finally:
@@ -8778,10 +8782,10 @@ async def get_client_msg(client, chat_id, msg_id):
         return msg
 
 
-asasync def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
+async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     """Fetches a chunk strictly. Retries on transient errors with clean byte skipping."""
-    # 🟢 FIX: Dynamic Alignment - Scales perfectly based on requested limit to prevent OFFSET_INVALID
-    ALIGNMENT = min(1048576, max(4096, (limit // 4096) * 4096)) if limit >= 4096 else 4096
+    # 🟢 FIX: Universal 1MB Alignment - Rock solid for Telegram MTProto
+    ALIGNMENT = 1048576
     aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
     target_bytes = limit
     
@@ -9042,11 +9046,13 @@ async def _api_tg_stream_handler(request):
             "Cache-Control": "no-store",
         }
 
+        import aiohttp
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
-        await response.prepare(request)
-
-        adjusted_start = start_byte + virtual_data_offset
+        
         try:
+            # 🟢 FIX: Wrap prepare() and write() together so scrubber disconnects are caught safely
+            await response.prepare(request)
+            adjusted_start = start_byte + virtual_data_offset
             async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6):
                 await response.write(chunk)
             await response.write_eof()
@@ -9328,8 +9334,8 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 internal_offset = current_offset - part["start"]
                 internal_limit = min(bytes_needed, part["size"] - internal_offset)
                 
-                # 🟢 FIX: Dynamic Alignment - Derives safely from the actual internal limit 
-                ALIGNMENT = min(1048576, max(4096, (internal_limit // 4096) * 4096)) if internal_limit >= 4096 else 4096
+                # 🟢 FIX: Universal 1MB Alignment - Rock solid for Telegram MTProto
+                ALIGNMENT = 1048576
                 aligned_offset = (internal_offset // ALIGNMENT) * ALIGNMENT
                 skip_bytes = internal_offset - aligned_offset
                 fetch_limit = internal_limit + skip_bytes
