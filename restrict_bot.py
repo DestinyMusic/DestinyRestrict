@@ -9279,41 +9279,49 @@ async def get_client_msg(client, chat_id, msg_id):
         CLIENT_MSG_CACHE[key] = msg
     return CLIENT_MSG_CACHE[key]
 
+# 🟢 NEW: Global Smart RAM Cache for FFmpeg Micro-Requests
+TG_CHUNK_CACHE = {}
+TG_CHUNK_CACHE_MAX_SIZE = 128
+TG_CHUNK_LOCKS = defaultdict(asyncio.Lock)
+
+async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
+    cache_key = (chat_id, msg_id, chunk_index)
+    async with TG_CHUNK_LOCKS[cache_key]:
+        if cache_key in TG_CHUNK_CACHE:
+            return TG_CHUNK_CACHE[cache_key]
+            
+        msg = await get_client_msg(client, chat_id, msg_id)
+        data = bytearray()
+        async for chunk in client.stream_media(msg, offset=chunk_index, limit=1):
+            data.extend(chunk)
+            break 
+            
+        if not data:
+            raise ValueError(f"Empty chunk at index {chunk_index}")
+            
+        chunk_bytes = bytes(data)
+        TG_CHUNK_CACHE[cache_key] = chunk_bytes
+        
+        if len(TG_CHUNK_CACHE) > TG_CHUNK_CACHE_MAX_SIZE:
+            TG_CHUNK_CACHE.pop(next(iter(TG_CHUNK_CACHE)))
+            
+        return chunk_bytes
+
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk strictly. Retries on transient errors with clean byte skipping."""
-    import math
-    
-    # 🟢 FIX: Pyrogram expects offset and limit in CHUNKS (1MB), NOT BYTES.
+    """Fetches a chunk strictly. Uses smart RAM cache to prevent rate-limits."""
     CHUNK_SIZE = 1048576
-    chunk_index = offset // CHUNK_SIZE
+    start_chunk = offset // CHUNK_SIZE
+    end_chunk = (offset + limit - 1) // CHUNK_SIZE
     
     for attempt in range(4):
-        skip_bytes = offset % CHUNK_SIZE
-        total_to_pull = skip_bytes + limit
-        chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
-        
+        result_data = bytearray()
         try:
-            msg = await get_client_msg(client, chat_id, msg_id)
-            data = bytearray()
-            
-            # Pass chunk index and chunk limit!
-            async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
-                if skip_bytes > 0:
-                    if len(chunk) <= skip_bytes:
-                        skip_bytes -= len(chunk)
-                        continue
-                    else:
-                        chunk = chunk[skip_bytes:]
-                        skip_bytes = 0
-                        
-                data.extend(chunk)
-                if len(data) >= limit:
-                    break
-                    
-            if not data: 
-                raise ValueError("EOF Reached or Empty Chunk")
+            for chunk_idx in range(start_chunk, end_chunk + 1):
+                chunk_data = await _get_cached_tg_chunk(client, chat_id, msg_id, chunk_idx)
+                result_data.extend(chunk_data)
                 
-            return bytes(data[:limit])
+            skip_bytes = offset % CHUNK_SIZE
+            return bytes(result_data[skip_bytes : skip_bytes + limit])
             
         except FloodWait as e:
             logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
@@ -9373,39 +9381,60 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 internal_offset = current_offset - part["start"]
                 internal_limit = min(bytes_needed, part["size"] - internal_offset)
                 
-                import math
-                CHUNK_SIZE = 1048576
-                chunk_index = internal_offset // CHUNK_SIZE
-                skip_bytes = internal_offset % CHUNK_SIZE
-                
-                total_to_pull = skip_bytes + internal_limit
-                chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
-                
                 try:
-                    msg = await get_client_msg(client, chat_id, part["msg_id"])
-                    bytes_yielded_this_part = 0
-                    
-                    async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
-                        if skip_bytes > 0:
-                            if len(chunk) <= skip_bytes:
-                                skip_bytes -= len(chunk)
-                                continue
-                            else:
-                                chunk = chunk[skip_bytes:]
-                                skip_bytes = 0
-                                
-                        if not chunk: continue
+                    # 🟢 SMART ROUTING: Use Cache for small FFmpeg probes, Pipeline for large streaming
+                    if internal_limit <= 1048576 * 2: # 2MB or less -> Use Cache to prevent socket slamming
+                        CHUNK_SIZE = 1048576
+                        start_chunk = internal_offset // CHUNK_SIZE
+                        end_chunk = (internal_offset + internal_limit - 1) // CHUNK_SIZE
                         
-                        chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
-                        if chunk_to_yield:
-                            yield chunk_to_yield
-                            bytes_yielded_this_part += len(chunk_to_yield)
+                        result_data = bytearray()
+                        for chunk_idx in range(start_chunk, end_chunk + 1):
+                            chunk_data = await _get_cached_tg_chunk(client, chat_id, part["msg_id"], chunk_idx)
+                            result_data.extend(chunk_data)
                             
-                        if bytes_yielded_this_part >= internal_limit:
-                            break
+                        skip_bytes = internal_offset % CHUNK_SIZE
+                        final_bytes = bytes(result_data[skip_bytes : skip_bytes + internal_limit])
+                        yield final_bytes
+                        
+                        current_offset += internal_limit
+                        bytes_needed -= internal_limit
+                        
+                    else:
+                        # Large bulk read -> Use continuous pipelined socket
+                        CHUNK_SIZE = 1048576
+                        chunk_index = internal_offset // CHUNK_SIZE
+                        skip_bytes = internal_offset % CHUNK_SIZE
+                        
+                        import math
+                        total_to_pull = skip_bytes + internal_limit
+                        chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
+                        
+                        msg = await get_client_msg(client, chat_id, part["msg_id"])
+                        bytes_yielded_this_part = 0
+                        
+                        async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
+                            if skip_bytes > 0:
+                                if len(chunk) <= skip_bytes:
+                                    skip_bytes -= len(chunk)
+                                    continue
+                                else:
+                                    chunk = chunk[skip_bytes:]
+                                    skip_bytes = 0
+                                    
+                            if not chunk: continue
                             
-                    current_offset += internal_limit
-                    bytes_needed -= internal_limit
+                            chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
+                            if chunk_to_yield:
+                                yield chunk_to_yield
+                                bytes_yielded_this_part += len(chunk_to_yield)
+                                
+                            if bytes_yielded_this_part >= internal_limit:
+                                break
+                                
+                        current_offset += internal_limit
+                        bytes_needed -= internal_limit
+                        
                 except Exception as e:
                     logger.error(f"Fast-path stream failed: {e}")
                     raise e
