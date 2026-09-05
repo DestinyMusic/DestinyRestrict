@@ -9124,6 +9124,7 @@ async def _api_stream_handler(request):
         "ffmpeg", "-hide_banner", "-loglevel", "warning",
         "-user_agent", "Mozilla/5.0",
         "-rw_timeout", "30000000",
+        "-seekable", "0",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-probesize", "5M", "-analyzeduration", "5M", 
         "-fflags", "+nobuffer+flush_packets+igndts",
@@ -9625,11 +9626,13 @@ async def _api_subtitles_handler(request):
         actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
 
     cmd = [
-        "ffmpeg", "-hide_banner", "-loglevel", "error",
+        "ffmpeg", "-hide_banner", "-loglevel", "warning",
         "-user_agent", "Mozilla/5.0",
-        "-rw_timeout", "12000000",
-        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+        "-rw_timeout", "30000000",
+        "-seekable", "0",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-probesize", "4M", "-analyzeduration", "2M",
+        "-err_detect", "ignore_err",
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
         "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
