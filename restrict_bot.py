@@ -4763,12 +4763,16 @@ HTML_DASHBOARD = """
 
         /* Settings Floating Popups */
         .settings-popup {
-            position: absolute; bottom: 85px; right: 30px; background: color-mix(in srgb, var(--card) 95%, transparent);
-            backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--card-border);
+            position: absolute; bottom: 85px; right: 30px; 
+            background: color-mix(in srgb, var(--card) var(--glass-bg, 95%), transparent);
+            backdrop-filter: blur(calc(20px + var(--glass-blur, 0px))); 
+            -webkit-backdrop-filter: blur(calc(20px + var(--glass-blur, 0px))); 
+            border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent);
             border-radius: 20px; padding: 20px; width: 320px; max-width: calc(100vw - 24px);
             max-height: min(78vh, 620px); overflow-y: auto; overflow-x: hidden;
             -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y;
-            display: none; z-index: 30; box-shadow: 0 20px 50px rgba(0,0,0,0.8);
+            display: none; z-index: 30; 
+            box-shadow: 0 20px 50px rgba(0,0,0,0.8), 0 8px 32px rgba(0, 0, 0, var(--glass-shadow, 0));
             transition: opacity 0.25s ease, transform 0.25s ease;
             scrollbar-width: thin;
         }
@@ -4791,14 +4795,23 @@ HTML_DASHBOARD = """
             }
         }
         .pop-title { font-size: 14px; font-weight: 800; margin-bottom: 12px; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
-        .pop-select { width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--card-border); border-radius: 10px; color: #fff; font-size: 12px; margin-bottom: 14px; outline: none; }
+        .pop-select { 
+            width: 100%; padding: 10px; 
+            background: color-mix(in srgb, var(--bg) var(--glass-bg, 100%), transparent); 
+            border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); 
+            border-radius: 10px; color: #fff; font-size: 12px; margin-bottom: 14px; outline: none; 
+            backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px));
+        }
 
         /* 3D Matrix Menu (Exact Layout from Image) */
         .matrix-3d-menu {
             position: absolute; top: 0; right: -360px; width: 340px; max-width: 94vw; height: 100%;
-            background: color-mix(in srgb, #050505 92%, transparent); backdrop-filter: blur(25px);
-            border-left: 1px solid var(--card-border); transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+            background: color-mix(in srgb, #050505 var(--glass-bg, 92%), transparent); 
+            backdrop-filter: blur(calc(25px + var(--glass-blur, 0px))); -webkit-backdrop-filter: blur(calc(25px + var(--glass-blur, 0px)));
+            border-left: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); 
+            transition: right 0.35s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
             padding: 24px; overflow-y: auto; z-index: 40;
+            box-shadow: -10px 0 30px rgba(0, 0, 0, var(--glass-shadow, 0));
         }
         .matrix-3d-menu.open { right: 0; }
         .matrix-header { font-size: 18px; font-weight: 800; text-align: center; margin-bottom: 24px; color: #fff; }
@@ -4989,8 +5002,8 @@ HTML_DASHBOARD = """
                     </div>
 
                     <!-- Double-Tap Seek Zones (Invisible Overlay for Mobile Swipes) -->
-                    <div class="seek-zone left" ondblclick="skipPlayback(-15)"></div>
-                    <div class="seek-zone right" ondblclick="skipPlayback(15)"></div>
+                    <div class="seek-zone left" onclick="handleZoneTap('left', -15)"></div>
+                    <div class="seek-zone right" onclick="handleZoneTap('right', 15)"></div>
 
                     <!-- 3D Over-Under / SBS Matrix Menu -->
                     <div id="menu-3d" class="matrix-3d-menu">
@@ -5063,10 +5076,10 @@ HTML_DASHBOARD = """
                         </select>
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE COLOR</label>
-                        <input id="subtitle-color-input" type="color" value="#ffffff" onchange="applySubtitleStyle()" style="width: 100%; height: 40px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--bg); margin-bottom: 14px; padding: 4px;">
+                        <input id="subtitle-color-input" type="color" value="#ffffff" onchange="applySubtitleStyle()" style="width: 100%; height: 40px; border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); border-radius: 10px; background: color-mix(in srgb, var(--bg) var(--glass-bg, 100%), transparent); margin-bottom: 14px; padding: 4px; backdrop-filter: blur(var(--glass-blur, 0px));">
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE BACKGROUND</label>
-                        <input id="subtitle-bg-input" type="color" value="#000000" onchange="applySubtitleStyle()" style="width: 100%; height: 40px; border: 1px solid var(--card-border); border-radius: 10px; background: var(--bg); margin-bottom: 14px; padding: 4px;">
+                        <input id="subtitle-bg-input" type="color" value="#000000" onchange="applySubtitleStyle()" style="width: 100%; height: 40px; border: 1px solid color-mix(in srgb, var(--card-border) var(--glass-border, 100%), transparent); border-radius: 10px; background: color-mix(in srgb, var(--bg) var(--glass-bg, 100%), transparent); margin-bottom: 14px; padding: 4px; backdrop-filter: blur(var(--glass-blur, 0px));">
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">BACKGROUND OPACITY</label>
                         <input id="subtitle-bg-alpha" type="range" min="0" max="100" value="70" oninput="applySubtitleStyle()" style="width: 100%; margin-bottom: 14px;">
@@ -6334,6 +6347,18 @@ HTML_DASHBOARD = """
             } catch (err) {
                 console.warn('Playback toggle failed:', err);
                 wakeHUD();
+            }
+        }
+
+        let lastTapLeft = 0, lastTapRight = 0;
+        function handleZoneTap(side, amount) {
+            const now = Date.now();
+            if (side === 'left') {
+                if (now - lastTapLeft < 350) { skipPlayback(amount); lastTapLeft = 0; }
+                else { lastTapLeft = now; wakeHUD(); }
+            } else {
+                if (now - lastTapRight < 350) { skipPlayback(amount); lastTapRight = 0; }
+                else { lastTapRight = now; wakeHUD(); }
             }
         }
 
@@ -8734,7 +8759,7 @@ async def _api_stream_handler(request):
         "-user_agent", "Mozilla/5.0",
         "-rw_timeout", "12000000",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-        "-probesize", "2M", "-analyzeduration", "1M",
+        "-probesize", "32M", "-analyzeduration", "15M", # 🟢 FIX: Massively increased to support 4K Dolby Vision headers
         "-fflags", "+nobuffer+flush_packets",
     ]
 
@@ -8803,10 +8828,9 @@ async def _api_stream_handler(request):
     })
     
     try:
-        # 🟢 FIX: Wrap prepare() inside the try block here too
         await response.prepare(request)
         while True:
-            buf = await proc.stdout.read(512 * 1024)
+            buf = await proc.stdout.read(1048576) # 🟢 FIX: Increased to 1MB chunks to prevent 4K buffering
             if not buf:
                 break
             await response.write(buf)
@@ -9129,19 +9153,22 @@ async def _api_tg_stream_handler(request):
         import aiohttp
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
+        adjusted_start = start_byte + virtual_data_offset
+        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
+        
         try:
-            # 🟢 FIX: Wrap prepare() and write() together so scrubber disconnects are caught safely
             await response.prepare(request)
-            adjusted_start = start_byte + virtual_data_offset
-            async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6):
+            async for chunk in gen:
                 await response.write(chunk)
             await response.write_eof()
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
-            # Gracefully handle when the browser cancels the connection during seeking/scrubbing
             return response
         except Exception as exc:
             logger.debug(f"Telegram stream disconnect/error: {exc}")
-        return response
+            return response
+        finally:
+            try: await gen.aclose() # Force generator destruction
+            except: pass
 
     except asyncio.CancelledError:
         raise
