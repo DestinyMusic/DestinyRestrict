@@ -4802,6 +4802,13 @@ HTML_DASHBOARD = """
             border-radius: 10px; color: #fff; font-size: 12px; margin-bottom: 14px; outline: none; 
             backdrop-filter: blur(var(--glass-blur, 0px)); -webkit-backdrop-filter: blur(var(--glass-blur, 0px));
         }
+        
+        /* 🟢 FIX: Forces the dropdown items to be solid so you can actually read the audio/subtitle tracks */
+        .pop-select option {
+            background-color: var(--card);
+            color: var(--text);
+            font-weight: 600;
+        }
 
         /* 3D Matrix Menu (Exact Layout from Image) */
         .matrix-3d-menu {
@@ -5002,8 +5009,8 @@ HTML_DASHBOARD = """
                     </div>
 
                     <!-- Double-Tap Seek Zones (Invisible Overlay for Mobile Swipes) -->
-                    <div class="seek-zone left" onclick="handleZoneTap('left', -15)"></div>
-                    <div class="seek-zone right" onclick="handleZoneTap('right', 15)"></div>
+                    <div class="seek-zone left" onclick="handleZoneTap('left', -15, event)"></div>
+                    <div class="seek-zone right" onclick="handleZoneTap('right', 15, event)"></div>
 
                     <!-- 3D Over-Under / SBS Matrix Menu -->
                     <div id="menu-3d" class="matrix-3d-menu">
@@ -6350,15 +6357,36 @@ HTML_DASHBOARD = """
             }
         }
 
-        let lastTapLeft = 0, lastTapRight = 0;
-        function handleZoneTap(side, amount) {
-            const now = Date.now();
+        let tapTimerLeft = null;
+        let tapTimerRight = null;
+        
+        function handleZoneTap(side, amount, event) {
+            event.stopPropagation(); // Prevent background clicks from firing
+            
             if (side === 'left') {
-                if (now - lastTapLeft < 350) { skipPlayback(amount); lastTapLeft = 0; }
-                else { lastTapLeft = now; wakeHUD(); }
+                if (tapTimerLeft) {
+                    // It's a double tap! Clear timer and execute skip.
+                    clearTimeout(tapTimerLeft);
+                    tapTimerLeft = null;
+                    skipPlayback(amount);
+                } else {
+                    // First tap: Wait 300ms. If no second tap, just wake the HUD.
+                    tapTimerLeft = setTimeout(() => { 
+                        tapTimerLeft = null; 
+                        wakeHUD(); 
+                    }, 300);
+                }
             } else {
-                if (now - lastTapRight < 350) { skipPlayback(amount); lastTapRight = 0; }
-                else { lastTapRight = now; wakeHUD(); }
+                if (tapTimerRight) {
+                    clearTimeout(tapTimerRight);
+                    tapTimerRight = null;
+                    skipPlayback(amount);
+                } else {
+                    tapTimerRight = setTimeout(() => { 
+                        tapTimerRight = null; 
+                        wakeHUD(); 
+                    }, 300);
+                }
             }
         }
 
@@ -9370,10 +9398,8 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
         msg = await get_client_msg(client, chat_id, msg_id)
         data = bytearray()
         
-        # 🟢 FIX: Offset MUST be in perfectly aligned bytes (multiples of 1MB), not just the index!
-        aligned_byte_offset = chunk_index * 1048576
-        
-        async for chunk in client.stream_media(msg, offset=aligned_byte_offset):
+        # 🟢 THE REAL FIX: Pyrogram v2+ strictly requires the CHUNK INDEX, not bytes!
+        async for chunk in client.stream_media(msg, offset=chunk_index):
             data.extend(chunk)
             break # We only need exactly 1 chunk (1MB) for the cache
             
@@ -9487,15 +9513,11 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         chunk_index = internal_offset // CHUNK_SIZE
                         skip_bytes = internal_offset % CHUNK_SIZE
                         
-                        # 🟢 FIX: Multiply by 1MB to pass a valid byte-aligned offset to Telegram
-                        aligned_byte_offset = chunk_index * CHUNK_SIZE
-                        
                         msg = await get_client_msg(client, chat_id, part["msg_id"])
                         bytes_yielded_this_part = 0
                         
-                        # 🟢 FIX: Removed limit parameter entirely to avoid conflicts with Pyrogram forks.
-                        # We will break the loop manually when we have enough bytes.
-                        async for chunk in client.stream_media(msg, offset=aligned_byte_offset):
+                        # 🟢 THE REAL FIX: Pass the raw chunk_index. NO MULTIPLICATION!
+                        async for chunk in client.stream_media(msg, offset=chunk_index):
                             if skip_bytes > 0:
                                 if len(chunk) <= skip_bytes:
                                     skip_bytes -= len(chunk)
