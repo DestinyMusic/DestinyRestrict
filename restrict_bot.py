@@ -6758,8 +6758,6 @@ HTML_DASHBOARD = """
             const generation = ++playerStreamGeneration;
 
             video.pause();
-            video.removeAttribute('src');
-            video.load();
             video.src = streamUrl;
             video.load();
             wakeHUD();
@@ -6817,7 +6815,7 @@ HTML_DASHBOARD = """
 
         function openExternalPlayer(appType) {
             if (!activeMediaLink) return alert("Please load a stream first!");
-            const streamUrl = window.location.origin + buildStreamUrl();
+            const streamUrl = window.location.origin + (playerDirectCompatible ? buildNativeUrl() : buildStreamUrl());
             if (appType === 'vlc') {
                 window.location.href = `vlc://${streamUrl}`;
             } else if (appType === 'mx') {
@@ -6880,12 +6878,14 @@ HTML_DASHBOARD = """
             const mime = String(mimeType || '').toLowerCase().split(';')[0];
             const v = String(videoCodec || '').toLowerCase();
             const a = String(audioCodec || '').toLowerCase();
-            const badAudio = new Set(['ac3','eac3','dts','truehd','flac','opus']);
+            const definitelyUnsupportedAudio = new Set(['dts','truehd']);
+            const browserAudio = new Set(['aac','mp3','flac','opus','vorbis','alac','pcm_s16le','pcm_s24le','pcm_s32le']);
             if (isAudioOnly) {
-                return !badAudio.has(a) && ['audio/mpeg','audio/mp4','audio/aac','audio/ogg','audio/wav','audio/webm'].some(x => mime === x);
+                if (definitelyUnsupportedAudio.has(a)) return false;
+                return ['audio/mpeg','audio/mp4','audio/aac','audio/ogg','audio/webm','audio/wav','audio/flac','audio/opus'].includes(mime) || browserAudio.has(a);
             }
             if (!['video/mp4','video/webm','application/mp4'].includes(mime)) return false;
-            if (badAudio.has(a)) return false;
+            if (definitelyUnsupportedAudio.has(a) || ['ac3','eac3'].includes(a)) return false;
             if (mime === 'video/webm') return ['vp8','vp9','av1'].includes(v || 'vp9');
             return ['h264','avc1','avc','vp9','av1','hevc','h265','hvc1'].includes(v || 'h264');
         }
@@ -6938,8 +6938,30 @@ HTML_DASHBOARD = """
             sSelect.innerHTML = ''; addOption(sSelect, 'off', 'Off');
 
             try {
-                const probeRes = await fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' });
-                const pdata = await probeRes.json();
+                const nativeUrl = buildNativeUrl();
+                playerNativeUrl = nativeUrl;
+
+                // Start the native byte-range request immediately instead of waiting
+                // for ffprobe. This removes probe latency from the critical playback path.
+                // The watchdog/probe can still redirect to FFmpeg for incompatible media.
+                const probePromise = fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' })
+                    .then(r => r.json());
+
+                playerDirectCompatible = true;
+                playerRequiresTranscode = false;
+                if (playerSourceKind === 'tg' || /\.(?:mp4|m4v|webm|mp3|m4a|aac|ogg|wav|flac|opus)(?:\?|$)/i.test(link) || /(?:drive\.google\.com\/file\/|gofile\.io\/d\/|buzzheavier\.com\/)/i.test(link)) {
+                    const fallbackParams = new URLSearchParams({
+                        user_id: String(currentUser || ''),
+                        link: activeMediaLink,
+                        quality: 'Original',
+                        transcode: '1'
+                    });
+                    armPlaybackWatchdog(`/api/stream?${fallbackParams.toString()}`, 0);
+                    await setVideoSource(nativeUrl, 0, true);
+                }
+
+                const probeRes = await probePromise;
+                const pdata = probeRes;
                 if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
 
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
@@ -6975,14 +6997,17 @@ HTML_DASHBOARD = """
 
                 playerRequiresTranscode = !playerDirectCompatible;
                 playerTimelineOffset = 0;
-                const nativeUrl = buildNativeUrl();
-                playerNativeUrl = nativeUrl;
                 const ffmpegUrl = buildStreamUrl(0);
 
                 if (playerDirectCompatible) {
                     console.log('⚡ Route: native/range proxy', playerSourceKind);
-                    armPlaybackWatchdog(ffmpegUrl, 0);
-                    await setVideoSource(nativeUrl, 0, true);
+                    disarmPlaybackWatchdog();
+                    // If optimistic native playback already started, keep it.
+                    // Otherwise this is the fallback native load.
+                    const videoNow = document.getElementById('hidden-video');
+                    if (!videoNow || videoNow.src !== window.location.origin + nativeUrl) {
+                        await setVideoSource(nativeUrl, 0, true);
+                    }
                 } else {
                     console.log('🛡️ Route: FFmpeg compatibility pipeline');
                     await setVideoSource(ffmpegUrl, 0, true);
@@ -7963,38 +7988,92 @@ async def _api_spectrogram_web_handler(request):
 # ==============================================================================
 
 DIRECT_URL_CACHE = {}
-DIRECT_URL_CACHE_TTL = 300
+DIRECT_URL_CACHE_TTL = 900
+DIRECT_RESOLVE_LOCKS = defaultdict(asyncio.Lock)
+DIRECT_HEADER_CACHE = {}
+DIRECT_HTTP_SESSION = None
+DIRECT_HTTP_SESSION_LOCK = asyncio.Lock()
+
+async def _get_direct_http_session():
+    """Shared HTTP client with keep-alive/DNS reuse for direct media hosts."""
+    global DIRECT_HTTP_SESSION
+    if DIRECT_HTTP_SESSION is not None and not DIRECT_HTTP_SESSION.closed:
+        return DIRECT_HTTP_SESSION
+    async with DIRECT_HTTP_SESSION_LOCK:
+        if DIRECT_HTTP_SESSION is None or DIRECT_HTTP_SESSION.closed:
+            connector = aiohttp.TCPConnector(
+                limit=64,
+                limit_per_host=12,
+                ttl_dns_cache=300,
+                keepalive_timeout=30,
+                enable_cleanup_closed=True,
+            )
+            timeout = aiohttp.ClientTimeout(
+                total=None,
+                connect=15,
+                sock_connect=15,
+                sock_read=120,
+            )
+            DIRECT_HTTP_SESSION = aiohttp.ClientSession(
+                connector=connector,
+                timeout=timeout,
+                headers={
+                    "User-Agent": "Mozilla/5.0",
+                    "Accept-Encoding": "identity",
+                },
+            )
+    return DIRECT_HTTP_SESSION
+
+
+async def _close_direct_http_session():
+    global DIRECT_HTTP_SESSION
+    session = DIRECT_HTTP_SESSION
+    DIRECT_HTTP_SESSION = None
+    if session is not None and not session.closed:
+        try:
+            await session.close()
+        except Exception:
+            pass
+
 
 async def resolve_direct_link(url):
-    """Resolve common file-host pages to a stream URL without requiring HEAD support."""
+    """Resolve common file-host pages to a stream URL, with coalesced/cached resolution."""
     original = str(url or '').strip()
     if not original:
         return original
+
     now = time.time()
     cached = DIRECT_URL_CACHE.get(original)
     if cached and cached[1] > now:
         return cached[0]
 
-    import re, aiohttp
-    result = original
+    lock = DIRECT_RESOLVE_LOCKS[original]
+    async with lock:
+        now = time.time()
+        cached = DIRECT_URL_CACHE.get(original)
+        if cached and cached[1] > now:
+            return cached[0]
 
-    # Google Drive worker/direct endpoint.
-    gdrive_match = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", original)
-    if gdrive_match:
-        result = f"https://gdrive-dd.bypased.workers.dev/direct.aspx?id={gdrive_match.group(1)}"
+        import re
+        result = original
+        session = await _get_direct_http_session()
 
-    # GoFile API.
-    if result == original:
-        gofile_match = re.search(r"gofile\.io/d/([a-zA-Z0-9]+)", original)
-        if gofile_match:
-            try:
-                timeout = aiohttp.ClientTimeout(total=15)
-                async with aiohttp.ClientSession(timeout=timeout) as s:
-                    async with s.post("https://api.gofile.io/accounts") as r:
+        # Google Drive worker/direct endpoint.
+        gdrive_match = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", original)
+        if gdrive_match:
+            result = f"https://gdrive-dd.bypased.workers.dev/direct.aspx?id={gdrive_match.group(1)}"
+
+        # GoFile API. The whole operation is cached, so repeat playback does not
+        # create a new GoFile account/token unnecessarily.
+        if result == original:
+            gofile_match = re.search(r"gofile\.io/d/([a-zA-Z0-9]+)", original)
+            if gofile_match:
+                try:
+                    async with session.post("https://api.gofile.io/accounts") as r:
                         token_data = await r.json(content_type=None)
                     token = ((token_data.get('data') or {}).get('token') or '').strip()
                     if token:
-                        async with s.get(
+                        async with session.get(
                             f"https://api.gofile.io/contents/{gofile_match.group(1)}?wt=4fd6sg89d7s6",
                             headers={"Authorization": f"Bearer {token}"},
                         ) as r:
@@ -8003,79 +8082,88 @@ async def resolve_direct_link(url):
                             if item.get('type') == 'file' and item.get('link'):
                                 result = item['link']
                                 break
-            except Exception as exc:
-                logger.warning(f"GoFile resolve failed: {exc}")
+                except Exception as exc:
+                    logger.warning(f"GoFile resolve failed: {exc}")
 
-    # Buzzheavier: accept direct media hrefs, download buttons, or source URLs.
-    if result == original:
-        buzz_match = re.search(r"buzzheavier\.com/([a-zA-Z0-9]+)", original)
-        if buzz_match:
-            try:
-                timeout = aiohttp.ClientTimeout(total=15)
-                headers = {"User-Agent": "Mozilla/5.0", "Accept": "text/html,application/xhtml+xml"}
-                async with aiohttp.ClientSession(timeout=timeout) as s:
-                    async with s.get(original, headers=headers, allow_redirects=True) as r:
+        # Buzzheavier page/direct URL resolver.
+        if result == original:
+            buzz_match = re.search(r"buzzheavier\.com/([a-zA-Z0-9]+)", original)
+            if buzz_match:
+                try:
+                    async with session.get(
+                        original,
+                        headers={"Accept": "text/html,application/xhtml+xml"},
+                        allow_redirects=True,
+                    ) as r:
                         html_text = await r.text(errors='ignore')
-                patterns = [
-                    r'href=["\'](https://[^"\']+\.(?:mp4|mkv|webm|m4v|mp3|m4a|flac)(?:\?[^"\']*)?)["\']',
-                    r'(https://[^\"\']+buzzheavier[^\"\']+)',
-                ]
-                for pat in patterns:
-                    m = re.search(pat, html_text, re.I)
-                    if m:
-                        result = m.group(1).replace('&amp;', '&')
-                        break
-            except Exception as exc:
-                logger.warning(f"Buzzheavier resolve failed: {exc}")
+                    patterns = [
+                        r'href=["\'](https://[^"\']+\.(?:mp4|mkv|webm|m4v|mp3|m4a|flac|opus)(?:\?[^"\']*)?)["\']',
+                        r'(https://[^"\']+buzzheavier[^"\']+)',
+                    ]
+                    for pat in patterns:
+                        m = re.search(pat, html_text, re.I)
+                        if m:
+                            result = m.group(1).replace('&amp;', '&')
+                            break
+                except Exception as exc:
+                    logger.warning(f"Buzzheavier resolve failed: {exc}")
 
-    # Final fallback: GET one byte instead of HEAD. A surprising number of CDNs
-    # reject HEAD while accepting normal ranged GETs.
-    if result == original:
-        try:
-            timeout = aiohttp.ClientTimeout(total=8, connect=5, sock_read=8)
-            async with aiohttp.ClientSession(timeout=timeout) as s:
-                async with s.get(
+        # Last resort: a single ranged GET resolves redirects and captures useful
+        # headers for the upcoming probe, avoiding a second discovery request.
+        if result == original:
+            try:
+                async with session.get(
                     original,
-                    headers={"User-Agent": "Mozilla/5.0", "Range": "bytes=0-0", "Accept-Encoding": "identity"},
+                    headers={"Range": "bytes=0-0"},
                     allow_redirects=True,
                 ) as r:
                     result = str(r.url)
-        except Exception:
-            result = original
+                    DIRECT_HEADER_CACHE[original] = {
+                        "content_type": r.headers.get("Content-Type", "").split(';')[0],
+                        "content_length": r.headers.get("Content-Length"),
+                        "content_range": r.headers.get("Content-Range"),
+                        "accept_ranges": r.headers.get("Accept-Ranges"),
+                        "content_disposition": r.headers.get("Content-Disposition", ""),
+                    }
+            except Exception:
+                result = original
 
-    DIRECT_URL_CACHE[original] = (result, now + DIRECT_URL_CACHE_TTL)
-    if len(DIRECT_URL_CACHE) > 256:
-        oldest = min(DIRECT_URL_CACHE.items(), key=lambda kv: kv[1][1])[0]
-        DIRECT_URL_CACHE.pop(oldest, None)
-    return result
+        DIRECT_URL_CACHE[original] = (result, now + DIRECT_URL_CACHE_TTL)
+        if len(DIRECT_URL_CACHE) > 512:
+            oldest = min(DIRECT_URL_CACHE.items(), key=lambda kv: kv[1][1])[0]
+            DIRECT_URL_CACHE.pop(oldest, None)
+        if len(DIRECT_HEADER_CACHE) > 512:
+            oldest = next(iter(DIRECT_HEADER_CACHE))
+            DIRECT_HEADER_CACHE.pop(oldest, None)
+        return result
 
 
 async def _direct_upstream_request(url, request):
-    """Open a direct HTTP media source while preserving Range semantics."""
+    """Open a direct HTTP source through the shared keep-alive session."""
     resolved = await resolve_direct_link(url)
+    session = await _get_direct_http_session()
     req_headers = {
         "User-Agent": request.headers.get("User-Agent", "Mozilla/5.0"),
         "Accept": request.headers.get("Accept", "*/*"),
         "Accept-Encoding": "identity",
-        "Connection": "keep-alive",
     }
-    if request.headers.get("Range"):
-        req_headers["Range"] = request.headers["Range"]
-    if request.headers.get("Referer"):
-        req_headers["Referer"] = request.headers["Referer"]
+    for header in (
+        "Range", "Referer", "Origin", "If-Range", "If-Modified-Since", "If-None-Match",
+    ):
+        value = request.headers.get(header)
+        if value:
+            req_headers[header] = value
 
-    timeout = aiohttp.ClientTimeout(total=None, connect=15, sock_connect=15, sock_read=120)
-    session = aiohttp.ClientSession(timeout=timeout)
-    try:
-        resp = await session.get(resolved, headers=req_headers, allow_redirects=True)
-        return session, resp, resolved
-    except Exception:
-        await session.close()
-        raise
+    resp = await session.get(
+        resolved,
+        headers=req_headers,
+        allow_redirects=True,
+    )
+    return session, resp, resolved
 
 
 async def _api_direct_stream_handler(request):
-    """Native direct-link proxy with full HTTP Range support."""
+    """Native direct-link proxy with full HTTP Range support and keep-alive reuse."""
     url = request.query.get("url", "").strip()
     if not url or not url.lower().startswith(("http://", "https://")):
         return web.Response(status=400, text="Invalid direct media URL")
@@ -8092,13 +8180,17 @@ async def _api_direct_stream_handler(request):
     out_headers = {k: remote.headers[k] for k in copy_headers if remote.headers.get(k) is not None}
     out_headers.setdefault("Content-Type", "application/octet-stream")
     out_headers["Access-Control-Allow-Origin"] = "*"
-    out_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, ETag, Last-Modified"
-    out_headers["Cache-Control"] = remote.headers.get("Cache-Control", "public, max-age=300")
+    out_headers["Access-Control-Expose-Headers"] = (
+        "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, "
+        "ETag, Last-Modified, Cache-Control"
+    )
+    if "Cache-Control" not in out_headers:
+        out_headers["Cache-Control"] = "public, max-age=300"
 
     response = web.StreamResponse(status=remote.status, headers=out_headers)
     try:
         await response.prepare(request)
-        async for chunk in remote.content.iter_chunked(256 * 1024):
+        async for chunk in remote.content.iter_chunked(1024 * 1024):
             if chunk:
                 await response.write(chunk)
         await response.write_eof()
@@ -8109,13 +8201,17 @@ async def _api_direct_stream_handler(request):
         logger.debug(f"Direct stream disconnect/error: {exc}")
         return response
     finally:
-        try: remote.close()
-        finally: await session.close()
-
+        try:
+            remote.release()
+        except Exception:
+            try:
+                remote.close()
+            except Exception:
+                pass
 
 
 MEDIA_META_CACHE = {}
-MEDIA_META_TTL = 300
+MEDIA_META_TTL = 600
 MEDIA_META_LOCKS = defaultdict(asyncio.Lock)
 
 
@@ -8131,45 +8227,160 @@ def _guess_filename_from_url(url, fallback="Direct_Stream_Media"):
         return fallback
 
 
-def _guess_browser_compatibility(mime_type, filename, streams):
-    mime = (mime_type or '').lower().split(';')[0]
-    ext = Path(str(filename or '')).suffix.lower()
-    videos = [s for s in streams if s.get('codec_type') == 'video']
-    audios = [s for s in streams if s.get('codec_type') == 'audio']
-    vc = (videos[0].get('codec_name') if videos else '').lower()
-    ac = (audios[0].get('codec_name') if audios else '').lower()
-    bad_audio = {'ac3','eac3','dts','truehd','flac','opus'}
-    if audios and ac in bad_audio:
-        return False
-    if not videos:
-        return mime in {'audio/mpeg','audio/mp4','audio/aac','audio/ogg','audio/webm','audio/wav'} and ac not in bad_audio
-    if mime in {'video/webm'}:
-        return vc in {'vp8','vp9','av1'}
-    if ext in {'.mp4','.m4v'} or mime in {'video/mp4','application/mp4'}:
-        return vc in {'h264','avc','avc1','hevc','h265','hvc1','vp9','av1'} and ac not in bad_audio
-    return False
+async def _run_ffprobe_json(input_url, fast=True):
+    """Fast probe first; retry with a larger probe only when the small probe fails."""
+    probe_pairs = ((2 * 1024 * 1024, 1024 * 1024), (8 * 1024 * 1024, 4 * 1024 * 1024)) if fast else ((8 * 1024 * 1024, 4 * 1024 * 1024),)
+    last_error = None
+    for probesize, analyzeduration in probe_pairs:
+        cmd = [
+            "ffprobe", "-v", "error", "-hide_banner",
+            "-user_agent", "Mozilla/5.0",
+            "-rw_timeout", "6000000",
+            "-probesize", str(probesize),
+            "-analyzeduration", str(analyzeduration),
+            "-show_entries",
+            "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
+            "stream_tags=language,title,handler_name:stream_disposition=default,forced",
+            "-of", "json", input_url,
+        ]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                cmd[0], *cmd[1:],
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, stderr = await proc.communicate()
+            if proc.returncode == 0 and stdout:
+                return json.loads(stdout.decode('utf-8', errors='ignore') or '{}')
+            last_error = stderr.decode('utf-8', errors='ignore').strip() or 'ffprobe failed'
+        except Exception as exc:
+            last_error = str(exc)
+    raise RuntimeError(last_error or 'ffprobe failed')
 
 
-async def _run_ffprobe_json(input_url):
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-hide_banner",
-        "-user_agent", "Mozilla/5.0",
-        "-rw_timeout", "8000000",
-        "-probesize", "4M", "-analyzeduration", "2M",
-        "-show_entries",
-        "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:stream_tags=language,title,handler_name:stream_disposition=default,forced",
-        "-of", "json", input_url,
-    ]
-    proc = await asyncio.create_subprocess_exec(cmd[0], *cmd[1:], stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    stdout, stderr = await proc.communicate()
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode('utf-8', errors='ignore').strip() or 'ffprobe failed')
-    return json.loads(stdout.decode('utf-8', errors='ignore') or '{}')
+# ------------------------------------------------------------------------------
+# Telegram access/pool cache. This avoids probing every bot for every Range
+# request while still allowing automatic fallback to the logged-in user session.
+# ------------------------------------------------------------------------------
+TG_ACCESS_CACHE = {}
+TG_ACCESS_CACHE_TTL = 120
+TG_ACCESS_LOCKS = defaultdict(asyncio.Lock)
+
+
+def _tg_client_cache_name(client):
+    return str(getattr(client, "name", None) or id(client))
+
+
+async def _get_user_stream_client(user_id):
+    """Return an already-connected user session, creating it only when required."""
+    uclient = USER_CLIENTS.get(user_id)
+    if uclient and getattr(uclient, "is_connected", False):
+        return uclient, False
+
+    session_str = await db.get_session(user_id)
+    if not session_str:
+        return None, False
+    api_id = await db.get_api_id(user_id) or API_ID
+    api_hash = await db.get_api_hash(user_id) or API_HASH
+    try:
+        uclient = Client(
+            f"User_{user_id}",
+            session_string=session_str,
+            api_id=api_id,
+            api_hash=api_hash,
+            workers=4,
+            no_updates=True,
+            ipv6=False,
+        )
+        await uclient.start()
+        USER_CLIENTS[user_id] = uclient
+        return uclient, False
+    except Exception as exc:
+        logger.warning(f"User streaming session start failed: {exc}")
+        return None, False
+
+
+async def _probe_tg_client(client, chat_id, msg_id):
+    try:
+        await get_client_msg(client, chat_id, msg_id)
+        return client
+    except Exception:
+        return None
+
+
+async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
+    """Return accessible bot clients first, then one user-session fallback."""
+    key = (chat_id, int(msg_id))
+    cached = TG_ACCESS_CACHE.get(key)
+    now = time.time()
+    if cached and cached[1] > now:
+        pool = [c for c in cached[0] if getattr(c, "is_connected", True)]
+        if pool:
+            return pool, False
+
+    lock = TG_ACCESS_LOCKS[key]
+    async with lock:
+        cached = TG_ACCESS_CACHE.get(key)
+        if cached and cached[1] > time.time():
+            pool = [c for c in cached[0] if getattr(c, "is_connected", True)]
+            if pool:
+                return pool, False
+
+        candidates = []
+        seen = set()
+        for client in [app] + list(MULTI_BOT_CLIENTS):
+            if client is None or not getattr(client, "is_connected", True):
+                continue
+            marker = _tg_client_cache_name(client)
+            if marker in seen:
+                continue
+            seen.add(marker)
+            candidates.append(client)
+
+        pool = []
+        if candidates:
+            results = await asyncio.gather(
+                *[asyncio.wait_for(_probe_tg_client(c, chat_id, msg_id), timeout=4) for c in candidates],
+                return_exceptions=True,
+            )
+            for result in results:
+                if result is not None and not isinstance(result, Exception):
+                    pool.append(result)
+
+        if pool:
+            TG_ACCESS_CACHE[key] = (pool, time.time() + TG_ACCESS_CACHE_TTL)
+            return pool, False
+
+        if fallback_client is not None and getattr(fallback_client, "is_connected", False):
+            user_client = fallback_client
+        else:
+            user_client, _ = await _get_user_stream_client(user_id)
+
+        if user_client is not None:
+            if await _probe_tg_client(user_client, chat_id, msg_id):
+                TG_ACCESS_CACHE[key] = ([user_client], time.time() + 30)
+                return [user_client], True
+
+        return [], False
+
+
+async def _invalidate_tg_access(chat_id, msg_id, client=None):
+    key = (chat_id, int(msg_id))
+    cached = TG_ACCESS_CACHE.get(key)
+    if not cached:
+        return
+    if client is None:
+        TG_ACCESS_CACHE.pop(key, None)
+        return
+    pool = [c for c in cached[0] if c is not client]
+    if pool:
+        TG_ACCESS_CACHE[key] = (pool, time.time() + min(TG_ACCESS_CACHE_TTL, 30))
+    else:
+        TG_ACCESS_CACHE.pop(key, None)
 
 
 async def _api_media_probe_handler(request):
-    """Metadata probe with caching and a direct HTTP range-probe fallback."""
+    """Metadata probe with caching and fast native-path friendly fallbacks."""
     try:
         user_id = int(request.query.get("user_id", 0))
     except Exception:
@@ -8179,9 +8390,8 @@ async def _api_media_probe_handler(request):
         return web.json_response({"status": "error", "message": "Link required"}, status=400)
 
     cache_key = _media_cache_key(user_id, link)
-    now = time.time()
     cached = MEDIA_META_CACHE.get(cache_key)
-    if cached and cached[1] > now:
+    if cached and cached[1] > time.time():
         return web.json_response(cached[0])
 
     lock = MEDIA_META_LOCKS[cache_key]
@@ -8204,21 +8414,10 @@ async def _api_media_probe_handler(request):
                 msg_id = parsed.get("msg_id")
                 if chat_id is None or msg_id is None:
                     return web.json_response({"status": "error", "message": "Invalid Telegram link"}, status=400)
-
-                uclient = USER_CLIENTS.get(user_id)
-                if not uclient or not uclient.is_connected:
-                    session_str = await db.get_session(user_id)
-                    if session_str:
-                        api_id = await db.get_api_id(user_id) or API_ID
-                        api_hash = await db.get_api_hash(user_id) or API_HASH
-                        uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-                        uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
-                        await uclient.start()
-                        USER_CLIENTS[user_id] = uclient
-                    else:
-                        uclient = app
-
-                msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
+                pool, user_fallback = await _get_working_tg_pool(user_id, chat_id, msg_id)
+                if not pool:
+                    return web.json_response({"status": "error", "message": "Telegram file is not accessible"}, status=403)
+                msg = await get_client_msg(pool[0], chat_id, msg_id)
                 media = msg.document or msg.video or msg.audio
                 if not media:
                     return web.json_response({"status": "error", "message": "No media found"}, status=404)
@@ -8227,40 +8426,33 @@ async def _api_media_probe_handler(request):
                 actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
             else:
                 actual_url = await resolve_direct_link(link)
-                real_file_name = _guess_filename_from_url(actual_url)
-                # Pull headers/redirect destination with a single ranged GET.
-                try:
-                    timeout = aiohttp.ClientTimeout(total=10, connect=5, sock_read=8)
-                    async with aiohttp.ClientSession(timeout=timeout) as session:
-                        async with session.get(actual_url, headers={"User-Agent":"Mozilla/5.0", "Range":"bytes=0-0", "Accept-Encoding":"identity"}, allow_redirects=True) as resp:
-                            actual_url = str(resp.url)
-                            mime_type = resp.headers.get("Content-Type", mime_type).split(';')[0]
-                            cd = resp.headers.get("Content-Disposition", "")
-                            if cd:
-                                m = re.search(r"filename\\*=UTF-8''([^;]+)", cd, re.I)
-                                if m: real_file_name = unquote(m.group(1).strip().strip('"'))
-                                else:
-                                    m = re.search(r"filename=\"?([^\";]+)", cd, re.I)
-                                    if m: real_file_name = m.group(1).strip()
-                except Exception:
-                    pass
+                real_file_name = _guess_filename_from_url(actual_url, _guess_filename_from_url(link, "Direct_Stream_Media"))
+                cached_headers = DIRECT_HEADER_CACHE.get(link) or DIRECT_HEADER_CACHE.get(actual_url)
+                if cached_headers:
+                    mime_type = cached_headers.get("content_type") or mime_type
+                    cd = cached_headers.get("content_disposition", "")
+                    if cd:
+                        m = re.search(r"filename\\*=UTF-8''([^;]+)", cd, re.I)
+                        if m:
+                            real_file_name = unquote(m.group(1).strip().strip('"'))
+                        else:
+                            m = re.search(r"filename=\"?([^\";]+)", cd, re.I)
+                            if m:
+                                real_file_name = m.group(1).strip()
 
             probe_input = actual_url
             if not is_tg:
-                # Probe through our own range proxy. This fixes hosts that return EOF\n                # when ffprobe accesses their redirected URL directly.
                 probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
 
             try:
-                pdata = await _run_ffprobe_json(probe_input)
+                pdata = await _run_ffprobe_json(probe_input, fast=True)
                 streams = pdata.get("streams", []) or []
                 try:
                     duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
                 except Exception:
                     duration_val = 0.0
             except Exception as probe_exc:
-                # A host can be perfectly streamable while refusing ffprobe. Do not
-                # make the whole player fail in that case; fall back to extension/mime.
-                logger.warning(f"Media probe fallback for {link[:120]}: {probe_exc}")
+                logger.debug(f"Media probe fallback for {link[:120]}: {probe_exc}")
                 streams = []
                 duration_val = 0.0
 
@@ -8268,17 +8460,24 @@ async def _api_media_probe_handler(request):
             audios = [s for s in streams if s.get("codec_type") == "audio"]
             subs = [s for s in streams if s.get("codec_type") == "subtitle"]
             filename_lower = str(real_file_name).lower()
-            is_audio = bool(audios and not videos) or filename_lower.endswith((".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus"))
+            is_audio = bool(audios and not videos) or filename_lower.endswith((
+                ".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus"
+            ))
 
             qualities = ["Original"]
             if not is_audio:
                 height = int((videos[0].get("height") or 0)) if videos else 0
                 width = int((videos[0].get("width") or 0)) if videos else 0
-                if height >= 2160 or width >= 3840: qualities.extend(["4K","1080p","720p","480p","360p"])
-                elif height >= 1080 or width >= 1920: qualities.extend(["1080p","720p","480p","360p"])
-                elif height >= 720: qualities.extend(["720p","480p","360p"])
-                elif height >= 480: qualities.extend(["480p","360p"])
-                else: qualities.append("360p")
+                if height >= 2160 or width >= 3840:
+                    qualities.extend(["4K", "1080p", "720p", "480p", "360p"])
+                elif height >= 1080 or width >= 1920:
+                    qualities.extend(["1080p", "720p", "480p", "360p"])
+                elif height >= 720:
+                    qualities.extend(["720p", "480p", "360p"])
+                elif height >= 480:
+                    qualities.extend(["480p", "360p"])
+                else:
+                    qualities.append("360p")
 
             audio_tracks = []
             for i, st in enumerate(audios):
@@ -8311,8 +8510,11 @@ async def _api_media_probe_handler(request):
                 ext = Path(filename_lower).suffix
                 mime_guess = mime_type.lower().split(';')[0]
                 browser_compatible = (
-                    ext in {".mp4", ".m4v", ".webm", ".mp3", ".m4a", ".aac", ".ogg", ".wav"}
-                    or mime_guess in {"video/mp4", "video/webm", "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg", "audio/webm", "audio/wav"}
+                    ext in {".mp4", ".m4v", ".webm", ".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus"}
+                    or mime_guess in {
+                        "video/mp4", "video/webm", "application/mp4", "audio/mpeg", "audio/mp4",
+                        "audio/aac", "audio/ogg", "audio/webm", "audio/wav", "audio/flac", "audio/opus"
+                    }
                 )
 
             result = {
@@ -8333,15 +8535,17 @@ async def _api_media_probe_handler(request):
                 "streams": streams,
             }
             MEDIA_META_CACHE[cache_key] = (result, time.time() + MEDIA_META_TTL)
+            if len(MEDIA_META_CACHE) > 512:
+                oldest = min(MEDIA_META_CACHE.items(), key=lambda kv: kv[1][1])[0]
+                MEDIA_META_CACHE.pop(oldest, None)
             return web.json_response(result)
         except Exception as exc:
             logger.exception("Media probe failed")
             return web.json_response({"status": "error", "message": str(exc)}, status=502)
 
 
-
 async def _api_stream_handler(request):
-    """Adaptive stream pipeline: remux/copy whenever possible, transcode only when required."""
+    """Adaptive stream pipeline: native redirect first, minimal FFmpeg fallback."""
     try:
         user_id = int(request.query.get("user_id", 0))
     except Exception:
@@ -8360,7 +8564,6 @@ async def _api_stream_handler(request):
     mime_type = "video/mp4"
     filename = "media"
     is_audio = False
-    video_codec = ""
 
     try:
         if is_tg:
@@ -8369,18 +8572,10 @@ async def _api_stream_handler(request):
             msg_id = parsed.get("msg_id")
             if chat_id is None or msg_id is None:
                 return web.Response(status=400, text="Invalid Telegram link")
-            uclient = USER_CLIENTS.get(user_id)
-            if not uclient or not uclient.is_connected:
-                session_str = await db.get_session(user_id)
-                if session_str:
-                    api_id = await db.get_api_id(user_id) or API_ID
-                    api_hash = await db.get_api_hash(user_id) or API_HASH
-                    uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-                    await uclient.start()
-                    USER_CLIENTS[user_id] = uclient
-                else:
-                    uclient = app
-            msg = await uclient.get_messages(int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id, msg_id)
+            pool, _ = await _get_working_tg_pool(user_id, chat_id, msg_id)
+            if not pool:
+                return web.Response(status=403, text="Telegram source is not accessible")
+            msg = await get_client_msg(pool[0], chat_id, msg_id)
             media = msg.document or msg.video or msg.audio
             if not media:
                 return web.Response(status=404, text="Media not found")
@@ -8393,30 +8588,42 @@ async def _api_stream_handler(request):
             filename = _guess_filename_from_url(actual_url, "direct_media").lower()
             lower = actual_url.lower().split('?', 1)[0]
             is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac|wma|opus)$", lower))
-            mime_type = "audio/mpeg" if filename.endswith('.mp3') else ("audio/mp4" if filename.endswith(('.m4a','.aac')) else ("video/webm" if filename.endswith('.webm') else "video/mp4"))
+            mime_type = "audio/mpeg" if filename.endswith('.mp3') else (
+                "audio/mp4" if filename.endswith(('.m4a','.aac')) else (
+                    "audio/ogg" if filename.endswith('.ogg') else (
+                        "audio/wav" if filename.endswith('.wav') else (
+                            "audio/flac" if filename.endswith('.flac') else (
+                                "audio/opus" if filename.endswith('.opus') else (
+                                    "video/webm" if filename.endswith('.webm') else "video/mp4"
+                                )
+                            )
+                        )
+                    )
+                )
+            )
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
-    # Original + default track should stay on native/range proxy. Normally the
-    # browser never enters this function for that case, but keep a safe fast path.
+    # Always keep the browser on the byte-range path for the original/default
+    # stream. FFmpeg is reserved for explicit track/quality selection or codecs
+    # which the browser cannot decode directly.
     if quality == "Original" and (audio_idx is None or str(audio_idx).strip() == "") and not force_transcode:
-        if is_tg and not is_audio and filename.endswith('.mp4'):
-            raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}")
-        if not is_tg:
-            raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}")
+        if is_tg:
+            raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}")
+        raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}")
 
-    # For explicit audio-track selection at Original quality, prefer copying audio
-    # if the codec is already browser-friendly. Video is also copied. Conversion is
-    # used only when quality scaling or incompatible codecs require it.
+    # For video MP4 output, only copy audio codecs that are reliably muxable
+    # without forcing an incompatible MP4 audio track. Browser-incompatible
+    # tracks still get a small AAC transcode while the original video is copied.
     copy_audio = audio_codec in {'aac', 'mp3'} or (audio_idx is None and quality == 'Original')
-    copy_video = quality == 'Original'
+    copy_video = quality == "Original"
     res_scale_map = {"4K":"3840:-2", "1080p":"1920:-2", "720p":"1280:-2", "480p":"854:-2", "360p":"640:-2"}
     scale_filter = res_scale_map.get(quality)
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0",
-        "-rw_timeout", "15000000",
+        "-rw_timeout", "12000000",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
         "-probesize", "2M", "-analyzeduration", "1M",
         "-fflags", "+nobuffer+flush_packets",
@@ -8454,7 +8661,11 @@ async def _api_stream_handler(request):
         if copy_video and not scale_filter:
             cmd += ["-c:v", "copy"]
         else:
-            cmd += ["-vf", f"scale={scale_filter or 'trunc(iw/2)*2:trunc(ih/2)*2'}", "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-pix_fmt", "yuv420p"]
+            cmd += [
+                "-vf", f"scale={scale_filter or 'trunc(iw/2)*2:trunc(ih/2)*2'}",
+                "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
+                "-pix_fmt", "yuv420p", "-threads", "0",
+            ]
 
         if copy_audio:
             cmd += ["-c:a", "copy"]
@@ -8463,7 +8674,11 @@ async def _api_stream_handler(request):
 
         cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
@@ -8475,7 +8690,7 @@ async def _api_stream_handler(request):
 
     try:
         while True:
-            buf = await proc.stdout.read(128 * 1024)
+            buf = await proc.stdout.read(512 * 1024)
             if not buf:
                 break
             await response.write(buf)
@@ -8490,6 +8705,332 @@ async def _api_stream_handler(request):
             pass
     return response
 
+
+CLIENT_MSG_CACHE = {}
+CLIENT_MSG_CACHE_MAX = 2048
+CLIENT_MSG_LOCKS = defaultdict(asyncio.Lock)
+
+
+async def get_client_msg(client, chat_id, msg_id):
+    """Cache Telegram messages and coalesce simultaneous metadata requests."""
+    key = (id(client), chat_id, int(msg_id))
+    cached = CLIENT_MSG_CACHE.get(key)
+    if cached is not None:
+        return cached
+    lock = CLIENT_MSG_LOCKS[key]
+    async with lock:
+        cached = CLIENT_MSG_CACHE.get(key)
+        if cached is not None:
+            return cached
+        msg = await client.get_messages(chat_id, msg_id)
+        if getattr(msg, "empty", True) or not (msg.document or msg.video or msg.audio):
+            raise ValueError(f"Empty Message for client {getattr(client, 'name', 'Unknown')}")
+        CLIENT_MSG_CACHE[key] = msg
+        if len(CLIENT_MSG_CACHE) > CLIENT_MSG_CACHE_MAX:
+            try:
+                CLIENT_MSG_CACHE.pop(next(iter(CLIENT_MSG_CACHE)))
+            except Exception:
+                pass
+        return msg
+
+
+async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
+    """Fetch a precise aligned Telegram chunk with short transient retries."""
+    ALIGNMENT = 4096
+    aligned_offset = (max(0, int(offset)) // ALIGNMENT) * ALIGNMENT
+    target_bytes = max(0, int(limit))
+    if target_bytes <= 0:
+        return b""
+
+    for attempt in range(3):
+        skip_bytes = int(offset) - aligned_offset
+        try:
+            msg = await get_client_msg(client, chat_id, msg_id)
+            data = bytearray()
+            async for chunk in client.stream_media(msg, offset=aligned_offset):
+                if skip_bytes > 0:
+                    if len(chunk) <= skip_bytes:
+                        skip_bytes -= len(chunk)
+                        continue
+                    chunk = chunk[skip_bytes:]
+                    skip_bytes = 0
+                if chunk:
+                    data.extend(chunk)
+                    if len(data) >= target_bytes:
+                        break
+            if not data:
+                raise ValueError("EOF Reached or Empty Chunk")
+            return bytes(data[:target_bytes])
+        except FloodWait as e:
+            logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
+            await asyncio.sleep(e.value + 1)
+        except Exception:
+            if attempt >= 2:
+                raise
+            await asyncio.sleep(0.25 * (attempt + 1))
+    raise TimeoutError("Exceeded max retries for chunk")
+
+
+async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=2 * 1024 * 1024, concurrency=6):
+    """Fast Telegram range generator with cached client selection and split-safe work units."""
+    if total_length <= 0:
+        return
+
+    user_id = 0
+    # The fallback client is already scoped to the current user session when one
+    # exists. Pool discovery uses app + worker bots first and falls back to that
+    # user session only when no bot can read the file.
+    if fallback_client in USER_CLIENTS.values():
+        for uid, candidate in USER_CLIENTS.items():
+            if candidate is fallback_client:
+                user_id = uid
+                break
+
+    try:
+        pool, is_user_session = await _get_working_tg_pool(user_id, chat_id, msg_parts[0]["msg_id"], fallback_client=fallback_client)
+    except Exception:
+        pool, is_user_session = ([fallback_client] if fallback_client else [app]), bool(fallback_client and fallback_client is not app)
+
+    if not pool:
+        pool = [fallback_client or app]
+        is_user_session = bool(fallback_client and fallback_client is not app)
+
+    if is_user_session:
+        safe_concurrency = 1
+    else:
+        requested = max(1, int(os.environ.get("TG_STREAM_CONCURRENCY", str(concurrency))))
+        safe_concurrency = min(requested, len(pool))
+
+    # Build precise units that never cross split-file boundaries.
+    range_start = int(start_byte)
+    range_end = range_start + int(total_length)
+    units = []
+    for part in msg_parts:
+        p_start = int(part["start"])
+        p_end = int(part["end"])
+        if p_end <= range_start or p_start >= range_end:
+            continue
+        cursor = max(range_start, p_start)
+        limit_end = min(range_end, p_end)
+        while cursor < limit_end:
+            take = min(int(chunk_size), limit_end - cursor)
+            units.append((part, cursor - p_start, take))
+            cursor += take
+
+    if not units:
+        return
+
+    if safe_concurrency == 1:
+        client = pool[0]
+        for part, internal_offset, internal_limit in units:
+            try:
+                yield await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
+            except Exception:
+                await _invalidate_tg_access(chat_id, part["msg_id"], client)
+                raise
+        return
+
+    # Multi-bot path. Each batch is fetched in parallel but yielded in source
+    # order so the HTTP byte stream remains perfectly ordered.
+    cursor = 0
+    while cursor < len(units):
+        batch = units[cursor:cursor + safe_concurrency]
+
+        async def _fetch_with_failover(unit_idx, unit):
+            part, internal_offset, internal_limit = unit
+            preferred = pool[unit_idx % len(pool)]
+            candidates = [preferred] + [c for c in pool if c is not preferred]
+            last_exc = None
+            for client in candidates:
+                try:
+                    return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
+                except Exception as exc:
+                    last_exc = exc
+                    await _invalidate_tg_access(chat_id, part["msg_id"], client)
+            raise last_exc or RuntimeError("Telegram chunk fetch failed")
+
+        results = await asyncio.gather(
+            *[_fetch_with_failover(i, unit) for i, unit in enumerate(batch)],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                raise result
+            if result:
+                yield result
+        cursor += len(batch)
+
+
+async def _api_tg_stream_handler(request):
+    """High-speed Telegram Range proxy with multi-bot routing, user fallback, split files and ZIP extraction."""
+    try:
+        user_id = int(request.query.get("user_id", 0))
+    except Exception:
+        user_id = 0
+
+    link = request.query.get("link")
+    if link:
+        parsed = _parse_source_link(link)
+        chat_id = parsed.get("chat_id")
+        msg_id = parsed.get("msg_id")
+    else:
+        chat_id = request.query.get("chat_id")
+        msg_id = request.query.get("msg_id")
+
+    if chat_id is None or msg_id is None:
+        return web.Response(status=400, text="Missing chat_id/msg_id or link")
+
+    msg_id = int(msg_id)
+    chat_id = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
+
+    response = None
+    temp_client = None
+    try:
+        # Prefer any bot that can read the file; only create/use the user's
+        # session when all bots are unable to access it.
+        working_pool, using_user_session = await _get_working_tg_pool(user_id, chat_id, msg_id)
+        if not working_pool:
+            return web.Response(status=403, text="Telegram file is not accessible")
+        primary_client = working_pool[0]
+
+        msg = await get_client_msg(primary_client, chat_id, msg_id)
+        media = msg.document or msg.video or msg.audio
+        if not media:
+            return web.Response(status=404)
+
+        filename = str(getattr(media, "file_name", "") or "").lower()
+        mime_type = getattr(media, "mime_type", "application/octet-stream") or "application/octet-stream"
+
+        parts_map = []
+        global_offset = 0
+
+        range_spec = request.query.get("range", "")
+        range_match = re.match(r"^(\d+)-(\d+)$", range_spec)
+
+        if range_match:
+            start_id, end_id = int(range_match.group(1)), int(range_match.group(2))
+            for mid in range(start_id, end_id + 1):
+                try:
+                    m = await get_client_msg(primary_client, chat_id, mid)
+                    doc = m.document or m.video or m.audio
+                    if doc:
+                        psz = int(doc.file_size or 0)
+                        if psz > 0:
+                            parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
+                            global_offset += psz
+                except Exception:
+                    continue
+        else:
+            match = re.search(r'\.(\d{2,3})$', filename)
+            if match and int(match.group(1)) == 1:
+                current_id = msg_id
+                while True:
+                    try:
+                        m = await get_client_msg(primary_client, chat_id, current_id)
+                        doc = m.document or m.video
+                        if not doc:
+                            break
+                        psz = int(doc.file_size or 0)
+                        parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
+                        global_offset += psz
+                        current_id += 1
+                        next_m = await get_client_msg(primary_client, chat_id, current_id)
+                        next_doc = next_m.document or next_m.video
+                        if not next_doc or not re.search(r'\.\d{2,3}$', next_doc.file_name or ""):
+                            break
+                    except Exception:
+                        break
+            else:
+                part_size = int(getattr(media, "file_size", 0) or 0)
+                if part_size <= 0:
+                    return web.Response(status=502, text="Telegram media has no usable file size")
+                parts_map.append({"msg_id": msg_id, "start": 0, "end": part_size, "size": part_size})
+                global_offset = part_size
+
+        if not parts_map:
+            return web.Response(status=404, text="No readable media parts")
+
+        virtual_size = global_offset
+        virtual_data_offset = 0
+        is_zip = filename.endswith(".zip") or ".zip." in filename
+        if is_zip:
+            async def zip_read(off, length):
+                buf = bytearray()
+                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length, concurrency=6):
+                    buf.extend(chunk)
+                    if len(buf) >= length:
+                        break
+                return bytes(buf[:length])
+
+            entry = await resolve_zip_entry(zip_read, virtual_size)
+            if entry and entry["method"] == 0:
+                virtual_size = entry["size"]
+                virtual_data_offset = entry["data_offset"]
+                mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
+
+        if virtual_size <= 0:
+            return web.Response(status=502, text="Invalid virtual media size")
+
+        range_header = request.headers.get("Range", "")
+        start_byte = 0
+        end_byte = virtual_size - 1
+        if range_header:
+            match = re.match(r"bytes=(\d*)-(\d*)", range_header)
+            if match:
+                first, last = match.group(1), match.group(2)
+                if first:
+                    start_byte = int(first)
+                    if last:
+                        end_byte = min(int(last), virtual_size - 1)
+                elif last:
+                    suffix_len = int(last)
+                    if suffix_len > 0:
+                        start_byte = max(0, virtual_size - suffix_len)
+                        end_byte = virtual_size - 1
+
+        if start_byte < 0 or start_byte >= virtual_size or end_byte < start_byte:
+            return web.Response(status=416, headers={"Content-Range": f"bytes */{virtual_size}"})
+
+        chunk_len = end_byte - start_byte + 1
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(chunk_len),
+            "Content-Type": mime_type,
+            "Content-Range": f"bytes {start_byte}-{end_byte}/{virtual_size}",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Type",
+            "Cache-Control": "no-store",
+        }
+
+        response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
+        await response.prepare(request)
+
+        adjusted_start = start_byte + virtual_data_offset
+        try:
+            async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6):
+                await response.write(chunk)
+            await response.write_eof()
+        except (ConnectionResetError, asyncio.CancelledError):
+            raise
+        except Exception as exc:
+            logger.debug(f"Telegram stream disconnect/error: {exc}")
+        return response
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.exception(f"Telegram stream failed: {exc}")
+        if response is None:
+            return web.Response(status=502, text="Telegram stream failed")
+        return response
+    finally:
+        # This handler now reuses persistent user clients; no temporary user
+        # connection is created for normal streaming.
+        if temp_client is not None:
+            try:
+                await temp_client.disconnect()
+            except Exception:
+                pass
 
 
 SUBTITLE_CACHE = {}
@@ -8991,6 +9532,7 @@ async def init_worker_bots():
         try: await c.stop()
         except Exception: pass
     MULTI_BOT_CLIENTS.clear()
+    TG_ACCESS_CACHE.clear()
 
     doc = await db.db.config.find_one({"_id": "worker_tokens"})
     tokens = doc.get("tokens", []) if doc else []
