@@ -8646,6 +8646,7 @@ async def _api_stream_handler(request):
                     )
                 )
             )
+            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
@@ -9140,6 +9141,7 @@ async def _api_subtitles_handler(request):
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
         else:
             actual_url = await resolve_direct_link(link)
+            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
 
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
