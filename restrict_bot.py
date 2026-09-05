@@ -8658,10 +8658,23 @@ async def _api_stream_handler(request):
             raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}")
         raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}")
 
-    # For video MP4 output, only copy audio codecs that are reliably muxable
-    # without forcing an incompatible MP4 audio track. Browser-incompatible
-    # tracks still get a small AAC transcode while the original video is copied.
-    copy_audio = audio_codec in {'aac', 'mp3'} or (audio_idx is None and quality == 'Original')
+    # 🟢 DYNAMIC CODEC RETRIEVAL: Pull cached metadata to ensure we don't blind-copy incompatible streams
+    cache_key = _media_cache_key(user_id, link)
+    cached_meta = MEDIA_META_CACHE.get(cache_key)
+    video_codec = ""
+    if cached_meta:
+        meta = cached_meta[0]
+        if not audio_codec:
+            audio_codec = meta.get("audio_codec", "").lower()
+        video_codec = meta.get("video_codec", "").lower()
+
+    # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
+    bad_audio = {"dts", "truehd", "ac3", "eac3"}
+    if audio_codec in bad_audio:
+        copy_audio = False
+    else:
+        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'flac'} or (audio_idx is None and quality == 'Original' and not force_transcode)
+        
     copy_video = quality == "Original"
     res_scale_map = {"4K":"3840:-2", "1080p":"1920:-2", "720p":"1280:-2", "480p":"854:-2", "360p":"640:-2"}
     scale_filter = res_scale_map.get(quality)
@@ -8706,6 +8719,11 @@ async def _api_stream_handler(request):
 
         if copy_video and not scale_filter:
             cmd += ["-c:v", "copy"]
+            # 🟢 FIX: Ensure HEVC/VP9 mux correctly into fragmented MP4 container
+            if video_codec in {"hevc", "h265", "hvc1"}:
+                cmd += ["-tag:v", "hvc1"]
+            elif video_codec in {"vp9", "vp8", "av1"}:
+                cmd += ["-strict", "experimental"]
         else:
             cmd += [
                 "-vf", f"scale={scale_filter or 'trunc(iw/2)*2:trunc(ih/2)*2'}",
