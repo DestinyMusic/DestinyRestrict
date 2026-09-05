@@ -5092,10 +5092,61 @@ HTML_DASHBOARD = """
                             <option value="2">2.0x</option>
                         </select>
 
+                        <!-- NEW: Video Filter Sliders -->
+                        <label style="font-size: 11px; color: var(--accent); font-weight: bold; margin-top: 10px;">VIDEO FILTERS & PRESETS</label>
+                        <div style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;">
+                            <button class="theme-btn" onclick="setFilterPreset('none')">None</button>
+                            <button class="theme-btn" onclick="setFilterPreset('vivid')">Vivid</button>
+                            <button class="theme-btn" onclick="setFilterPreset('cinematic')">Cinematic</button>
+                            <button class="theme-btn" onclick="setFilterPreset('soft')">Soft Pastel</button>
+                        </div>
+                        
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
+                            <div>
+                                <label style="font-size: 10px; color: var(--subtext);">Brightness: <span id="val-bright">100</span>%</label>
+                                <input type="range" id="filter-bright" min="20" max="200" value="100" oninput="applyVideoFilters()" style="width: 100%; accent-color: var(--accent);">
+                            </div>
+                            <div>
+                                <label style="font-size: 10px; color: var(--subtext);">Contrast: <span id="val-contrast">100</span>%</label>
+                                <input type="range" id="filter-contrast" min="20" max="200" value="100" oninput="applyVideoFilters()" style="width: 100%; accent-color: var(--accent);">
+                            </div>
+                            <div>
+                                <label style="font-size: 10px; color: var(--subtext);">Saturation: <span id="val-sat">100</span>%</label>
+                                <input type="range" id="filter-sat" min="0" max="300" value="100" oninput="applyVideoFilters()" style="width: 100%; accent-color: var(--accent);">
+                            </div>
+                            <div>
+                                <label style="font-size: 10px; color: var(--subtext);">Hue: <span id="val-hue">0</span>°</label>
+                                <input type="range" id="filter-hue" min="-180" max="180" value="0" oninput="applyVideoFilters()" style="width: 100%; accent-color: var(--accent);">
+                            </div>
+                        </div>
+
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLES</label>
                         <select id="pop-sub-select" class="pop-select" onchange="applySubtitleSelection()"></select>
+                        
+                        <!-- NEW: Subtitle Fonts & Weights -->
+                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                            <div>
+                                <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">FONT STYLE</label>
+                                <select id="subtitle-font-select" class="pop-select" onchange="applySubtitleStyle()">
+                                    <option value="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" selected>Standard (Sans)</option>
+                                    <option value="Georgia, serif">Cinematic (Serif)</option>
+                                    <option value="'Courier New', monospace">Typewriter</option>
+                                    <option value="'Comic Sans MS', cursive">Casual (Comic)</option>
+                                    <option value="Impact, fantasy">Bold Impact</option>
+                                </select>
+                            </div>
+                            <div>
+                                <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">FONT WEIGHT</label>
+                                <select id="subtitle-weight-select" class="pop-select" onchange="applySubtitleStyle()">
+                                    <option value="400">Normal</option>
+                                    <option value="600" selected>Semi-Bold</option>
+                                    <option value="800">Extra Bold</option>
+                                    <option value="900">Heavy</option>
+                                </select>
+                            </div>
+                        </div>
 
-                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE SIZE</label>
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold; margin-top: 10px;">SUBTITLE SIZE</label>
                         <select id="subtitle-size-select" class="pop-select" onchange="applySubtitleStyle()">
                             <option value="18">18 px</option>
                             <option value="22">22 px</option>
@@ -5160,6 +5211,29 @@ HTML_DASHBOARD = """
                             <button class="primary-btn" style="width: auto; padding: 0 24px;" onclick="loadTheaterMedia()">Load & Play</button>
                         </div>
                     </div>
+                    <!-- NEW: External Media Tracks (URL & Local File) -->
+                    <div class="input-group" style="margin-top: 15px;">
+                        <label>External Audio Track (URL or Local File)</label>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <input type="text" id="ext-audio-url" placeholder="Paste URL..." style="flex: 1;">
+                            <button class="primary-btn" style="width: auto; padding: 0 15px; background: #8b5cf6;" onclick="loadExternalAudioUrl()">Load URL</button>
+                            <label class="primary-btn" style="width: auto; padding: 12px 15px; background: #475569; cursor: pointer; margin: 0;">
+                                📁 File <input type="file" accept="audio/*" style="display: none;" onchange="loadExternalAudioFile(event)">
+                            </label>
+                        </div>
+                    </div>
+                    <div class="input-group">
+                        <label>External Subtitles (URL or .vtt Local File)</label>
+                        <div style="display: flex; gap: 8px; align-items: center;">
+                            <input type="text" id="ext-sub-url" placeholder="Paste URL..." style="flex: 1;">
+                            <button class="primary-btn" style="width: auto; padding: 0 15px; background: #2dd4bf;" onclick="loadExternalSubtitlesUrl()">Load URL</button>
+                            <label class="primary-btn" style="width: auto; padding: 12px 15px; background: #475569; cursor: pointer; margin: 0;">
+                                📁 File <input type="file" accept=".vtt,.srt,.txt" style="display: none;" onchange="loadExternalSubtitlesFile(event)">
+                            </label>
+                        </div>
+                    </div>
+                    <!-- Hidden Audio Player for Sync -->
+                    <audio id="ext-audio-player" style="display:none;" preload="auto"></audio>
                 </div>
             </div>
             
@@ -6931,11 +7005,119 @@ HTML_DASHBOARD = """
             const bg = document.getElementById('subtitle-bg-input')?.value || '#000000';
             const alpha = Math.max(0, Math.min(100, Number(document.getElementById('subtitle-bg-alpha')?.value || 70))) / 100;
             
+            const font = document.getElementById('subtitle-font-select')?.value || 'sans-serif';
+            const weight = document.getElementById('subtitle-weight-select')?.value || '600';
+            
             document.querySelectorAll('#subtitle-overlay .subtitle-text').forEach(text => {
                 text.style.fontSize = `${size}px`;
                 text.style.color = fg;
                 text.style.background = hexToRgba(bg, alpha);
+                text.style.fontFamily = font;
+                text.style.fontWeight = weight;
             });
+        }
+
+        // ======================================================================
+        // VIDEO FILTERS & EXTERNAL MEDIA ENGINE
+        // ======================================================================
+        function applyVideoFilters() {
+            const b = document.getElementById('filter-bright').value;
+            const c = document.getElementById('filter-contrast').value;
+            const s = document.getElementById('filter-sat').value;
+            const h = document.getElementById('filter-hue').value;
+            
+            document.getElementById('val-bright').innerText = b;
+            document.getElementById('val-contrast').innerText = c;
+            document.getElementById('val-sat').innerText = s;
+            document.getElementById('val-hue').innerText = h;
+            
+            // Note: True "Sharpness" requires WebGL convolution matrices. 
+            // We approximate Sharpness/Crispness using Contrast + Brightness.
+            const filterStr = `brightness(${b}%) contrast(${c}%) saturate(${s}%) hue-rotate(${h}deg)`;
+            
+            // Apply to both WebGL canvas and fallback video
+            const canvas = document.getElementById('webgl-canvas');
+            const video = document.getElementById('hidden-video');
+            if(canvas) canvas.style.filter = filterStr;
+            if(video) video.style.filter = filterStr;
+        }
+
+        function setFilterPreset(preset) {
+            const settings = {
+                'none': {b: 100, c: 100, s: 100, h: 0},
+                'vivid': {b: 105, c: 115, s: 130, h: 0},
+                'cinematic': {b: 95, c: 120, s: 85, h: 0},
+                'soft': {b: 110, c: 90, s: 110, h: -5}
+            };
+            const p = settings[preset] || settings['none'];
+            document.getElementById('filter-bright').value = p.b;
+            document.getElementById('filter-contrast').value = p.c;
+            document.getElementById('filter-sat').value = p.s;
+            document.getElementById('filter-hue').value = p.h;
+            applyVideoFilters();
+        }
+
+        // Setup the audio player syncing
+        function syncExternalAudio(urlOrBlob) {
+            const extAudio = document.getElementById('ext-audio-player');
+            const video = document.getElementById('hidden-video');
+            extAudio.src = urlOrBlob;
+            extAudio.load();
+            video.muted = true; // Mute original video track
+            
+            extAudio.currentTime = video.currentTime;
+            if(!video.paused) extAudio.play();
+        }
+
+        // --- Audio Loaders ---
+        function loadExternalAudioUrl() {
+            const url = document.getElementById('ext-audio-url').value.trim();
+            if(!url) return alert("Please enter an external audio URL.");
+            syncExternalAudio(url);
+            alert("External Audio URL Loaded & Synced!");
+        }
+
+        function loadExternalAudioFile(event) {
+            const file = event.target.files[0];
+            if(!file) return;
+            const blobUrl = URL.createObjectURL(file); // Create local memory URL
+            syncExternalAudio(blobUrl);
+            alert(`Local Audio File '${file.name}' Loaded & Synced!`);
+        }
+
+        // Setup the subtitle syncing
+        function syncExternalSubtitles(text) {
+            subtitleCues = parseWebVTT(text);
+            activeSubtitleIndex = 'external';
+            const subSelect = document.getElementById('pop-sub-select');
+            if(subSelect) subSelect.value = 'off';
+            renderCurrentSubtitle();
+        }
+
+        // --- Subtitle Loaders ---
+        async function loadExternalSubtitlesUrl() {
+            const url = document.getElementById('ext-sub-url').value.trim();
+            if(!url) return alert("Please enter a .vtt subtitle URL.");
+            try {
+                const res = await fetch(url);
+                if(!res.ok) throw new Error("HTTP " + res.status);
+                const text = await res.text();
+                syncExternalSubtitles(text);
+                alert("External Subtitles URL Loaded!");
+            } catch (err) {
+                alert("Failed to load subtitles. (Check CORS or URL): " + err.message);
+            }
+        }
+
+        function loadExternalSubtitlesFile(event) {
+            const file = event.target.files[0];
+            if(!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                syncExternalSubtitles(e.target.result);
+                alert(`Local Subtitle File '${file.name}' Loaded!`);
+            };
+            reader.readAsText(file);
         }
 
         // ======================================================================
@@ -7232,15 +7414,25 @@ HTML_DASHBOARD = """
         const smallPauseSvg = `<svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>`;
 
         if (vidElem) {
+            const extAudio = document.getElementById('ext-audio-player');
+
             vidElem.addEventListener('play', () => {
                 if (hudPlay) hudPlay.innerHTML = smallPauseSvg;
                 if (bigPlay) bigPlay.innerHTML = pauseSvg;
+                if (extAudio && extAudio.src) extAudio.play().catch(e => console.warn(e));
                 wakeHUD();
             });
             vidElem.addEventListener('pause', () => {
                 if (hudPlay) hudPlay.innerHTML = smallPlaySvg;
                 if (bigPlay) bigPlay.innerHTML = playSvg;
+                if (extAudio && extAudio.src) extAudio.pause();
                 wakeHUD();
+            });
+            vidElem.addEventListener('ratechange', () => {
+                if (extAudio && extAudio.src) extAudio.playbackRate = vidElem.playbackRate;
+            });
+            vidElem.addEventListener('seeking', () => {
+                if (extAudio && extAudio.src) extAudio.currentTime = vidElem.currentTime;
             });
             vidElem.addEventListener('ended', () => wakeHUD());
             vidElem.addEventListener('waiting', () => { if (bigPlay) bigPlay.innerHTML = '⏳'; });
