@@ -4765,14 +4765,13 @@ HTML_DASHBOARD = """
         .settings-popup {
             position: absolute; bottom: 85px; right: 30px; background: color-mix(in srgb, var(--card) 95%, transparent);
             backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px); border: 1px solid var(--card-border);
-            border-radius: 20px; padding: 20px; width: min(700px, 95vw); max-width: calc(100vw - 24px);
-            height: min(850px, 85vh); max-height: 85vh; overflow-y: auto; overflow-x: hidden;
+            border-radius: 20px; padding: 20px; width: 320px; max-width: calc(100vw - 24px);
+            max-height: min(78vh, 620px); overflow-y: auto; overflow-x: hidden;
             -webkit-overflow-scrolling: touch; overscroll-behavior: contain; touch-action: pan-y;
             display: none; z-index: 30; box-shadow: 0 20px 50px rgba(0,0,0,0.8);
             transition: opacity 0.25s ease, transform 0.25s ease;
             scrollbar-width: thin;
         }
-        body.modal-open { overflow: hidden; }
         .settings-popup.open { display: block; }
         .cinema-viewport:fullscreen .settings-popup,
         .cinema-viewport:-webkit-full-screen .settings-popup {
@@ -6456,11 +6455,9 @@ HTML_DASHBOARD = """
             if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                 if (vp.requestFullscreen) vp.requestFullscreen();
                 else if (vp.webkitRequestFullscreen) vp.webkitRequestFullscreen();
-                try { screen.orientation.lock("landscape"); } catch (e) {}
             } else {
                 if (document.exitFullscreen) document.exitFullscreen();
                 else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
-                try { screen.orientation.unlock(); } catch (e) {}
             }
         }
 
@@ -6970,9 +6967,6 @@ HTML_DASHBOARD = """
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
                 playerTotalDuration = Number(pdata.duration) || 0;
                 if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
-                if ('mediaSession' in navigator) {
-                    navigator.mediaSession.metadata = new MediaMetadata({ title: pdata.file_name || 'Media Stream' });
-                }
 
                 qSelect.innerHTML = '';
                 (pdata.qualities?.length ? pdata.qualities : ['Original']).forEach(q => addOption(qSelect, q, q));
@@ -7146,17 +7140,6 @@ HTML_DASHBOARD = """
         // Initial state: hidden while idle, visible on first interaction/playback.
         if (vpElement) vpElement.classList.add('idle-hide');
         if (!gl) initWebGL();
-
-        if ('mediaSession' in navigator) {
-            navigator.mediaSession.setActionHandler('play', () => { if (vidElem) togglePlayback(); });
-            navigator.mediaSession.setActionHandler('pause', () => { if (vidElem) togglePlayback(); });
-        }
-
-        document.addEventListener("visibilitychange", () => {
-            if (document.hidden && vidElem && !vidElem.paused) {
-                vidElem.play().catch(e => console.warn(e));
-            }
-        });
 
     </script>
 </body>
@@ -8543,11 +8526,10 @@ async def _api_media_probe_handler(request):
                 tags = st.get("tags", {}) or {}
                 lang = tags.get("language") or tags.get("LANGUAGE")
                 # Removed 'handler_name' fallback so it doesn't show 'SoundHandler'
-                title = tags.get("title") or tags.get("TITLE") 
-                label = title or lang or f"Audio {i+1}"
+                title = tags.get("title") or tags.get("TITLE")
                 audio_tracks.append({
                     "index": st.get("index"),
-                    "label": label,
+                    "label": title or lang or f"Track {i+1}",
                     "language": lang or "",
                     "channels": st.get("channels") or 0,
                     "codec_name": st.get("codec_name") or "",
@@ -8559,10 +8541,9 @@ async def _api_media_probe_handler(request):
                 lang = tags.get("language") or tags.get("LANGUAGE")
                 # Removed 'handler_name' fallback so it doesn't show 'SubtitleHandler'
                 title = tags.get("title") or tags.get("TITLE")
-                label = title or lang or f"Subtitle {i+1}"
                 subtitles.append({
                     "index": st.get("index"),
-                    "label": label,
+                    "label": title or lang or f"Subtitle {i+1}",
                     "language": lang or "",
                 })
 
@@ -9073,8 +9054,9 @@ async def _api_tg_stream_handler(request):
             async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6):
                 await response.write(chunk)
             await response.write_eof()
-        except (ConnectionResetError, asyncio.CancelledError):
-            raise
+        except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+            # Gracefully handle when the browser cancels the connection during seeking/scrubbing
+            return response
         except Exception as exc:
             logger.debug(f"Telegram stream disconnect/error: {exc}")
         return response
@@ -9343,7 +9325,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         client = working_pool[0]
         bytes_needed = total_length
         current_offset = start_byte
-        # 🟢 FIX: Align perfectly to Telegram's 512KB chunk size to prevent OFFSET_INVALID
         ALIGNMENT = 524288
         
         for part in msg_parts:
@@ -9352,7 +9333,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 internal_offset = current_offset - part["start"]
                 internal_limit = min(bytes_needed, part["size"] - internal_offset)
                 
-                # 🟢 FIX: Align strictly to 4096 bytes (4 KB)
+                # 🟢 FIX: Align perfectly to 512KB
                 aligned_offset = (internal_offset // ALIGNMENT) * ALIGNMENT
                 
                 try:
