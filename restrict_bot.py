@@ -4622,14 +4622,14 @@ HTML_DASHBOARD = """
         }
         
         /* 📱 FULLSCREEN ADAPTIVE FIXES */
-        .cinema-viewport:fullscreen, .cinema-viewport:-webkit-full-screen {
+        .cinema-viewport:fullscreen, .cinema-viewport:-webkit-full-screen, .cinema-viewport.ios-fullscreen {
             border-radius: 0 !important; border: none !important; aspect-ratio: auto !important; 
             width: 100vw !important; height: 100vh !important;
             max-width: 100vw !important; max-height: 100vh !important;
             position: fixed !important; top: 0 !important; left: 0 !important; z-index: 9999 !important;
             padding: 0 !important; margin: 0 !important; background: #000 !important;
         }
-        .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud {
+        .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud, .cinema-viewport.ios-fullscreen .cinema-hud {
             padding: 40px 30px; padding-bottom: max(40px, env(safe-area-inset-bottom));
         }
         .cinema-viewport:fullscreen .cinema-title-bar, .cinema-viewport:-webkit-full-screen .cinema-title-bar {
@@ -4638,22 +4638,33 @@ HTML_DASHBOARD = """
         .cinema-viewport:fullscreen .cinema-btn, .cinema-viewport:-webkit-full-screen .cinema-btn { font-size: 28px; }
         .cinema-viewport:fullscreen .time-badge, .cinema-viewport:-webkit-full-screen .time-badge { font-size: 16px; }
 
-        /* WebGL canvas is the visible video surface. Keep the CSS box separate from its pixel buffer. */
+        /* WebGL canvas sits on top of the video feed */
         #webgl-canvas {
             position: absolute; left: 50%; top: 50%;
             width: 100%; height: 100%;
-            display: block; z-index: 1;
+            display: block; z-index: 2;
             transform: translate(-50%, -50%);
             transform-origin: center center;
             object-fit: fill;
             will-change: width, height, transform;
         }
 
-        /* The video stays active for decoding/WebGL capture, but its pixels are hidden.
-           Native ::cue rendering is intentionally NOT used because opacity would also hide the cues. */
+        /* iPadOS WebKit fix: keep opacity at 0.001 and behind the canvas so Safari does not suspend decoding */
         .hidden-video-feed {
             position: absolute; inset: 0; width: 100%; height: 100%;
-            object-fit: fill; opacity: 0; pointer-events: none; z-index: 5;
+            object-fit: fill; opacity: 0.001; pointer-events: none; z-index: 1;
+        }
+
+        /* iPad / PWA CSS Fullscreen Fallback */
+        .cinema-viewport:fullscreen, .cinema-viewport:-webkit-full-screen, .cinema-viewport.ios-fullscreen {
+            border-radius: 0 !important; border: none !important; aspect-ratio: auto !important; 
+            width: 100vw !important; height: 100vh !important;
+            max-width: 100vw !important; max-height: 100vh !important;
+            position: fixed !important; top: 0 !important; left: 0 !important; z-index: 99999 !important;
+            padding: 0 !important; margin: 0 !important; background: #000 !important;
+        }
+        .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud, .cinema-viewport.ios-fullscreen .cinema-hud {
+            padding: 40px 30px; padding-bottom: max(40px, env(safe-area-inset-bottom));
         }
 
         /* Custom subtitle layer: fully independent of the hidden <video>. */
@@ -6691,6 +6702,18 @@ HTML_DASHBOARD = """
         function toggleFullScreen() {
             const vp = document.getElementById('cinema-viewport');
             if (!vp) return;
+
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
+
+            // iOS PWA Standalone Mode blocks HTML5 requestFullscreen; use CSS fixed overlay
+            if (isIOS || isStandalone) {
+                vp.classList.toggle('ios-fullscreen');
+                updateViewportBox();
+                resizePlayerSurface();
+                return;
+            }
+
             if (!document.fullscreenElement && !document.webkitFullscreenElement) {
                 if (vp.requestFullscreen) vp.requestFullscreen();
                 else if (vp.webkitRequestFullscreen) vp.webkitRequestFullscreen();
@@ -7152,8 +7175,17 @@ HTML_DASHBOARD = """
                 }
 
                 if (shouldPlay) {
-                    try { await video.play(); }
-                    catch (err) { console.warn('Autoplay after track switch failed:', err); }
+                    try {
+                        await video.play();
+                    } catch (err) {
+                        // iOS Safari blocks unmuted programmatic playback; mute briefly to start pipeline if blocked
+                        console.warn('Playback blocked by iOS policy; prompting user interaction.', err);
+                        const bigPlayBtn = document.getElementById('big-play-overlay');
+                        if (bigPlayBtn) {
+                            bigPlayBtn.style.display = 'flex';
+                            wakeHUD();
+                        }
+                    }
                 }
                 renderCurrentSubtitle();
             };
@@ -9368,7 +9400,25 @@ async def _api_tg_stream_handler(request):
             return web.Response(status=404)
 
         filename = str(getattr(media, "file_name", "") or "").lower()
-        mime_type = getattr(media, "mime_type", "application/octet-stream") or "application/octet-stream"
+        raw_mime = getattr(media, "mime_type", "") or ""
+        
+        # Resolve accurate MIME types so iOS Safari does not reject playback
+        guessed_type, _ = mimetypes.guess_type(filename)
+        if guessed_type:
+            mime_type = guessed_type
+        elif raw_mime and raw_mime != "application/octet-stream":
+            mime_type = raw_mime
+        else:
+            if filename.endswith((".mp4", ".m4v", ".mov")):
+                mime_type = "video/mp4"
+            elif filename.endswith(".webm"):
+                mime_type = "video/webm"
+            elif filename.endswith(".mkv"):
+                mime_type = "video/x-matroska"
+            elif filename.endswith((".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg")):
+                mime_type = "audio/mp4" if filename.endswith((".m4a", ".aac")) else "audio/mpeg"
+            else:
+                mime_type = "video/mp4"
 
         parts_map = []
         global_offset = 0
@@ -9462,20 +9512,7 @@ async def _api_tg_stream_handler(request):
 
         chunk_len = end_byte - start_byte + 1
         
-        # 🟢 SMART SCRUB-KILLER: Only cancel ghost tasks if it's a massive video stream!
-        # Ignores tiny metadata probes so the browser accurately displays the Total Duration.
-        if "GLOBAL_STREAM_TASKS" not in globals():
-            global GLOBAL_STREAM_TASKS
-            GLOBAL_STREAM_TASKS = {}
-            
-        is_metadata_probe = chunk_len < 5242880 # 5 MB
-        lock_key = f"{user_id}_{chat_id}_{msg_id}"
-        
-        if not is_metadata_probe:
-            old_task = GLOBAL_STREAM_TASKS.get(lock_key)
-            if old_task and not old_task.done():
-                old_task.cancel() # Safely kill the old ghost download
-            GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
+        # Allow concurrent range requests without self-canceling ongoing connections
 
         headers = {
             "Accept-Ranges": "bytes",
