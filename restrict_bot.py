@@ -7681,7 +7681,7 @@ HTML_DASHBOARD = """
                         playerTimelineOffset = globalTargetTime || 0;
                         try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch(_) {}
                     }
-                }, 8000); // Wait 8 seconds before determining the stream is dead
+                }, 25000); // Increased to 25 seconds to allow User Sessions to buffer
             }
 
             vidElem.addEventListener('ended', async () => {
@@ -9553,8 +9553,8 @@ async def _api_stream_handler(request):
         "-rw_timeout", "30000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
         "-seekable", "1", "-multiple_requests", "1",
-        "-probesize", "25M", "-analyzeduration", "15M", 
-        "-fflags", "+nobuffer+flush_packets", 
+        "-probesize", "5M", "-analyzeduration", "5M",  # Lowered so FFmpeg starts playing much faster!
+        "-fflags", "+nobuffer+flush_packets",
         "-async", "1" # 🟢 FIX: Restored! This forces Audio & Video to pad/trim at the start of a seek so Subtitles perfectly align!
     ]
 
@@ -10330,7 +10330,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         bytes_needed -= internal_limit
                         
                     else:
-                        # 🟢 FIX: Large bulk read -> Use Pyrogram's internal chunk_index instead of raw byte offset!
+                        # Large bulk read -> Use continuous pipelined socket
                         CHUNK_SIZE = 1048576
                         chunk_index = internal_offset // CHUNK_SIZE
                         skip_bytes = internal_offset % CHUNK_SIZE
@@ -10342,7 +10342,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         msg = await get_client_msg(client, chat_id, part["msg_id"])
                         bytes_yielded_this_part = 0
                         
-                        # 🟢 FIX: Pass the block index to Pyrogram (as required by the MTProto API)
+                        # 🟢 THE REAL FIX: Pass the raw chunk_index and the calculated chunk limit!
                         async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
                             if skip_bytes > 0:
                                 if len(chunk) <= skip_bytes:
