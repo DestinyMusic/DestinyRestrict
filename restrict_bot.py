@@ -6757,12 +6757,10 @@ HTML_DASHBOARD = """
                     } else {
                         screen.lockOrientation('portrait');
                     }
-                } else {
-                    alert("Screen rotation lock is not natively supported on this browser. Please rotate your device manually.");
                 }
             } catch (err) {
-                console.warn("Orientation lock failed:", err);
-                alert("Orientation lock failed. Your device might restrict this action.");
+                console.warn("Orientation lock failed or unsupported:", err);
+                // Silently fail - do not show annoying alerts! The user can physically rotate their device.
             }
         }
 
@@ -8930,10 +8928,37 @@ async def _api_media_probe_handler(request):
             try:
                 pdata = await _run_ffprobe_json(probe_input, fast=True)
                 streams = pdata.get("streams", []) or []
+                
+                # 1. Try format duration
                 try:
                     duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
                 except Exception:
                     duration_val = 0.0
+                    
+                # 2. MKV Fallback: Try stream duration
+                if duration_val <= 0:
+                    for s in streams:
+                        try:
+                            d = float(s.get("duration", 0) or 0)
+                            if d > 0:
+                                duration_val = d
+                                break
+                        except Exception: pass
+                        
+                # 3. MKV Fallback: Try string DURATION tag (Format: "01:32:23.450")
+                if duration_val <= 0:
+                    for s in streams:
+                        tags = s.get("tags", {}) or {}
+                        tag_dur = tags.get("DURATION") or tags.get("duration")
+                        if tag_dur:
+                            try:
+                                parts = str(tag_dur).split(':')
+                                if len(parts) >= 3:
+                                    h, m, sec = float(parts[0]), float(parts[1]), float(parts[2])
+                                    duration_val = (h * 3600) + (m * 60) + sec
+                                    if duration_val > 0: break
+                            except Exception: pass
+
             except Exception as probe_exc:
                 logger.debug(f"Media probe fallback for {link[:120]}: {probe_exc}")
                 streams = []
@@ -9530,6 +9555,11 @@ async def _api_tg_stream_handler(request):
             "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Type",
             "Cache-Control": "no-store",
         }
+
+        # 🟢 FAST-PROBE FIX: Instantly return headers for HEAD requests!
+        # This prevents ffprobe from timing out when seeking to the end of MKV files to find tracks/duration.
+        if request.method == "HEAD":
+            return web.Response(status=206 if range_header else 200, headers=headers)
 
         import aiohttp
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
