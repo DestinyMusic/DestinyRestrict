@@ -8935,7 +8935,8 @@ async def _api_direct_stream_handler(request):
     response = web.StreamResponse(status=remote.status, headers=out_headers)
     try:
         await response.prepare(request)
-        async for chunk in remote.content.iter_chunked(1024 * 1024):
+        # 🟢 FIX: Boosted to 4MB chunks. 1MB causes Python event loop starvation for 10GB+ files!
+        async for chunk in remote.content.iter_chunked(4 * 1024 * 1024):
             if chunk:
                 await response.write(chunk)
         await response.write_eof()
@@ -9478,9 +9479,10 @@ async def _api_stream_handler(request):
                     )
                 )
             )
-            # 🟢 Restoring Loopback! FFmpeg downloads direct links securely through our proxy.
-            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
-            logger.debug(f"🎬 [TRANSCODE] Using Loopback Proxy for FFmpeg: {actual_url[:100]}...")
+            # 🟢 FIX: Directly feed the resolved HTTP URL to FFmpeg instead of looping it through Python.
+            # This completely removes the Python middleman (aiohttp), allowing FFmpeg's highly optimized 
+            # C-backend to stream 10GB+ files directly without I/O blocking!
+            logger.debug(f"🎬 [TRANSCODE] Direct FFmpeg Streaming (No Loopback): {actual_url[:100]}...")
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
@@ -9519,13 +9521,21 @@ async def _api_stream_handler(request):
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real User-Agent
-        "-rw_timeout", "30000000", # 🟢 FIX: 30s timeout
+        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
+        "-rw_timeout", "30000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
         "-seekable", "1", "-multiple_requests", "1",
-        "-probesize", "10M", "-analyzeduration", "5M",
-        "-fflags", "+nobuffer+flush_packets",
+        "-probesize", "25M", "-analyzeduration", "15M", # 🟢 FIX: Boosted for 10GB+ files to prevent stuttering
+        "-fflags", "+nobuffer+flush_packets+fastseek", # 🟢 FIX: Added fastseek for instant jumps
     ]
+
+    # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
+    if not is_tg:
+        from urllib.parse import urlparse
+        parsed_res = urlparse(actual_url)
+        referer = f"{parsed_res.scheme}://{parsed_res.netloc}/"
+        headers_str = f"Accept: */*\r\nReferer: {referer}\r\nOrigin: {referer}\r\nSec-Fetch-Dest: video\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Site: cross-site\r\n"
+        cmd += ["-headers", headers_str]
 
     if start_time is not None:
         try:
@@ -9598,7 +9608,8 @@ async def _api_stream_handler(request):
     try:
         await response.prepare(request)
         while True:
-            buf = await proc.stdout.read(262144) # 🟢 SMOOTH STREAMING: 256KB chunks deliver frames to the browser instantly
+            # 🟢 FIX: Boosted to 2MB chunks. 256KB causes 40,000+ Python loop iterations for a 10GB file, creating massive GIL lag!
+            buf = await proc.stdout.read(2097152) 
             if not buf:
                 break
             await response.write(buf)
