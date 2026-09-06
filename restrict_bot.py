@@ -6759,8 +6759,9 @@ HTML_DASHBOARD = """
                     }
                 }
             } catch (err) {
-                console.warn("Orientation lock failed or unsupported:", err);
-                // Silently fail - do not show annoying alerts! The user can physically rotate their device.
+                console.warn("Orientation lock failed (System Auto-Rotate is likely disabled):", err);
+                // Silently fail here! Do NOT show an alert popup. 
+                // The user can simply turn on Auto-Rotate in their phone settings.
             }
         }
 
@@ -8607,6 +8608,10 @@ async def _api_direct_stream_handler(request):
     if not url or not url.lower().startswith(("http://", "https://")):
         return web.Response(status=400, text="Invalid direct media URL")
 
+    # 🟢 ADDED DEBUG LOGGING FOR DIRECT STREAMS
+    range_header = request.headers.get("Range", "No-Range")
+    logger.info(f"🌍 [DIRECT STREAM DEBUG] Req: {request.method} | Range: {range_header} | URL: {url[:60]}...")
+
     try:
         session, remote, resolved = await _direct_upstream_request(url, request)
     except Exception as exc:
@@ -8715,9 +8720,10 @@ async def _run_ffprobe_json(input_url, fast=True):
     last_error = None
     for probesize, analyzeduration in probe_pairs:
         cmd = [
-            "ffprobe", "-v", "error", "-hide_banner",
+            "ffprobe", "-v", "warning", "-hide_banner",
             "-user_agent", "Mozilla/5.0",
             "-rw_timeout", "15000000",
+            "-seekable", "1",  # 🟢 FIX: Forces FFprobe to jump to the end of MKV files!
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
@@ -8726,6 +8732,7 @@ async def _run_ffprobe_json(input_url, fast=True):
             "-of", "json", input_url,
         ]
         try:
+            logger.info(f"🎥 [FFPROBE DEBUG] Executing: {' '.join(cmd)}")
             proc = await asyncio.create_subprocess_exec(
                 cmd[0], *cmd[1:],
                 stdout=asyncio.subprocess.PIPE,
@@ -8733,10 +8740,14 @@ async def _run_ffprobe_json(input_url, fast=True):
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode == 0 and stdout:
+                logger.info(f"✅ [FFPROBE DEBUG] Metadata Extracted Successfully!")
                 return json.loads(stdout.decode('utf-8', errors='ignore') or '{}')
+            
             last_error = stderr.decode('utf-8', errors='ignore').strip() or 'ffprobe failed'
+            logger.error(f"❌ [FFPROBE DEBUG] Failed (Code {proc.returncode}): {last_error}")
         except Exception as exc:
             last_error = str(exc)
+            logger.error(f"❌ [FFPROBE DEBUG] Exception: {last_error}")
     raise RuntimeError(last_error or 'ffprobe failed')
 
 # ------------------------------------------------------------------------------
@@ -9545,6 +9556,9 @@ async def _api_tg_stream_handler(request):
             if old_task and not old_task.done():
                 old_task.cancel() # Safely kill the old ghost download
             GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
+
+        # 🟢 ADDED DEBUG LOGGING FOR TG STREAMS
+        logger.info(f"📡 [TG STREAM DEBUG] Req: {request.method} | Range: {range_header} | Bytes: {start_byte}-{end_byte} | Total: {virtual_size} | Chunk: {chunk_len}")
 
         headers = {
             "Accept-Ranges": "bytes",
