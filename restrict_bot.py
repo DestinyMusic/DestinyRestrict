@@ -9944,8 +9944,6 @@ async def _api_tg_stream_handler(request):
         parts_map = []
         global_offset = 0
 
-        # 🟢 FIX: Sort strictly to ensure exact binary byte boundaries!
-        # This guarantees .001 connects perfectly to .002
         valid_msgs.sort(key=lambda m: getattr(m.document or m.video or m.audio, "file_name", ""))
 
         for m in valid_msgs:
@@ -9960,10 +9958,9 @@ async def _api_tg_stream_handler(request):
                 })
                 global_offset += psz
 
-        # Fallback Auto-Discovery if only 1 ID was provided and it matches a part syntax
         if len(parts_map) == 1:
             match = _find_split_match(raw_filename)
-            if match and match[2] == 1: # If it's part 1
+            if match and match[2] == 1:
                 current_id = msg_ids[0] + 1
                 while True:
                     try:
@@ -9986,28 +9983,27 @@ async def _api_tg_stream_handler(request):
         if not parts_map:
             return web.Response(status=404, text="No readable media parts")
 
-        # 🟢 FIX: Ensure the virtual size completely respects the combined raw file size!
         virtual_size = global_offset
         virtual_data_offset = 0
+        
+        # 🟢 THE REAL FIX: Create a universal byte-reader function for ALL split formats
+        async def seamless_read(off, length):
+            buf = bytearray()
+            async for chunk in parallel_stream_generator(working_pool, chat_id, parts_map, off, length, concurrency=4 if not using_user_session else 1):
+                if chunk:
+                    buf.extend(chunk)
+                if len(buf) >= length:
+                    break
+            return bytes(buf[:length])
 
-        # We keep the ZIP resolver, but only run it IF it's actually a ZIP split!
         is_zip = filename.endswith(".zip") or ".zip." in filename
         if is_zip:
-            async def zip_read(off, length):
-                buf = bytearray()
-                async for chunk in parallel_stream_generator(working_pool, chat_id, parts_map, off, length, concurrency=4 if not using_user_session else 1):
-                    buf.extend(chunk)
-                    if len(buf) >= length:
-                        break
-                return bytes(buf[:length])
-
-            entry = await resolve_zip_entry(zip_read, virtual_size)
+            entry = await resolve_zip_entry(seamless_read, virtual_size)
             if entry and entry["method"] == 0:
                 virtual_size = entry["size"]
                 virtual_data_offset = entry["data_offset"]
                 mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
         else:
-            # 🟢 Mkv/Mp4 parts: Map Mime-Type correctly for raw streaming
             ext = Path(filename).suffix.lower()
             if ext == ".mkv": mime_type = "video/x-matroska"
             elif ext == ".mp4": mime_type = "video/mp4"
@@ -10093,21 +10089,32 @@ async def _api_tg_stream_handler(request):
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
         adjusted_start = start_byte + virtual_data_offset
-        # 🟢 FIX: Directly supply the working_pool to the generator!
-        gen = parallel_stream_generator(working_pool, chat_id, parts_map, adjusted_start, chunk_len, concurrency=4 if not using_user_session else 1)
         
         try:
             await response.prepare(request)
-            async for chunk in gen:
-                await response.write(chunk)
+            
+            # 🟢 FIX: Read continuously using the seamless reader to prevent aiohttp EOF panics
+            bytes_sent = 0
+            chunk_size = 1048576 # 1MB chunks
+            
+            while bytes_sent < chunk_len:
+                bytes_to_fetch = min(chunk_size, chunk_len - bytes_sent)
+                
+                # Fetch precisely across boundaries
+                data = await seamless_read(adjusted_start + bytes_sent, bytes_to_fetch)
+                
+                if not data:
+                    break # Natural EOF
+                    
+                await response.write(data)
+                bytes_sent += len(data)
+                
             await response.write_eof()
+            
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
             pass
         except Exception as exc:
             logger.debug(f"Telegram stream disconnect/error: {exc}")
-        finally:
-            try: await gen.aclose() # Force generator destruction
-            except: pass
             
         # 🟢 FIX: Prevent 500 error crashes if the browser abruptly disconnects before preparation
         if not response.prepared:
