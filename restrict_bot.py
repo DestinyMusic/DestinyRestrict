@@ -8576,8 +8576,8 @@ async def _get_direct_http_session():
     async with DIRECT_HTTP_SESSION_LOCK:
         if DIRECT_HTTP_SESSION is None or DIRECT_HTTP_SESSION.closed:
             connector = aiohttp.TCPConnector(
-                limit=0,          # 🟢 FIX: Unlimited global connections to stop FFmpeg deadlocks
-                limit_per_host=0, # 🟢 FIX: Prevents FFmpeg '-multiple_requests 1' starvation on 10GB files!
+                limit=0,          
+                limit_per_host=0, 
                 ttl_dns_cache=300,
                 keepalive_timeout=60,
                 enable_cleanup_closed=True,
@@ -8586,14 +8586,13 @@ async def _get_direct_http_session():
                 total=None,
                 connect=15,
                 sock_connect=15,
-                sock_read=None,   # 🟢 FIX: No read timeout so massive files don't drop!
+                sock_read=None,   
             )
             DIRECT_HTTP_SESSION = aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout,
                 headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real Chrome UA bypasses Cloudflare/GoFile!
-                    "Accept-Encoding": "identity",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 },
             )
     return DIRECT_HTTP_SESSION
@@ -8789,28 +8788,46 @@ async def _direct_upstream_request(url, request):
     resolved = await resolve_direct_link(url)
     session = await _get_direct_http_session()
     
-    # 🟢 FIX: Force a real modern Chrome User-Agent to bypass Cloudflare 403s on file hosts!
+    from urllib.parse import urlparse
+    
+    # 🟢 FIX: Mimic a real browser precisely to bypass Cloudflare Worker 502/403s!
     req_headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Encoding": "identity",
+        "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Sec-Fetch-Dest": "video",
+        "Sec-Fetch-Mode": "no-cors",
+        "Sec-Fetch-Site": "cross-site",
     }
+    
     for header in (
-        "Range", "Referer", "Origin", "If-Range", "If-Modified-Since", "If-None-Match",
+        "Range", "If-Range", "If-Modified-Since", "If-None-Match", "Cookie"
     ):
         value = request.headers.get(header)
         if value:
             req_headers[header] = value
 
-    # 🟢 FIX: Mirror the exact request method (GET or HEAD)
+    # Smart Referer & Origin Injection for Worker Bypasses
+    client_referer = request.headers.get("Referer")
+    if client_referer:
+        req_headers["Referer"] = client_referer
+    else:
+        parsed_res = urlparse(resolved)
+        req_headers["Referer"] = f"{parsed_res.scheme}://{parsed_res.netloc}/"
+        req_headers["Origin"] = f"{parsed_res.scheme}://{parsed_res.netloc}"
+
     resp = await session.request(
         method=request.method,
         url=resolved,
         headers=req_headers,
         allow_redirects=True,
     )
+    
+    # Log upstream worker errors for debugging
+    if resp.status in (502, 503, 403):
+        logger.warning(f"⚠️ Upstream {resp.status} Error from {resolved[:80]}")
+        
     return session, resp, resolved
-
 
 async def _api_direct_stream_handler(request):
     """Native direct-link proxy with full HTTP Range support and keep-alive reuse."""
@@ -8877,12 +8894,32 @@ def _media_cache_key(user_id, link):
 
 
 def _guess_filename_from_url(url, fallback="Direct_Stream_Media"):
+    from urllib.parse import urlparse, parse_qsl, unquote
+    import os
     try:
-        name = os.path.basename(urlparse(url).path)
-        return unquote(name) if name else fallback
+        parsed = urlparse(url)
+        # 1. Check query params for explicit file names (Fixes "?path=" or "?filename=")
+        qs = dict(parse_qsl(parsed.query))
+        for k in ['filename', 'name', 'file', 'title', 'path']:
+            if k in qs:
+                val = unquote(qs[k])
+                name = os.path.basename(val)
+                if name and "." in name:
+                    return name
+                elif val and "/" not in val:
+                    return val
+        
+        # 2. Fallback to standard URL path
+        name = os.path.basename(parsed.path)
+        name = unquote(name) if name else fallback
+        
+        # 3. Ignore extremely generic fallback names and force FFprobe to do the work later
+        if name.lower() in ["download", "video", "media", "stream", "file", "play", fallback.lower()]:
+            return fallback
+            
+        return name
     except Exception:
         return fallback
-
 
 def _guess_browser_compatibility(mime_type, filename, streams):
     """Conservative browser-compatibility check used by the native player path."""
@@ -9161,6 +9198,17 @@ async def _api_media_probe_handler(request):
                         duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
                     except Exception:
                         duration_val = 0.0
+                        
+                # 🟢 NEW FIX: Attempt to extract real title from ffprobe metadata if filename is generic
+                if not is_tg and real_file_name in ("Direct_Stream_Media", "download", "video", "media", "file"):
+                    format_tags = pdata.get("format", {}).get("tags", {})
+                    title_tag = format_tags.get("title") or format_tags.get("TITLE")
+                    if title_tag:
+                        ext = ""
+                        if "video" in mime_type: ext = ".mp4"
+                        elif "audio" in mime_type: ext = ".mp3"
+                        real_file_name = title_tag if "." in title_tag else title_tag + ext
+
                 logger.info(f"🔎 [PROBE HTTP] Success! Streams found: {len(streams)}, Duration: {duration_val}s")
             except Exception as probe_exc:
                 logger.warning(f"🔎 [PROBE HTTP] Loopback HTTP probe failed: {probe_exc}")
@@ -9381,8 +9429,9 @@ async def _api_stream_handler(request):
         if not audio_codec:
             audio_codec = meta.get("audio_codec", "").lower()
         video_codec = meta.get("video_codec", "").lower()
-        # 🟢 FIX: Apply the properly resolved true file name from the cache, so we don't show "download"!
-        if meta.get("file_name") and meta.get("file_name") not in ("Unknown_Media", "download"):
+        
+        # 🟢 FIX: Use the fully resolved filename, avoiding generics!
+        if meta.get("file_name") and meta.get("file_name").lower() not in ("unknown_media", "direct_stream_media", "download", "file", "media"):
             filename = meta.get("file_name").lower()
 
     # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
