@@ -4881,6 +4881,8 @@ HTML_DASHBOARD = """
         .matrix-option.active .matrix-radio { border-color: #a3e635; }
         .matrix-option.active .matrix-radio::after { content: ''; width: 8px; height: 8px; background: #a3e635; border-radius: 50%; }
     </style>
+    <!-- WebAssembly Subtitle Engine for Anime -->
+    <script src="https://unpkg.com/jassub@latest/dist/jassub.js"></script>
 </head>
 <body>
 
@@ -6298,12 +6300,17 @@ HTML_DASHBOARD = """
         let subtitleCues = [];
         let subtitleAbortController = null;
         let hudTimeout;
-        let subtitleSyncOffset = 0; // 🟢 NEW: Global Sync Offset Tracker
+        let jassubRenderer = null;
+        let subtitleSyncOffset = 0;
         
         function updateSubtitleSync(val) {
             subtitleSyncOffset = parseFloat(val);
             document.getElementById('subtitle-sync-val').innerText = (subtitleSyncOffset > 0 ? "+" : "") + subtitleSyncOffset.toFixed(2) + "s";
-            renderCurrentSubtitle(); // Instantly update text on screen
+            if (jassubRenderer) {
+                jassubRenderer.setTimeOffset(subtitleSyncOffset);
+            } else {
+                renderCurrentSubtitle();
+            }
         }
 
         // ======================================================================
@@ -6734,12 +6741,12 @@ HTML_DASHBOARD = """
             const vp = document.getElementById('cinema-viewport');
             if (!vp) return;
             
-            // Detect iOS/iPadOS and PWA Standalone Mode
+            // Detect iOS/iPadOS exclusively. 
+            // Do NOT trap Android PWA (Standalone) devices here, as they support True Native Fullscreen.
             const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-            const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone;
 
-            // Apple completely blocks native fullscreen in PWAs. Use CSS-based faux-fullscreen.
-            if (isIOS || isStandalone) {
+            // Apple completely blocks native fullscreen in PWAs. Use CSS-based faux-fullscreen for iOS only.
+            if (isIOS) {
                 vp.classList.toggle('ios-fullscreen');
                 updateViewportBox();
                 resizePlayerSurface();
@@ -7022,73 +7029,37 @@ HTML_DASHBOARD = """
             applySubtitleStyle();
         }
         
-        async function applySubtitleSelection() {
+         async function applySubtitleSelection() {
             const subSelect = document.getElementById('pop-sub-select');
-            const overlay = document.getElementById('subtitle-overlay');
             activeSubtitleIndex = subSelect?.value ?? 'off';
-            subtitleCues = [];
-            if (overlay) overlay.innerHTML = '';
 
-            if (subtitleAbortController) {
-                subtitleAbortController.abort();
-                subtitleAbortController = null;
+            // 1. Clean up old WebAssembly instances and manual text overlays
+            if (jassubRenderer) {
+                jassubRenderer.destroy();
+                jassubRenderer = null;
             }
+            const overlay = document.getElementById('subtitle-overlay');
+            if (overlay) overlay.innerHTML = '';
 
             if (activeSubtitleIndex === 'off' || !activeMediaLink) {
                 wakeHUD();
                 return;
             }
 
-            subtitleAbortController = new AbortController();
-            try {
-                const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}`;
-                const response = await fetch(url, { signal: subtitleAbortController.signal, cache: 'force-cache' });
-                if (!response.ok) throw new Error(`Subtitle server returned ${response.status}`);
+            const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}`;
 
-                // The server caches extracted WebVTT.  Read it progressively so the
-                // first cues can appear before the entire file has arrived.
-                const reader = response.body?.getReader();
-                if (!reader) {
-                    subtitleCues = parseWebVTT(await response.text());
-                    renderCurrentSubtitle();
-                    return;
-                }
+            // 2. Boot the WebAssembly Anime Subtitle Engine
+            jassubRenderer = new JASSUB({
+                video: document.getElementById('hidden-video'),
+                subUrl: url,
+                workerUrl: 'https://unpkg.com/jassub@latest/dist/jassub-worker.js',
+                wasmUrl: 'https://unpkg.com/jassub@latest/dist/jassub-worker.wasm',
+                fallbackFont: 'sans-serif'
+            });
 
-                const decoder = new TextDecoder('utf-8');
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-
-                    const blocks = buffer.split(/\\n\\s*\\n/);
-                    buffer = blocks.pop() || '';
-                    for (const block of blocks) {
-                        const cues = parseWebVTT(block + '\\n\\n');
-                        if (cues.length) subtitleCues.push(...cues);
-                    }
-                    subtitleCues.sort((a, b) => a.start - b.start);
-                    renderCurrentSubtitle();
-                }
-
-                buffer += decoder.decode();
-                if (buffer.trim()) {
-                    const cues = parseWebVTT(buffer + '\\n\\n');
-                    if (cues.length) subtitleCues.push(...cues);
-                }
-                subtitleCues.sort((a, b) => a.start - b.start);
-                renderCurrentSubtitle();
-            } catch (err) {
-                if (err?.name !== 'AbortError') {
-                    console.warn('Subtitle load failed:', err);
-                    subtitleCues = [];
-                }
-            } finally {
-                wakeHUD();
-            }
+            wakeHUD();
         }
-
+        
         function hexToRgba(hex, alpha) {
             const m = String(hex || '').replace('#', '');
             const n = parseInt(m.length === 3 ? m.split('').map(c => c + c).join('') : m, 16);
@@ -7291,8 +7262,16 @@ HTML_DASHBOARD = """
         function openExternalPlayer(appType) {
             if (!activeMediaLink) return alert("Please load a stream first!");
             const streamUrl = window.location.origin + (playerDirectCompatible ? buildNativeUrl() : buildStreamUrl());
+            
+            // Detect Apple devices specifically for the x-callback requirement
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
             if (appType === 'vlc') {
-                window.location.href = `vlc://${streamUrl}`;
+                if (isIOS) {
+                    window.location.href = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(streamUrl)}`;
+                } else {
+                    window.location.href = `vlc://${streamUrl}`;
+                }
             } else if (appType === 'mx') {
                 window.location.href = `intent:${streamUrl}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;end`;
             }
@@ -9713,7 +9692,7 @@ async def _api_subtitles_handler(request):
     if cached and cached[1] > now:
         body = cached[0]
         return web.Response(body=body, status=200, headers={
-            "Content-Type": "text/vtt; charset=utf-8",
+            "Content-Type": "text/x-ssa; charset=utf-8",
             "Content-Length": str(len(body)),
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "public, max-age=3600",
@@ -9740,12 +9719,12 @@ async def _api_subtitles_handler(request):
         "-probesize", "4M", "-analyzeduration", "2M",
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
-        "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
+        "-vn", "-an", "-c:s", "ass", "-f", "ass", "pipe:1"
     ]
     
     import aiohttp
     response = web.StreamResponse(status=200, headers={
-        "Content-Type": "text/vtt; charset=utf-8",
+        "Content-Type": "text/x-ssa; charset=utf-8",
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-cache",
     })
