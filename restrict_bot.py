@@ -4631,20 +4631,21 @@ HTML_DASHBOARD = """
         }
 
         /* 📱 UNIVERSAL FULLSCREEN ROTATION (iOS, Android, HF iframes, PC, Mac) */
-        .cinema-viewport.rotated-landscape,
-        .cinema-viewport.rotated-landscape:fullscreen,
-        .cinema-viewport.rotated-landscape:-webkit-full-screen,
-        .cinema-viewport.rotated-landscape.ios-fullscreen {
+        #cinema-viewport.rotated-landscape,
+        #cinema-viewport:fullscreen.rotated-landscape,
+        #cinema-viewport:-webkit-full-screen.rotated-landscape,
+        #cinema-viewport.ios-fullscreen.rotated-landscape {
+            transform: translate(-50%, -50%) rotate(90deg) !important;
+            width: 100vh !important;
+            height: 100vw !important;
+            max-width: 100vh !important;
+            max-height: 100vw !important;
             position: fixed !important;
             top: 50% !important;
             left: 50% !important;
-            transform: translate(-50%, -50%) rotate(90deg) !important;
-            z-index: 999999 !important;
-            border-radius: 0 !important;
             margin: 0 !important;
             padding: 0 !important;
-            max-width: none !important;
-            max-height: none !important;
+            border-radius: 0 !important;
             background: #000 !important;
         }
         .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud, .cinema-viewport.ios-fullscreen .cinema-hud {
@@ -5127,7 +5128,13 @@ HTML_DASHBOARD = """
                             <button class="theme-btn" onclick="setFilterPreset('none')">None</button>
                             <button class="theme-btn" onclick="setFilterPreset('vivid')">Vivid</button>
                             <button class="theme-btn" onclick="setFilterPreset('cinematic')">Cinematic</button>
-                            <button class="theme-btn" onclick="setFilterPreset('soft')">Soft Pastel</button>
+                            <button class="theme-btn" onclick="setFilterPreset('soft')">Soft</button>
+                            <button class="theme-btn" onclick="setFilterPreset('high_contrast')">Contrast+</button>
+                            <button class="theme-btn" onclick="setFilterPreset('grayscale')">B & W</button>
+                            <button class="theme-btn" onclick="setFilterPreset('cyberpunk')">Cyberpunk</button>
+                            <button class="theme-btn" onclick="setFilterPreset('vintage')">Vintage</button>
+                            <button class="theme-btn" onclick="setFilterPreset('warm')">Warm</button>
+                            <button class="theme-btn" onclick="setFilterPreset('cool')">Cool</button>
                         </div>
                         
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 15px;">
@@ -5177,11 +5184,17 @@ HTML_DASHBOARD = """
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold; margin-top: 10px;">SUBTITLE SIZE</label>
                         <select id="subtitle-size-select" class="pop-select" onchange="applySubtitleStyle()">
+                            <option value="10">10 px</option>
+                            <option value="12">12 px</option>
+                            <option value="14">14 px</option>
+                            <option value="16">16 px</option>
                             <option value="18">18 px</option>
+                            <option value="20">20 px</option>
                             <option value="22">22 px</option>
                             <option value="26" selected>26 px</option>
                             <option value="30">30 px</option>
                             <option value="36">36 px</option>
+                            <option value="42">42 px</option>
                         </select>
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLE COLOR</label>
@@ -6754,106 +6767,56 @@ HTML_DASHBOARD = """
 
         async function toggleOrientation() {
             const vp = document.getElementById('cinema-viewport');
-            const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
             const isNativeFullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+            const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
 
             if (!isNativeFullscreen && !isIosFullscreen) {
-                alert("Please enter Full Screen mode first (⛶) before rotating orientation!");
+                alert("Please enter Full Screen mode first (⛶) before rotating!");
                 return;
             }
 
             isForcedLandscape = !isForcedLandscape;
-            let nativeLocked = false;
 
             try {
                 if (screen.orientation && screen.orientation.lock) {
-                    if (isForcedLandscape) {
-                        await screen.orientation.lock('landscape');
-                    } else {
-                        await screen.orientation.lock('portrait');
-                    }
-                    nativeLocked = true;
+                    await screen.orientation.lock(isForcedLandscape ? 'landscape' : 'portrait');
                 } else if (screen.lockOrientation) {
-                    nativeLocked = screen.lockOrientation(isForcedLandscape ? 'landscape' : 'portrait');
+                    screen.lockOrientation(isForcedLandscape ? 'landscape' : 'portrait');
                 }
-            } catch (err) {
-                nativeLocked = false; // iframe blockage natively caught silently
-            }
+            } catch (err) {} // Silently ignore iframe blockages
 
-            if (!nativeLocked || isIosFullscreen) {
-                if (isForcedLandscape) {
+            // Wait 250ms for native rotation. If screen is still portrait, force CSS rotation.
+            setTimeout(() => {
+                let actualLandscape = window.innerWidth > window.innerHeight;
+                if (isForcedLandscape && !actualLandscape) {
                     vp.classList.add('rotated-landscape');
-                    const w = window.innerWidth;
-                    const h = window.innerHeight;
-                    vp.style.setProperty('width', Math.max(w, h) + 'px', 'important');
-                    vp.style.setProperty('height', Math.min(w, h) + 'px', 'important');
                 } else {
                     vp.classList.remove('rotated-landscape');
-                    vp.style.removeProperty('width');
-                    vp.style.removeProperty('height');
                 }
-            } else {
-                vp.classList.remove('rotated-landscape');
-                vp.style.removeProperty('width');
-                vp.style.removeProperty('height');
-                
-                // Smart failsafe: browser lies about success inside iframes, so check physical dimensions
-                setTimeout(() => {
-                    let actualLandscape = window.innerWidth > window.innerHeight;
-                    if (isForcedLandscape && !actualLandscape) {
-                        vp.classList.add('rotated-landscape');
-                        const w = window.innerWidth;
-                        const h = window.innerHeight;
-                        vp.style.setProperty('width', Math.max(w, h) + 'px', 'important');
-                        vp.style.setProperty('height', Math.min(w, h) + 'px', 'important');
-                        updateViewportBox();
-                        resizePlayerSurface();
-                    } else if (!isForcedLandscape && actualLandscape) {
-                        vp.classList.remove('rotated-landscape');
-                        vp.style.removeProperty('width');
-                        vp.style.removeProperty('height');
-                        updateViewportBox();
-                        resizePlayerSurface();
-                    }
-                }, 400);
-            }
-
-            updateViewportBox();
-            resizePlayerSurface();
-            renderCurrentSubtitle();
-            wakeHUD();
+                updateViewportBox();
+                resizePlayerSurface();
+                wakeHUD();
+            }, 250);
         }
 
         document.addEventListener('fullscreenchange', () => { 
             const vp = document.getElementById('cinema-viewport');
             if (!document.fullscreenElement) {
-                if (vp) {
-                    vp.classList.remove('rotated-landscape');
-                    vp.style.removeProperty('width');
-                    vp.style.removeProperty('height');
-                }
+                if (vp) vp.classList.remove('rotated-landscape');
                 isForcedLandscape = false;
-                if (screen.orientation && screen.orientation.unlock) {
-                    try { screen.orientation.unlock(); } catch(e){}
-                }
+                try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch(e){}
             }
-            updateViewportBox(); resizePlayerSurface(); 
+            setTimeout(() => { updateViewportBox(); resizePlayerSurface(); }, 200);
         });
         
         document.addEventListener('webkitfullscreenchange', () => { 
             const vp = document.getElementById('cinema-viewport');
             if (!document.webkitFullscreenElement) {
-                if (vp) {
-                    vp.classList.remove('rotated-landscape');
-                    vp.style.removeProperty('width');
-                    vp.style.removeProperty('height');
-                }
+                if (vp) vp.classList.remove('rotated-landscape');
                 isForcedLandscape = false;
-                if (screen.orientation && screen.orientation.unlock) {
-                    try { screen.orientation.unlock(); } catch(e){}
-                }
+                try { if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); } catch(e){}
             }
-            updateViewportBox(); resizePlayerSurface(); 
+            setTimeout(() => { updateViewportBox(); resizePlayerSurface(); }, 200);
         });
 
         // ======================================================================
@@ -7181,7 +7144,13 @@ HTML_DASHBOARD = """
                 'none': {b: 100, c: 100, s: 100, h: 0},
                 'vivid': {b: 105, c: 115, s: 130, h: 0},
                 'cinematic': {b: 95, c: 120, s: 85, h: 0},
-                'soft': {b: 110, c: 90, s: 110, h: -5}
+                'soft': {b: 110, c: 90, s: 110, h: -5},
+                'high_contrast': {b: 100, c: 140, s: 110, h: 0},
+                'grayscale': {b: 100, c: 110, s: 0, h: 0},
+                'cyberpunk': {b: 90, c: 130, s: 150, h: 30},
+                'vintage': {b: 110, c: 85, s: 70, h: 25},
+                'warm': {b: 105, c: 105, s: 115, h: 10},
+                'cool': {b: 95, c: 105, s: 110, h: -15}
             };
             const p = settings[preset] || settings['none'];
             document.getElementById('filter-bright').value = p.b;
