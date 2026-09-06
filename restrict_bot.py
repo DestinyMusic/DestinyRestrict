@@ -5200,6 +5200,14 @@ HTML_DASHBOARD = """
                                 <label style="font-size: 10px; color: var(--subtext);">Hue: <span id="val-hue">0</span>°</label>
                                 <input type="range" id="filter-hue" min="-180" max="180" value="0" oninput="applyVideoFilters()" style="width: 100%; accent-color: var(--accent);">
                             </div>
+                            <div>
+                                <label style="font-size: 10px; color: var(--subtext);">Sepia: <span id="val-sepia">0</span>%</label>
+                                <input type="range" id="filter-sepia" min="0" max="100" value="0" oninput="applyVideoFilters()" style="width: 100%; accent-color: var(--accent);">
+                            </div>
+                            <div>
+                                <label style="font-size: 10px; color: var(--subtext);">Blur (Softness): <span id="val-blur">0</span>px</label>
+                                <input type="range" id="filter-blur" min="0" max="10" value="0" step="0.5" oninput="applyVideoFilters()" style="width: 100%; accent-color: var(--accent);">
+                            </div>
                         </div>
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">SUBTITLES</label>
@@ -5256,6 +5264,13 @@ HTML_DASHBOARD = """
                         <div style="display: flex; gap: 8px; margin-bottom: 14px; align-items: center;">
                             <input id="subtitle-sync-slider" type="range" min="-10" max="10" step="0.25" value="0" oninput="updateSubtitleSync(this.value)" style="flex: 1; accent-color: var(--accent);">
                             <span id="subtitle-sync-val" style="color: var(--text); font-size: 12px; font-weight: bold; font-family: monospace; min-width: 50px; text-align: right;">0.00s</span>
+                        </div>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold; margin-top: 10px;">SUBTITLE VERTICAL POSITION</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 14px; align-items: center;">
+                            <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">TOP</span>
+                            <input id="subtitle-pos-slider" type="range" min="2" max="95" value="88" oninput="applySubtitleStyle()" style="flex: 1; accent-color: var(--accent);">
+                            <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">BOT</span>
                         </div>
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
@@ -7206,6 +7221,15 @@ HTML_DASHBOARD = """
             const font = document.getElementById('subtitle-font-select')?.value || 'sans-serif';
             const weight = document.getElementById('subtitle-weight-select')?.value || '600';
             
+            const pos = document.getElementById('subtitle-pos-slider')?.value || 88;
+            
+            const overlay = document.getElementById('subtitle-overlay');
+            if (overlay) {
+                overlay.style.bottom = 'auto'; // Disable CSS bottom anchor
+                overlay.style.top = `${pos}%`; // Apply slider value to move it exactly where you want
+                overlay.style.alignItems = 'center'; // Center it vertically relative to its new coordinate
+            }
+
             document.querySelectorAll('#subtitle-overlay .subtitle-text').forEach(text => {
                 text.style.fontSize = `${size}px`;
                 text.style.color = fg;
@@ -7223,17 +7247,18 @@ HTML_DASHBOARD = """
             const c = document.getElementById('filter-contrast').value;
             const s = document.getElementById('filter-sat').value;
             const h = document.getElementById('filter-hue').value;
+            const sep = document.getElementById('filter-sepia')?.value || 0;
+            const blr = document.getElementById('filter-blur')?.value || 0;
             
             document.getElementById('val-bright').innerText = b;
             document.getElementById('val-contrast').innerText = c;
             document.getElementById('val-sat').innerText = s;
             document.getElementById('val-hue').innerText = h;
+            if(document.getElementById('val-sepia')) document.getElementById('val-sepia').innerText = sep;
+            if(document.getElementById('val-blur')) document.getElementById('val-blur').innerText = blr;
             
-            // Note: True "Sharpness" requires WebGL convolution matrices. 
-            // We approximate Sharpness/Crispness using Contrast + Brightness.
-            const filterStr = `brightness(${b}%) contrast(${c}%) saturate(${s}%) hue-rotate(${h}deg)`;
+            const filterStr = `brightness(${b}%) contrast(${c}%) saturate(${s}%) hue-rotate(${h}deg) sepia(${sep}%) blur(${blr}px)`;
             
-            // Apply to both WebGL canvas and fallback video
             const canvas = document.getElementById('webgl-canvas');
             const video = document.getElementById('hidden-video');
             if(canvas) canvas.style.filter = filterStr;
@@ -7242,22 +7267,24 @@ HTML_DASHBOARD = """
 
         function setFilterPreset(preset) {
             const settings = {
-                'none': {b: 100, c: 100, s: 100, h: 0},
-                'vivid': {b: 105, c: 115, s: 130, h: 0},
-                'cinematic': {b: 95, c: 120, s: 85, h: 0},
-                'soft': {b: 110, c: 90, s: 110, h: -5},
-                'high_contrast': {b: 100, c: 140, s: 110, h: 0},
-                'grayscale': {b: 100, c: 110, s: 0, h: 0},
-                'cyberpunk': {b: 90, c: 130, s: 150, h: 30},
-                'vintage': {b: 110, c: 85, s: 70, h: 25},
-                'warm': {b: 105, c: 105, s: 115, h: 10},
-                'cool': {b: 95, c: 105, s: 110, h: -15}
+                'none': {b: 100, c: 100, s: 100, h: 0, sep: 0, blr: 0},
+                'vivid': {b: 105, c: 115, s: 130, h: 0, sep: 0, blr: 0},
+                'cinematic': {b: 95, c: 120, s: 85, h: 0, sep: 0, blr: 0},
+                'soft': {b: 110, c: 90, s: 110, h: -5, sep: 0, blr: 0.5},
+                'high_contrast': {b: 100, c: 140, s: 110, h: 0, sep: 0, blr: 0},
+                'grayscale': {b: 100, c: 110, s: 0, h: 0, sep: 0, blr: 0},
+                'cyberpunk': {b: 90, c: 130, s: 150, h: 30, sep: 0, blr: 0},
+                'vintage': {b: 110, c: 85, s: 70, h: 25, sep: 40, blr: 0.5},
+                'warm': {b: 105, c: 105, s: 115, h: 10, sep: 10, blr: 0},
+                'cool': {b: 95, c: 105, s: 110, h: -15, sep: 0, blr: 0}
             };
             const p = settings[preset] || settings['none'];
             document.getElementById('filter-bright').value = p.b;
             document.getElementById('filter-contrast').value = p.c;
             document.getElementById('filter-sat').value = p.s;
             document.getElementById('filter-hue').value = p.h;
+            if(document.getElementById('filter-sepia')) document.getElementById('filter-sepia').value = p.sep;
+            if(document.getElementById('filter-blur')) document.getElementById('filter-blur').value = p.blr;
             applyVideoFilters();
         }
 
