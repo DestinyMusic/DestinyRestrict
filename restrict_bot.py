@@ -6645,12 +6645,18 @@ HTML_DASHBOARD = """
             pos = Math.max(0, Math.min(1, pos));
             
             const video = document.getElementById('hidden-video');
-            let dur = Number.isFinite(video?.duration) && video.duration > 0 ? video.duration : Infinity;
-            if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur === 0 || dur === Infinity)) {
+            let dur = video?.duration || 0;
+
+            // 🟢 THE FIX: If playing via FFmpeg Pipe, the browser duration is a lie. Force the real duration.
+            if (playerRequiresTranscode && playerTotalDuration > 0) {
+                dur = playerTotalDuration;
+            } else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) {
                 dur = playerTotalDuration;
             }
-            if (dur === Infinity) return { pos: 0, target: 0, dur: 0 };
             
+            if (dur === 0 || dur === Infinity) return { pos: 0, target: 0, dur: 0 };
+            
+            console.log(`[DEBUG SCRUB] Click Pos: ${(pos*100).toFixed(2)}% | Calc Target: ${pos * dur}s | Total Dur: ${dur}s`);
             return { pos, target: pos * dur, dur };
         }
 
@@ -6710,6 +6716,7 @@ HTML_DASHBOARD = """
             if (dur === 0) return;
             wakeHUD();
             
+            console.log(`[DEBUG COMMIT] Triggering seek command to exact time: ${target}s`);
             globalTargetTime = target; // 🟢 Save intended destination instantly
             
             const video = document.getElementById('hidden-video');
@@ -7560,14 +7567,20 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('timeupdate', () => {
                 disarmPlaybackWatchdog(); // 🟢 Disarm Watchdog (Frames flowing)
                 let cur = vidElem.currentTime || 0;
-                let dur = Number.isFinite(vidElem.duration) && vidElem.duration > 0 ? vidElem.duration : 0;
+                let dur = vidElem.duration || 0;
 
+                // 🟢 THE FIX: Mirror the exact duration math from getScrubberTime
                 if (playerRequiresTranscode) {
                     cur = playerTimelineOffset + cur;
                     if (playerTotalDuration > 0) {
                         dur = playerTotalDuration;
                     }
-                } else if (playerTotalDuration > 0 && (!dur || dur === Infinity)) {
+                } else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) {
+                    dur = playerTotalDuration;
+                }
+                cur = Math.min(cur, dur);
+
+                if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
                     dur = playerTotalDuration;
                 }
                 cur = Math.min(cur, dur);
