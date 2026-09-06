@@ -328,6 +328,14 @@ class Database:
         user = await self.col.find_one({'id': int(id)})
         return user.get('api_hash') if user else None
 
+    # 🟢 FIX: User-Specific Worker Tokens
+    async def set_worker_tokens(self, id, tokens):
+        await self.col.update_one({'id': int(id)}, {'$set': {'worker_tokens': tokens}})
+
+    async def get_worker_tokens(self, id):
+        user = await self.col.find_one({'id': int(id)})
+        return user.get('worker_tokens', []) if user else []
+
     async def total_session_users_count(self):
         count = await self.col.count_documents({"session": {"$ne": None}})
         return count
@@ -9149,14 +9157,24 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
 
         candidates = []
         seen = set()
-        for client in [app] + list(MULTI_BOT_CLIENTS):
+        
+        # 1. Add the User's Personal Worker Bots
+        user_workers = USER_WORKER_BOTS.get(user_id, [])
+        for client in user_workers:
             if client is None or not getattr(client, "is_connected", True):
                 continue
             marker = _tg_client_cache_name(client)
-            if marker in seen:
-                continue
-            seen.add(marker)
-            candidates.append(client)
+            if marker not in seen:
+                seen.add(marker)
+                candidates.append(client)
+                
+        # 2. Main Bot Protection: Only allow Admins to use the Main Bot for streaming!
+        if user_id in ADMINS or user_id in SUDOS:
+            if getattr(app, "is_connected", True):
+                marker = _tg_client_cache_name(app)
+                if marker not in seen:
+                    seen.add(marker)
+                    candidates.append(app)
 
         pool = []
         if candidates:
@@ -10554,24 +10572,28 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         current_block += batch_count
 
 
-MULTI_BOT_CLIENTS = []
+USER_WORKER_BOTS = defaultdict(list)
 
-async def init_worker_bots():
-    """Initializes extra bot clients from MongoDB for parallel downloads."""
-    global MULTI_BOT_CLIENTS
-    for c in MULTI_BOT_CLIENTS:
+async def init_user_worker_bots(user_id, tokens=None):
+    """Initializes extra bot clients specifically for one user."""
+    global USER_WORKER_BOTS
+    
+    # Stop existing workers for this specific user
+    for c in USER_WORKER_BOTS.get(user_id, []):
         try: await c.stop()
         except Exception: pass
-    MULTI_BOT_CLIENTS.clear()
-    TG_ACCESS_CACHE.clear()
+    USER_WORKER_BOTS[user_id] = []
 
-    doc = await db.db.config.find_one({"_id": "worker_tokens"})
-    tokens = doc.get("tokens", []) if doc else []
+    if tokens is None:
+        tokens = await db.get_worker_tokens(user_id)
+        
+    if not tokens:
+        return
     
     for idx, token in enumerate(tokens, start=1):
         try:
             bot_client = Client(
-                f"worker_bot_{idx}",
+                f"worker_{user_id}_{idx}",
                 api_id=API_ID,
                 api_hash=API_HASH,
                 bot_token=token.strip(),
@@ -10580,21 +10602,28 @@ async def init_worker_bots():
                 ipv6=False
             )
             await bot_client.start()
-            MULTI_BOT_CLIENTS.append(bot_client)
-            logger.info(f"🚀 Worker Bot {idx} active for parallel streaming.")
+            USER_WORKER_BOTS[user_id].append(bot_client)
+            logger.info(f"🚀 Worker Bot {idx} active exclusively for User {user_id}.")
         except Exception as e:
-            logger.warning(f"Could not load worker token {idx}: {e}")
+            logger.warning(f"Could not load worker token {idx} for user {user_id}: {e}")
 
 async def _api_get_worker_tokens(request):
-    doc = await db.db.config.find_one({"_id": "worker_tokens"})
-    return web.json_response({"status": "success", "tokens": doc.get("tokens", []) if doc else []})
+    user_id = int(request.query.get("user_id", 0))
+    tokens = await db.get_worker_tokens(user_id)
+    return web.json_response({"status": "success", "tokens": tokens})
 
 async def _api_save_worker_tokens(request):
     data = await request.json()
+    user_id = int(data.get("user_id", 0))
     tokens = [t.strip() for t in data.get("tokens", []) if ":" in t]
-    await db.db.config.update_one({"_id": "worker_tokens"}, {"$set": {"tokens": tokens}}, upsert=True)
-    asyncio.create_task(init_worker_bots())
-    return web.json_response({"status": "success", "message": f"Saved {len(tokens)} worker token(s). Pool reloading."})
+    
+    # 🟢 FIX: Save tokens to the User's specific profile
+    await db.set_worker_tokens(user_id, tokens)
+    
+    # Boot them up instantly in the background for this user
+    asyncio.create_task(init_user_worker_bots(user_id, tokens))
+    
+    return web.json_response({"status": "success", "message": f"Saved {len(tokens)} worker token(s) exclusively for your account."})
     
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
@@ -11743,8 +11772,14 @@ async def main():
     asyncio.create_task(cleanup_watchdog())
     logger.info("🛡️ Auto-Cleanup Watchdog Started") 
 
-    # 🟢 FIX: Actually boot the worker bots from the database on startup!
-    await init_worker_bots()
+    # 🟢 FIX: Boot user-specific worker bots from the database on startup!
+    logger.info("🔄 Loading Personal Worker Bots...")
+    users_cursor = await db.get_all_users()
+    async for user_data in users_cursor:
+        uid = user_data.get('id')
+        tokens = user_data.get('worker_tokens', [])
+        if tokens:
+            await init_user_worker_bots(uid, tokens)
 
     # Attach the listener to the main bot so it functions without a User Session!
     app.add_handler(MessageHandler(user_watcher_handler, filters.all))
