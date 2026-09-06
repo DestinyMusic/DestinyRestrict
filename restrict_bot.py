@@ -6756,40 +6756,71 @@ HTML_DASHBOARD = """
             const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
             const isNativeFullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
 
-            // 1. Enforce entering Fullscreen first
+            let debugLog = "[Orientation Debug Logs]\n";
+
             if (!isNativeFullscreen && !isIosFullscreen) {
                 alert("Please enter Full Screen mode first (⛶) before rotating orientation!");
                 return;
             }
 
             isForcedLandscape = !isForcedLandscape;
+            debugLog += `1. Target State: ${isForcedLandscape ? 'Landscape' : 'Portrait'}\n`;
 
-            // 2. Attempt native Screen Orientation API (works on standalone Chrome Android)
             let nativeLocked = false;
             try {
                 if (screen.orientation && screen.orientation.lock) {
+                    debugLog += "2. Native API found. Attempting Lock...\n";
                     if (isForcedLandscape) {
                         await screen.orientation.lock('landscape');
                     } else {
                         await screen.orientation.lock('portrait');
                     }
                     nativeLocked = true;
+                    debugLog += "3. Native API SUCCESS (No error thrown).\n";
+                } else if (screen.lockOrientation) {
+                    debugLog += "2. Old lockOrientation API found.\n";
+                    nativeLocked = screen.lockOrientation(isForcedLandscape ? 'landscape' : 'portrait');
+                    debugLog += `3. Old API returned: ${nativeLocked}\n`;
+                } else {
+                    debugLog += "2. Native API NOT SUPPORTED.\n";
                 }
             } catch (err) {
-                // Silently caught: Native lock is restricted by browser/device/iframe (HF Spaces, iOS Safari, Mac/PC)
                 nativeLocked = false;
+                debugLog += `3. Native API ERROR: ${err.message}\n`;
             }
 
-            // 3. Universal CSS Rotation fallback (Works 100% on iOS, iPad, Mac, Windows, and iframe-restricted Android)
-            if (!nativeLocked) {
+            // If Native failed OR it's an iOS/CSS-fullscreen, apply CSS rotation immediately
+            if (!nativeLocked || isIosFullscreen) {
+                debugLog += "4. Applying CSS Rotation Fallback...\n";
                 if (isForcedLandscape) {
                     vp.classList.add('rotated-landscape');
                 } else {
                     vp.classList.remove('rotated-landscape');
                 }
             } else {
+                debugLog += "4. Native lock claims success, stripping CSS.\n";
                 vp.classList.remove('rotated-landscape');
+                
+                // --- 🟢 THE SMART FAILSAFE ---
+                // Browsers in iframes (like HuggingFace) often claim lock success but do nothing.
+                // We check if the screen actually changed dimensions 500ms later!
+                setTimeout(() => {
+                    let actualLandscape = window.innerWidth > window.innerHeight;
+                    if (isForcedLandscape && !actualLandscape) {
+                        alert("FailSafe Triggered: Browser lied about native rotation! Forcing CSS fallback.");
+                        vp.classList.add('rotated-landscape');
+                        updateViewportBox();
+                        resizePlayerSurface();
+                    } else if (!isForcedLandscape && actualLandscape) {
+                        vp.classList.remove('rotated-landscape');
+                        updateViewportBox();
+                        resizePlayerSurface();
+                    }
+                }, 500);
             }
+
+            // Show the exact debug sequence on your screen!
+            alert(debugLog);
 
             updateViewportBox();
             resizePlayerSurface();
