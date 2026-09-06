@@ -4771,15 +4771,27 @@ HTML_DASHBOARD = """
         /* 15s Seek Zones (Double Tap) */
         .seek-zone { 
             position: absolute; 
-            top: 30%; bottom: 30%; /* Restricts the zone tightly to the center video area */
-            width: 30%; 
+            top: 35%; bottom: 35%; /* Tightly restricts height to the exact center of the video */
+            width: 25%; /* Keeps the touch zone away from the center play button */
             z-index: 10; 
             cursor: pointer; 
+            display: flex; 
+            align-items: center; 
+            justify-content: center; 
+            color: rgba(255,255,255,0); 
+            font-size: 32px; 
+            font-weight: bold; 
+            transition: color 0.2s; 
             user-select: none; 
-            -webkit-tap-highlight-color: transparent; /* Removes the Android blue flash */
+            -webkit-tap-highlight-color: rgba(0,0,0,0) !important; /* Completely kills the Android blue box */
+            outline: none !important;
         }
         .seek-zone.left { left: 5%; }
         .seek-zone.right { right: 5%; }
+        .seek-zone:active { 
+            color: rgba(255,255,255,0.8); 
+            background: radial-gradient(circle, rgba(255,255,255,0.15) 0%, transparent 65%); 
+        }
 
         .cinema-scrubber-bar {
             position: relative; width: 100%; height: 6px; background: rgba(255,255,255,0.25);
