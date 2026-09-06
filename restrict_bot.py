@@ -8632,13 +8632,43 @@ async def resolve_direct_link(url):
         result = original
         session = await _get_direct_http_session()
 
-        # Google Drive worker/direct endpoint.
-        gdrive_match = re.search(r"drive\.google\.com/file/d/([a-zA-Z0-9_-]+)", original)
-        if gdrive_match:
-            result = f"https://gdrive-dd.bypased.workers.dev/direct.aspx?id={gdrive_match.group(1)}"
+        # 1. Pixeldrain Auto-Bypass
+        pixel_match = re.search(r"pixeldrain\.com/u/([a-zA-Z0-9_-]+)", original)
+        if pixel_match:
+            result = f"https://cdn.pixeldrain.eu.cc/{pixel_match.group(1)}"
 
-        # GoFile API. The whole operation is cached, so repeat playback does not
-        # create a new GoFile account/token unnecessarily.
+        # 2. Dropbox Auto-Bypass (Forces direct download)
+        if "dropbox.com" in original:
+            result = original.replace("?dl=0", "?dl=1").replace("&dl=0", "&dl=1")
+            if "?dl=1" not in result and "&dl=1" not in result:
+                result += "?dl=1"
+
+        # 3. OneDrive / SharePoint Auto-Bypass
+        if result == original and ("onedrive.live.com" in original or "sharepoint.com" in original):
+            result += "&download=1" if "?" in original else "?download=1"
+
+        # 4. HuggingFace Auto-Bypass
+        if result == original and "huggingface.co" in original and "/blob/" in original:
+            result = original.replace("/blob/", "/resolve/")
+
+        # 5. MediaFire Auto-Bypass
+        if result == original and "mediafire.com/file/" in original:
+            try:
+                async with session.get(original, allow_redirects=True) as r:
+                    html_text = await r.text(errors='ignore')
+                    m = re.search(r'href="(https?://download[^"]+)"\s+id="downloadButton"', html_text, re.I)
+                    if m:
+                        result = m.group(1)
+            except Exception as exc:
+                logger.warning(f"Mediafire resolve failed: {exc}")
+
+        # 6. Google Drive Auto-Bypass (Expanded to handle open?id and uc?id)
+        if result == original:
+            gdrive_match = re.search(r"drive\.google\.com/(?:file/d/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)", original)
+            if gdrive_match:
+                result = f"https://gdrive-dd.bypased.workers.dev/direct.aspx?id={gdrive_match.group(1)}"
+
+        # 7. GoFile API
         if result == original:
             gofile_match = re.search(r"gofile\.io/d/([a-zA-Z0-9]+)", original)
             if gofile_match:
@@ -8659,7 +8689,7 @@ async def resolve_direct_link(url):
                 except Exception as exc:
                     logger.warning(f"GoFile resolve failed: {exc}")
 
-        # Buzzheavier page/direct URL resolver.
+        # 8. Buzzheavier API
         if result == original:
             buzz_match = re.search(r"buzzheavier\.com/([a-zA-Z0-9]+)", original)
             if buzz_match:
@@ -8682,8 +8712,7 @@ async def resolve_direct_link(url):
                 except Exception as exc:
                     logger.warning(f"Buzzheavier resolve failed: {exc}")
 
-        # Last resort: a single ranged GET resolves redirects and captures useful
-        # headers for the upcoming probe, avoiding a second discovery request.
+        # 9. Last resort: a single ranged GET resolves redirects and captures useful headers
         if result == original:
             try:
                 async with session.get(
@@ -8710,7 +8739,6 @@ async def resolve_direct_link(url):
             oldest = next(iter(DIRECT_HEADER_CACHE))
             DIRECT_HEADER_CACHE.pop(oldest, None)
         return result
-
 
 async def _direct_upstream_request(url, request):
     """Open a direct HTTP source through the shared keep-alive session."""
