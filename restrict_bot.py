@@ -4629,6 +4629,23 @@ HTML_DASHBOARD = """
             position: fixed !important; top: 0 !important; left: 0 !important; z-index: 9999 !important;
             padding: 0 !important; margin: 0 !important; background: #000 !important;
         }
+
+        /* 📱 UNIVERSAL FULLSCREEN ROTATION (iOS, Android, HF iframes, PC, Mac) */
+        .cinema-viewport.rotated-landscape {
+            transform: rotate(90deg) !important;
+            transform-origin: center center !important;
+            width: 100vh !important;
+            height: 100vw !important;
+            max-width: 100vh !important;
+            max-height: 100vw !important;
+            position: fixed !important;
+            top: 50% !important;
+            left: 50% !important;
+            margin-top: -50vw !important;
+            margin-left: -50vh !important;
+            z-index: 999999 !important;
+            border-radius: 0 !important;
+        }
         .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud, .cinema-viewport.ios-fullscreen .cinema-hud {
             padding: 40px 30px; padding-bottom: max(40px, env(safe-area-inset-bottom));
         }
@@ -6732,38 +6749,77 @@ HTML_DASHBOARD = """
             }
         }
 
+        let isForcedLandscape = false;
+
         async function toggleOrientation() {
             const vp = document.getElementById('cinema-viewport');
             const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
-            
-            // 🟢 Warn user to enter fullscreen first
-            if (!document.fullscreenElement && !document.webkitFullscreenElement && !isIosFullscreen) {
-                alert("Please enter Full Screen mode first (⛶) before locking orientation!");
+            const isNativeFullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
+
+            // 1. Enforce entering Fullscreen first
+            if (!isNativeFullscreen && !isIosFullscreen) {
+                alert("Please enter Full Screen mode first (⛶) before rotating orientation!");
                 return;
             }
-            
+
+            isForcedLandscape = !isForcedLandscape;
+
+            // 2. Attempt native Screen Orientation API (works on standalone Chrome Android)
+            let nativeLocked = false;
             try {
                 if (screen.orientation && screen.orientation.lock) {
-                    const currentType = screen.orientation.type;
-                    if (currentType.startsWith('portrait')) {
+                    if (isForcedLandscape) {
                         await screen.orientation.lock('landscape');
                     } else {
                         await screen.orientation.lock('portrait');
                     }
-                } else if (screen.lockOrientation) {
-                    const currentType = screen.orientation ? screen.orientation.type : (screen.mozOrientation || screen.msOrientation || 'portrait-primary');
-                    if (currentType.startsWith('portrait')) {
-                        screen.lockOrientation('landscape');
-                    } else {
-                        screen.lockOrientation('portrait');
-                    }
+                    nativeLocked = true;
                 }
             } catch (err) {
-                console.warn("Orientation lock failed (System Auto-Rotate is likely disabled):", err);
-                // Silently fail here! Do NOT show an alert popup. 
-                // The user can simply turn on Auto-Rotate in their phone settings.
+                // Silently caught: Native lock is restricted by browser/device/iframe (HF Spaces, iOS Safari, Mac/PC)
+                nativeLocked = false;
             }
+
+            // 3. Universal CSS Rotation fallback (Works 100% on iOS, iPad, Mac, Windows, and iframe-restricted Android)
+            if (!nativeLocked) {
+                if (isForcedLandscape) {
+                    vp.classList.add('rotated-landscape');
+                } else {
+                    vp.classList.remove('rotated-landscape');
+                }
+            } else {
+                vp.classList.remove('rotated-landscape');
+            }
+
+            updateViewportBox();
+            resizePlayerSurface();
+            renderCurrentSubtitle();
+            wakeHUD();
         }
+
+        document.addEventListener('fullscreenchange', () => { 
+            const vp = document.getElementById('cinema-viewport');
+            if (!document.fullscreenElement) {
+                if (vp) vp.classList.remove('rotated-landscape');
+                isForcedLandscape = false;
+                if (screen.orientation && screen.orientation.unlock) {
+                    try { screen.orientation.unlock(); } catch(e){}
+                }
+            }
+            updateViewportBox(); resizePlayerSurface(); 
+        });
+        
+        document.addEventListener('webkitfullscreenchange', () => { 
+            const vp = document.getElementById('cinema-viewport');
+            if (!document.webkitFullscreenElement) {
+                if (vp) vp.classList.remove('rotated-landscape');
+                isForcedLandscape = false;
+                if (screen.orientation && screen.orientation.unlock) {
+                    try { screen.orientation.unlock(); } catch(e){}
+                }
+            }
+            updateViewportBox(); resizePlayerSurface(); 
+        });
 
         // ======================================================================
         // ROBUST ASPECT-RATIO / SURFACE SIZING
@@ -8608,10 +8664,6 @@ async def _api_direct_stream_handler(request):
     if not url or not url.lower().startswith(("http://", "https://")):
         return web.Response(status=400, text="Invalid direct media URL")
 
-    # 🟢 ADDED DEBUG LOGGING FOR DIRECT STREAMS
-    range_header = request.headers.get("Range", "No-Range")
-    logger.info(f"🌍 [DIRECT STREAM DEBUG] Req: {request.method} | Range: {range_header} | URL: {url[:60]}...")
-
     try:
         session, remote, resolved = await _direct_upstream_request(url, request)
     except Exception as exc:
@@ -8720,10 +8772,9 @@ async def _run_ffprobe_json(input_url, fast=True):
     last_error = None
     for probesize, analyzeduration in probe_pairs:
         cmd = [
-            "ffprobe", "-v", "warning", "-hide_banner",
+            "ffprobe", "-v", "error", "-hide_banner",
             "-user_agent", "Mozilla/5.0",
             "-rw_timeout", "15000000",
-            "-seekable", "1",  # 🟢 FIX: Forces FFprobe to jump to the end of MKV files!
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
@@ -8732,7 +8783,6 @@ async def _run_ffprobe_json(input_url, fast=True):
             "-of", "json", input_url,
         ]
         try:
-            logger.info(f"🎥 [FFPROBE DEBUG] Executing: {' '.join(cmd)}")
             proc = await asyncio.create_subprocess_exec(
                 cmd[0], *cmd[1:],
                 stdout=asyncio.subprocess.PIPE,
@@ -8740,14 +8790,10 @@ async def _run_ffprobe_json(input_url, fast=True):
             )
             stdout, stderr = await proc.communicate()
             if proc.returncode == 0 and stdout:
-                logger.info(f"✅ [FFPROBE DEBUG] Metadata Extracted Successfully!")
                 return json.loads(stdout.decode('utf-8', errors='ignore') or '{}')
-            
             last_error = stderr.decode('utf-8', errors='ignore').strip() or 'ffprobe failed'
-            logger.error(f"❌ [FFPROBE DEBUG] Failed (Code {proc.returncode}): {last_error}")
         except Exception as exc:
             last_error = str(exc)
-            logger.error(f"❌ [FFPROBE DEBUG] Exception: {last_error}")
     raise RuntimeError(last_error or 'ffprobe failed')
 
 # ------------------------------------------------------------------------------
@@ -8936,44 +8982,69 @@ async def _api_media_probe_handler(request):
             if not is_tg:
                 probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
 
+            logger.info(f"🔎 [PROBE] Starting probe for: {link[:100]} | User: {user_id}")
+            tg_duration = 0.0
+            if is_tg and 'media' in locals() and media:
+                tg_duration = float(getattr(media, "duration", 0) or 0)
+                if tg_duration > 0:
+                    duration_val = tg_duration
+                    logger.info(f"🔎 [PROBE TG] Found Telegram native duration: {duration_val}s")
+
             try:
                 pdata = await _run_ffprobe_json(probe_input, fast=True)
                 streams = pdata.get("streams", []) or []
-                
-                # 1. Try format duration
+                if duration_val <= 0:
+                    try:
+                        duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
+                    except Exception:
+                        duration_val = 0.0
+                logger.info(f"🔎 [PROBE HTTP] Success! Streams found: {len(streams)}, Duration: {duration_val}s")
+            except Exception as probe_exc:
+                logger.warning(f"🔎 [PROBE HTTP] Loopback HTTP probe failed: {probe_exc}")
+                streams = []
+
+            # 🟢 MKV SPARSE PROBE FALLBACK: If HTTP probe returned no streams for a Telegram file,
+            # sample the head & tail directly into a small temp file (just like /mediainfo)
+            if not streams and is_tg and 'pool' in locals() and pool and 'msg' in locals() and msg:
+                logger.info("🔎 [PROBE TG] Falling back to fast local sparse-file probe for MKV/Telegram...")
+                temp_probe = Path(f"./probe_{user_id}_{int(time.time())}.dat")
+                temp_named = None
                 try:
-                    duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
-                except Exception:
-                    duration_val = 0.0
-                    
-                # 2. MKV Fallback: Try stream duration
-                if duration_val <= 0:
-                    for s in streams:
-                        try:
-                            d = float(s.get("duration", 0) or 0)
-                            if d > 0:
-                                duration_val = d
-                                break
-                        except Exception: pass
-                        
-                # 3. MKV Fallback: Try string DURATION tag (Format: "01:32:23.450")
-                if duration_val <= 0:
-                    for s in streams:
-                        tags = s.get("tags", {}) or {}
-                        tag_dur = tags.get("DURATION") or tags.get("duration")
-                        if tag_dur:
-                            try:
-                                parts = str(tag_dur).split(':')
-                                if len(parts) >= 3:
-                                    h, m, sec = float(parts[0]), float(parts[1]), float(parts[2])
-                                    duration_val = (h * 3600) + (m * 60) + sec
-                                    if duration_val > 0: break
+                    await partial_download_tg(pool[0], msg, temp_probe, limit_mb=8)
+                    real_ext = Path(real_file_name).suffix or ".mkv"
+                    temp_named = temp_probe.with_suffix(real_ext)
+                    temp_probe.rename(temp_named)
+                    pdata = await _run_ffprobe_json(str(temp_named), fast=False)
+                    streams = pdata.get("streams", []) or []
+                    if duration_val <= 0:
+                        duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
+                    logger.info(f"🔎 [PROBE TG] Local sparse probe succeeded: {len(streams)} streams found, Duration: {duration_val}s")
+                except Exception as sparse_err:
+                    logger.error(f"🔎 [PROBE TG] Local sparse probe failed: {sparse_err}", exc_info=True)
+                finally:
+                    for p in [temp_probe, temp_named]:
+                        if p and p.exists():
+                            try: os.remove(p)
                             except Exception: pass
 
-            except Exception as probe_exc:
-                logger.debug(f"Media probe fallback for {link[:120]}: {probe_exc}")
-                streams = []
-                duration_val = 0.0
+            # 🟢 Extract duration from stream DURATION tags if still not detected
+            if duration_val <= 0:
+                for s in streams:
+                    tags = s.get("tags", {}) or {}
+                    tag_dur = tags.get("DURATION") or tags.get("duration")
+                    if tag_dur:
+                        try:
+                            parts = str(tag_dur).split(':')
+                            if len(parts) >= 3:
+                                h, m, sec = float(parts[0]), float(parts[1]), float(parts[2])
+                                duration_val = (h * 3600) + (m * 60) + sec
+                                if duration_val > 0:
+                                    logger.info(f"🔎 [PROBE] Extracted duration from stream tag: {duration_val}s")
+                                    break
+                        except Exception: pass
+
+            if duration_val <= 0 and tg_duration > 0:
+                duration_val = tg_duration
 
             videos = [s for s in streams if s.get("codec_type") == "video"]
             audios = [s for s in streams if s.get("codec_type") == "audio"]
@@ -9214,6 +9285,9 @@ async def _api_stream_handler(request):
 
         cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
+    logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
+    logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
+
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -9227,6 +9301,7 @@ async def _api_stream_handler(request):
         "Cache-Control": "no-store",
         "Accept-Ranges": "none",
     })
+
     
     try:
         await response.prepare(request)
@@ -9557,9 +9632,6 @@ async def _api_tg_stream_handler(request):
                 old_task.cancel() # Safely kill the old ghost download
             GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
 
-        # 🟢 ADDED DEBUG LOGGING FOR TG STREAMS
-        logger.info(f"📡 [TG STREAM DEBUG] Req: {request.method} | Range: {range_header} | Bytes: {start_byte}-{end_byte} | Total: {virtual_size} | Chunk: {chunk_len}")
-
         headers = {
             "Accept-Ranges": "bytes",
             "Content-Length": str(chunk_len),
@@ -9799,10 +9871,9 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
         msg = await get_client_msg(client, chat_id, msg_id)
         data = bytearray()
         
-        # 🟢 THE REAL FIX: Pass raw chunk_index and limit to Pyrogram! No multiplication!
+        # 🟢 FIX: Consume the entire 1MB part without breaking prematurely on the first internal 128KB buffer
         async for chunk in client.stream_media(msg, offset=chunk_index, limit=1):
             data.extend(chunk)
-            break 
             
         if not data:
             raise ValueError(f"Empty chunk at index {chunk_index}")
