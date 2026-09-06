@@ -8662,11 +8662,25 @@ async def resolve_direct_link(url):
             except Exception as exc:
                 logger.warning(f"Mediafire resolve failed: {exc}")
 
-        # 6. Google Drive Auto-Bypass (Expanded to handle open?id and uc?id)
+        # 6. Google Drive Auto-Bypass (Native Virus-Scan Bypasser)
         if result == original:
             gdrive_match = re.search(r"drive\.google\.com/(?:file/d/|open\?id=|uc\?id=)([a-zA-Z0-9_-]+)", original)
             if gdrive_match:
-                result = f"https://gdrive-dd.bypased.workers.dev/direct.aspx?id={gdrive_match.group(1)}"
+                file_id = gdrive_match.group(1)
+                scan_url = f"https://drive.google.com/uc?id={file_id}&export=download"
+                try:
+                    # Natively fetch the Google Drive confirm token to bypass the Large File warning
+                    async with session.get(scan_url, allow_redirects=True) as r:
+                        text = await r.text(errors='ignore')
+                        confirm_match = re.search(r"confirm=([a-zA-Z0-9_-]+)", text)
+                        if confirm_match:
+                            result = f"https://drive.google.com/uc?id={file_id}&export=download&confirm={confirm_match.group(1)}"
+                        else:
+                            # 🟢 If no confirm token, GDrive redirects directly to the UserContent media URL. Use it!
+                            result = str(r.url)
+                except Exception as exc:
+                    logger.warning(f"GDrive native bypass failed: {exc}")
+                    result = original # 🟢 FIX: Never fallback to dead workers! Let the loopback proxy handle it natively.
 
         # 7. GoFile API
         if result == original:
@@ -9352,6 +9366,13 @@ async def _api_stream_handler(request):
         "-user_agent", "Mozilla/5.0",
         "-rw_timeout", "12000000",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+    ]
+
+    # 🟢 FAST-SEEK FIX: Forces FFmpeg to use HTTP Range requests. Isolated safely from TG links!
+    if not is_tg and actual_url.startswith("http"):
+        cmd += ["-seekable", "1", "-multiple_requests", "1"]
+
+    cmd += [
         "-probesize", "10M", "-analyzeduration", "5M", # 🟢 FAST 4K PROBE: Enough for Dolby Vision, but loads instantly
         "-fflags", "+nobuffer+flush_packets",
     ]
@@ -9859,6 +9880,13 @@ async def _api_subtitles_handler(request):
         "-user_agent", "Mozilla/5.0",
         "-rw_timeout", "12000000",
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+    ]
+    
+    # 🟢 FAST-SEEK FIX: Instantly jumps to the subtitle index without downloading massive files!
+    if not is_tg and actual_url.startswith("http"):
+        cmd += ["-seekable", "1", "-multiple_requests", "1"]
+        
+    cmd += [
         "-probesize", "4M", "-analyzeduration", "2M",
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
