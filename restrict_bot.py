@@ -4632,19 +4632,17 @@ HTML_DASHBOARD = """
 
         /* 📱 UNIVERSAL FULLSCREEN ROTATION (iOS, Android, HF iframes, PC, Mac) */
         .cinema-viewport.rotated-landscape {
-            transform: rotate(90deg) !important;
-            transform-origin: center center !important;
-            width: 100vh !important;
-            height: 100vw !important;
-            max-width: 100vh !important;
-            max-height: 100vw !important;
             position: fixed !important;
             top: 50% !important;
             left: 50% !important;
-            margin-top: -50vw !important;
-            margin-left: -50vh !important;
+            transform: translate(-50%, -50%) rotate(90deg) !important;
             z-index: 999999 !important;
             border-radius: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            max-width: none !important;
+            max-height: none !important;
+            background: #000 !important;
         }
         .cinema-viewport:fullscreen .cinema-hud, .cinema-viewport:-webkit-full-screen .cinema-hud, .cinema-viewport.ios-fullscreen .cinema-hud {
             padding: 40px 30px; padding-bottom: max(40px, env(safe-area-inset-bottom));
@@ -6756,71 +6754,67 @@ HTML_DASHBOARD = """
             const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
             const isNativeFullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
 
-            let debugLog = "[Orientation Debug Logs]\\n";
-
             if (!isNativeFullscreen && !isIosFullscreen) {
                 alert("Please enter Full Screen mode first (⛶) before rotating orientation!");
                 return;
             }
 
             isForcedLandscape = !isForcedLandscape;
-            debugLog += `1. Target State: ${isForcedLandscape ? 'Landscape' : 'Portrait'}\\n`;
 
             let nativeLocked = false;
             try {
                 if (screen.orientation && screen.orientation.lock) {
-                    debugLog += "2. Native API found. Attempting Lock...\\n";
                     if (isForcedLandscape) {
                         await screen.orientation.lock('landscape');
                     } else {
                         await screen.orientation.lock('portrait');
                     }
                     nativeLocked = true;
-                    debugLog += "3. Native API SUCCESS (No error thrown).\\n";
                 } else if (screen.lockOrientation) {
-                    debugLog += "2. Old lockOrientation API found.\\n";
                     nativeLocked = screen.lockOrientation(isForcedLandscape ? 'landscape' : 'portrait');
-                    debugLog += `3. Old API returned: ${nativeLocked}\\n`;
-                } else {
-                    debugLog += "2. Native API NOT SUPPORTED.\\n";
                 }
             } catch (err) {
                 nativeLocked = false;
-                debugLog += `3. Native API ERROR: ${err.message}\\n`;
             }
 
-            // If Native failed OR it's an iOS/CSS-fullscreen, apply CSS rotation immediately
+            // Apply explicit JS dimensions to fix Iframe VH/VW bugs
             if (!nativeLocked || isIosFullscreen) {
-                debugLog += "4. Applying CSS Rotation Fallback...\\n";
                 if (isForcedLandscape) {
                     vp.classList.add('rotated-landscape');
+                    const w = window.innerWidth;
+                    const h = window.innerHeight;
+                    vp.style.width = Math.max(w, h) + 'px';
+                    vp.style.height = Math.min(w, h) + 'px';
                 } else {
                     vp.classList.remove('rotated-landscape');
+                    vp.style.width = '';
+                    vp.style.height = '';
                 }
             } else {
-                debugLog += "4. Native lock claims success, stripping CSS.\\n";
                 vp.classList.remove('rotated-landscape');
+                vp.style.width = '';
+                vp.style.height = '';
                 
-                // --- 🟢 THE SMART FAILSAFE ---
-                // Browsers in iframes (like HuggingFace) often claim lock success but do nothing.
-                // We check if the screen actually changed dimensions 500ms later!
+                // Smart failsafe: if browser lied about native lock, apply CSS fallback
                 setTimeout(() => {
                     let actualLandscape = window.innerWidth > window.innerHeight;
                     if (isForcedLandscape && !actualLandscape) {
-                        alert("FailSafe Triggered: Browser lied about native rotation! Forcing CSS fallback.");
                         vp.classList.add('rotated-landscape');
+                        const w = window.innerWidth;
+                        const h = window.innerHeight;
+                        vp.style.width = Math.max(w, h) + 'px';
+                        vp.style.height = Math.min(w, h) + 'px';
                         updateViewportBox();
                         resizePlayerSurface();
                     } else if (!isForcedLandscape && actualLandscape) {
                         vp.classList.remove('rotated-landscape');
+                        vp.style.width = '';
+                        vp.style.height = '';
                         updateViewportBox();
                         resizePlayerSurface();
                     }
                 }, 500);
             }
-
-            // Show the exact debug sequence on your screen!
-            alert(debugLog);
 
             updateViewportBox();
             resizePlayerSurface();
@@ -6831,7 +6825,11 @@ HTML_DASHBOARD = """
         document.addEventListener('fullscreenchange', () => { 
             const vp = document.getElementById('cinema-viewport');
             if (!document.fullscreenElement) {
-                if (vp) vp.classList.remove('rotated-landscape');
+                if (vp) {
+                    vp.classList.remove('rotated-landscape');
+                    vp.style.width = '';
+                    vp.style.height = '';
+                }
                 isForcedLandscape = false;
                 if (screen.orientation && screen.orientation.unlock) {
                     try { screen.orientation.unlock(); } catch(e){}
@@ -6843,7 +6841,11 @@ HTML_DASHBOARD = """
         document.addEventListener('webkitfullscreenchange', () => { 
             const vp = document.getElementById('cinema-viewport');
             if (!document.webkitFullscreenElement) {
-                if (vp) vp.classList.remove('rotated-landscape');
+                if (vp) {
+                    vp.classList.remove('rotated-landscape');
+                    vp.style.width = '';
+                    vp.style.height = '';
+                }
                 isForcedLandscape = false;
                 if (screen.orientation && screen.orientation.unlock) {
                     try { screen.orientation.unlock(); } catch(e){}
