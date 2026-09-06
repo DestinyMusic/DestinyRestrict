@@ -7314,7 +7314,8 @@ HTML_DASHBOARD = """
             if (playerSourceKind === 'tg') {
                 return `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`;
             }
-            return `/api/direct_stream?user_id=${encodeURIComponent(currentUser)}&url=${encodeURIComponent(activeMediaLink)}`;
+            // 🟢 THE FIX: Feed direct links straight to the player. Do not bounce through the server proxy.
+            return playerNativeUrl || activeMediaLink;
         }
 
         function openExternalPlayer(appType) {
@@ -7458,25 +7459,30 @@ HTML_DASHBOARD = """
             sSelect.innerHTML = ''; addOption(sSelect, 'off', 'Off');
 
             try {
-                const nativeUrl = buildNativeUrl();
-                playerNativeUrl = nativeUrl;
-
-                // Start the native byte-range request immediately instead of waiting
-                // for ffprobe. This removes probe latency from the critical playback path.
-                // The watchdog/probe can still redirect to FFmpeg for incompatible media.
+                // 1. Fire the probe instantly
                 const probePromise = fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' })
                     .then(r => r.json());
 
                 playerDirectCompatible = true;
                 playerRequiresTranscode = false;
-                globalTargetTime = 0; // 🟢 Reset for new media
-                if (playerSourceKind === 'tg' || /\.(?:mp4|m4v|webm|mp3|m4a|aac|ogg|wav|flac|opus)(?:\?|$)/i.test(link) || /(?:drive\.google\.com\/file\/|gofile\.io\/d\/|buzzheavier\.com\/)/i.test(link)) {
+                globalTargetTime = 0; 
+
+                // 2. ONLY optimistic preload Telegram Links. Let Direct Links wait for the resolved URL!
+                if (playerSourceKind === 'tg') {
+                    playerNativeUrl = `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`;
                     armPlaybackWatchdog();
-                    await setVideoSource(nativeUrl, 0, true);
+                    await setVideoSource(playerNativeUrl, 0, true);
                 }
 
+                // 3. Wait for the probe to finish analyzing the file/resolving the link
                 const probeRes = await probePromise;
                 const pdata = probeRes;
+                if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
+
+                // 4. Update the Direct Link Native URL with the deeply resolved raw URL
+                if (playerSourceKind !== 'tg') {
+                    playerNativeUrl = pdata.resolved_url || activeMediaLink;
+                }
                 if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
 
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
@@ -7515,13 +7521,12 @@ HTML_DASHBOARD = """
                 const ffmpegUrl = buildStreamUrl(0);
 
                 if (playerDirectCompatible) {
-                    console.log('⚡ Route: native/range proxy', playerSourceKind);
+                    console.log('⚡ Route: native/direct playback', playerSourceKind);
                     disarmPlaybackWatchdog();
-                    // If optimistic native playback already started, keep it.
-                    // Otherwise this is the fallback native load.
                     const videoNow = document.getElementById('hidden-video');
-                    if (!videoNow || videoNow.src !== window.location.origin + nativeUrl) {
-                        await setVideoSource(nativeUrl, 0, true);
+                    // Ensure we don't restart the video if it's already playing the correct source
+                    if (!videoNow || (!videoNow.src.includes(playerNativeUrl) && videoNow.src !== window.location.origin + playerNativeUrl)) {
+                        await setVideoSource(playerNativeUrl, 0, true);
                     }
                 } else {
                     console.log('🛡️ Route: FFmpeg compatibility pipeline');
@@ -9073,8 +9078,9 @@ async def _api_media_probe_handler(request):
                                 real_file_name = m.group(1).strip()
 
             probe_input = actual_url
-            if not is_tg:
-                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+            # 🟢 THE FIX: Do not bounce FFprobe through the proxy. Feed the URL directly.
+            # if not is_tg:
+            #     probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
 
             logger.info(f"🔎 [PROBE] Starting probe for: {link[:100]} | User: {user_id}")
             tg_duration = 0.0
@@ -9287,7 +9293,8 @@ async def _api_stream_handler(request):
                     )
                 )
             )
-            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+            # 🟢 THE FIX: Let FFmpeg ingest the URL directly. Do not bounce through the proxy.
+            # actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
@@ -9820,7 +9827,8 @@ async def _api_subtitles_handler(request):
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
     else:
         actual_url = await resolve_direct_link(link)
-        actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+        # 🟢 THE FIX: Let FFmpeg ingest the URL directly. Do not bounce through the proxy.
+        # actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
