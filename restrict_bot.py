@@ -7314,8 +7314,7 @@ HTML_DASHBOARD = """
             if (playerSourceKind === 'tg') {
                 return `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`;
             }
-            // 🟢 THE FIX: Feed direct links straight to the player. Do not bounce through the server proxy.
-            return playerNativeUrl || activeMediaLink;
+            return `/api/direct_stream?user_id=${encodeURIComponent(currentUser)}&url=${encodeURIComponent(activeMediaLink)}`;
         }
 
         function openExternalPlayer(appType) {
@@ -7411,19 +7410,13 @@ HTML_DASHBOARD = """
             playbackWatchdogTimer = setTimeout(async () => {
                 const video = document.getElementById('hidden-video');
                 if (!video || playerFallbackAttempted || playerRequiresTranscode) return;
-                
                 if (video.error || video.readyState < 2) {
-                    // 🟢 THE FIX: Only aggressively hijack the stream for Telegram links.
-                    // Direct HTTP links take time to buffer natively and should not be killed.
-                    if (playerSourceKind === 'tg') {
-                        console.log("[DEBUG] TG Initial load timeout. Forcing transcode.");
-                        playerFallbackAttempted = true;
-                        playerRequiresTranscode = true;
-                        playerTimelineOffset = globalTargetTime || 0;
-                        await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true);
-                    }
+                    playerFallbackAttempted = true;
+                    playerRequiresTranscode = true;
+                    playerTimelineOffset = globalTargetTime || 0; // 🟢 Use global tracker
+                    await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true);
                 }
-            }, 6000); 
+            }, 6000); // 🟢 Increased to 6s to allow deep Telegram chunks time to load!
         }
         function disarmPlaybackWatchdog() { clearTimeout(playbackWatchdogTimer); }
 
@@ -7459,30 +7452,25 @@ HTML_DASHBOARD = """
             sSelect.innerHTML = ''; addOption(sSelect, 'off', 'Off');
 
             try {
-                // 1. Fire the probe instantly
+                const nativeUrl = buildNativeUrl();
+                playerNativeUrl = nativeUrl;
+
+                // Start the native byte-range request immediately instead of waiting
+                // for ffprobe. This removes probe latency from the critical playback path.
+                // The watchdog/probe can still redirect to FFmpeg for incompatible media.
                 const probePromise = fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' })
                     .then(r => r.json());
 
                 playerDirectCompatible = true;
                 playerRequiresTranscode = false;
-                globalTargetTime = 0; 
-
-                // 2. ONLY optimistic preload Telegram Links. Let Direct Links wait for the resolved URL!
-                if (playerSourceKind === 'tg') {
-                    playerNativeUrl = `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`;
+                globalTargetTime = 0; // 🟢 Reset for new media
+                if (playerSourceKind === 'tg' || /\.(?:mp4|m4v|webm|mp3|m4a|aac|ogg|wav|flac|opus)(?:\?|$)/i.test(link) || /(?:drive\.google\.com\/file\/|gofile\.io\/d\/|buzzheavier\.com\/)/i.test(link)) {
                     armPlaybackWatchdog();
-                    await setVideoSource(playerNativeUrl, 0, true);
+                    await setVideoSource(nativeUrl, 0, true);
                 }
 
-                // 3. Wait for the probe to finish analyzing the file/resolving the link
                 const probeRes = await probePromise;
                 const pdata = probeRes;
-                if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
-
-                // 4. Update the Direct Link Native URL with the deeply resolved raw URL
-                if (playerSourceKind !== 'tg') {
-                    playerNativeUrl = pdata.resolved_url || activeMediaLink;
-                }
                 if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
 
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
@@ -7521,12 +7509,13 @@ HTML_DASHBOARD = """
                 const ffmpegUrl = buildStreamUrl(0);
 
                 if (playerDirectCompatible) {
-                    console.log('⚡ Route: native/direct playback', playerSourceKind);
+                    console.log('⚡ Route: native/range proxy', playerSourceKind);
                     disarmPlaybackWatchdog();
+                    // If optimistic native playback already started, keep it.
+                    // Otherwise this is the fallback native load.
                     const videoNow = document.getElementById('hidden-video');
-                    // Ensure we don't restart the video if it's already playing the correct source
-                    if (!videoNow || (!videoNow.src.includes(playerNativeUrl) && videoNow.src !== window.location.origin + playerNativeUrl)) {
-                        await setVideoSource(playerNativeUrl, 0, true);
+                    if (!videoNow || videoNow.src !== window.location.origin + nativeUrl) {
+                        await setVideoSource(nativeUrl, 0, true);
                     }
                 } else {
                     console.log('🛡️ Route: FFmpeg compatibility pipeline');
@@ -7586,36 +7575,33 @@ HTML_DASHBOARD = """
             let stallTimer = null;
             function triggerStallRecovery() {
                 clearTimeout(stallTimer);
-                // 🟢 THE FIX: Do not run stall recovery on Direct Links. Browsers handle HTTP buffering natively.
-                if (playerSourceKind !== 'tg') return; 
-                
                 stallTimer = setTimeout(async () => {
+                    // Only reconnect if the player is actually trying to load/play data
                     if (playerRequiresTranscode && (!vidElem.paused || isTranscodeSeeking)) {
-                        console.log("[DEBUG] TG Hard stall for 8s. Browser suspended stream. Forcing reconnect from:", globalTargetTime);
+                        console.log("[DEBUG] Hard stall for 8s. Browser suspended stream. Forcing reconnect from:", globalTargetTime);
                         playerTimelineOffset = globalTargetTime || 0;
                         try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch(_) {}
                     }
-                }, 8000); 
+                }, 8000); // Wait 8 seconds before determining the stream is dead
             }
 
             vidElem.addEventListener('ended', async () => {
                 wakeHUD();
-                // 🟢 THE FIX: Only auto-resume prematurely ended streams if it's a Telegram FFmpeg pipe
-                if (playerSourceKind === 'tg' && playerRequiresTranscode && playerTotalDuration > 0 && globalTargetTime < playerTotalDuration - 5) {
-                    console.log("[DEBUG] TG Stream ended prematurely. Reconnecting...");
+                if (playerRequiresTranscode && playerTotalDuration > 0 && globalTargetTime < playerTotalDuration - 5) {
+                    console.log("[DEBUG] Stream ended prematurely. Reconnecting...");
                     playerTimelineOffset = globalTargetTime || 0;
                     try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
                 }
             });
             vidElem.addEventListener('waiting', () => { 
                 if (bigPlay) bigPlay.innerHTML = '⏳'; 
-                triggerStallRecovery(); 
+                triggerStallRecovery(); // 🟢 Start the countdown if video starves
             });
             vidElem.addEventListener('stalled', () => { 
                 triggerStallRecovery(); 
             });
             vidElem.addEventListener('playing', () => { 
-                clearTimeout(stallTimer); 
+                clearTimeout(stallTimer); // 🟢 Cancel reconnect if data arrives!
                 isTranscodeSeeking = false;
                 if (bigPlay) bigPlay.innerHTML = pauseSvg; 
             });
@@ -7626,7 +7612,7 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('loadeddata', () => { renderCurrentSubtitle(); applyPlaybackSpeed(); });
             vidElem.addEventListener('seeked', () => renderCurrentSubtitle());
             vidElem.addEventListener('timeupdate', () => {
-                clearTimeout(stallTimer); 
+                clearTimeout(stallTimer); // 🟢 Clear stall timer because frames are flowing!
                 
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
@@ -7643,7 +7629,7 @@ HTML_DASHBOARD = """
                 cur = Math.min(cur, dur);
 
                 if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
-                    globalTargetTime = cur; 
+                    globalTargetTime = cur; // 🟢 Constantly save our actual position
                 }
 
                 const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
@@ -7669,24 +7655,12 @@ HTML_DASHBOARD = """
                 const mediaError = vidElem.error;
                 console.warn('Video element error:', mediaError);
                 if (activeMediaLink) {
-                    if (playerSourceKind === 'tg') {
-                        // 🟢 TG ERROR HANDLER
-                        console.log("[DEBUG] TG Stream error. Reconnecting from:", globalTargetTime);
-                        playerRequiresTranscode = true;
-                        playerTimelineOffset = globalTargetTime || 0;
-                        setTimeout(async () => {
-                            try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
-                        }, 2000); 
-                    } else {
-                        // 🟢 DIRECT LINK ERROR HANDLER
-                        if (!playerRequiresTranscode && !playerFallbackAttempted) {
-                            console.log("[DEBUG] Direct link failed natively. Trying FFmpeg fallback...");
-                            playerFallbackAttempted = true;
-                            playerRequiresTranscode = true;
-                            playerTimelineOffset = globalTargetTime || 0;
-                            try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
-                        }
-                    }
+                    console.log("[DEBUG] Stream error. Reconnecting from:", globalTargetTime);
+                    playerRequiresTranscode = true;
+                    playerTimelineOffset = globalTargetTime || 0;
+                    setTimeout(async () => {
+                        try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
+                    }, 2000); // 🟢 Add a 2s delay so we don't spam the server on hard crashes
                 }
                 wakeHUD();
             });
@@ -8582,6 +8556,11 @@ async def _api_spectrogram_web_handler(request):
 # --- HIGH-PERFORMANCE STREAMING, TRANSCODING & PROBE ENGINE ---
 # ==============================================================================
 
+def _is_tg_link(link):
+    """Strictly separate Telegram Links from Direct Links to prevent intermixing."""
+    if not link: return False
+    return bool(re.search(r"^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)\/", str(link).strip().lower()))
+
 DIRECT_URL_CACHE = {}
 DIRECT_URL_CACHE_TTL = 900
 DIRECT_RESOLVE_LOCKS = defaultdict(asyncio.Lock)
@@ -8760,6 +8739,7 @@ async def _direct_upstream_request(url, request):
 async def _api_direct_stream_handler(request):
     """Native direct-link proxy with full HTTP Range support and keep-alive reuse."""
     url = request.query.get("url", "").strip()
+    logger.info(f"🌐 [DIRECT STREAM] Proxying HTTP Range request for: {url[:100]}...")
     if not url or not url.lower().startswith(("http://", "https://")):
         return web.Response(status=400, text="Invalid direct media URL")
 
@@ -9037,7 +9017,9 @@ async def _api_media_probe_handler(request):
         if cached and cached[1] > time.time():
             return web.json_response(cached[0])
 
-        is_tg = "t.me" in link or "telegram.me" in link
+        is_tg = _is_tg_link(link)
+        logger.info(f"🔎 [PROBE] Starting probe | User: {user_id} | Is TG: {is_tg} | Link: {link[:100]}...")
+        
         actual_url = link
         real_file_name = "Unknown_Media"
         mime_type = "video/mp4"
@@ -9078,11 +9060,10 @@ async def _api_media_probe_handler(request):
                                 real_file_name = m.group(1).strip()
 
             probe_input = actual_url
-            # 🟢 THE FIX: Do not bounce FFprobe through the proxy. Feed the URL directly.
-            # if not is_tg:
-            #     probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+            # FFprobe runs natively on the remote direct link to fetch full headers/subs flawlessly
+            if not is_tg:
+                logger.debug(f"🔎 [PROBE] Feeding Real URL directly to FFprobe: {probe_input[:100]}...")
 
-            logger.info(f"🔎 [PROBE] Starting probe for: {link[:100]} | User: {user_id}")
             tg_duration = 0.0
             if is_tg and 'media' in locals() and media:
                 tg_duration = float(getattr(media, "duration", 0) or 0)
@@ -9251,7 +9232,9 @@ async def _api_stream_handler(request):
     if not link:
         return web.Response(status=400, text="No link provided")
 
-    is_tg = "t.me" in link or "telegram.me" in link
+    is_tg = _is_tg_link(link)
+    logger.info(f"🎬 [TRANSCODE] Request | User: {user_id} | Is TG: {is_tg} | Link: {link[:100]}...")
+    
     actual_url = link
     mime_type = "video/mp4"
     filename = "media"
@@ -9293,8 +9276,8 @@ async def _api_stream_handler(request):
                     )
                 )
             )
-            # 🟢 THE FIX: Let FFmpeg ingest the URL directly. Do not bounce through the proxy.
-            # actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+            # 🟢 THE FIX: Bypassing loopback! FFmpeg downloads direct links externally for perfect track extraction.
+            logger.debug(f"🎬 [TRANSCODE] Using Real URL for FFmpeg: {actual_url[:100]}...")
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
@@ -9594,6 +9577,7 @@ async def _api_tg_stream_handler(request):
         user_id = 0
 
     link = request.query.get("link")
+    logger.info(f"🌐 [TG STREAM] Native Byte-Range Request | User: {user_id} | Link: {str(link)[:60]}...")
     if link:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
@@ -9804,6 +9788,9 @@ async def _api_subtitles_handler(request):
     if not link:
         return web.Response(status=400, text="Invalid Link")
 
+    is_tg = _is_tg_link(link)
+    logger.info(f"📝 [SUBTITLES] Extract Request | User: {user_id} | Is TG: {is_tg} | Sub_Idx: {sub_idx} | Link: {link[:60]}...")
+
     cache_key = f"{user_id}:{link}:{sub_idx}"
     now = time.time()
     cached = SUBTITLE_CACHE.get(cache_key)
@@ -9816,7 +9803,6 @@ async def _api_subtitles_handler(request):
             "Cache-Control": "public, max-age=3600",
         })
 
-    is_tg = "t.me" in link or "telegram.me" in link
     actual_url = link
     if is_tg:
         parsed = _parse_source_link(link)
@@ -9827,8 +9813,8 @@ async def _api_subtitles_handler(request):
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
     else:
         actual_url = await resolve_direct_link(link)
-        # 🟢 THE FIX: Let FFmpeg ingest the URL directly. Do not bounce through the proxy.
-        # actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+        # 🟢 THE FIX: Bypassing loopback! Direct links are passed to FFmpeg directly for flawless extraction.
+        logger.debug(f"📝 [SUBTITLES] Feeding Real URL to FFmpeg: {actual_url[:100]}...")
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
