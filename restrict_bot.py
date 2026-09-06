@@ -9527,7 +9527,7 @@ async def _api_stream_handler(request):
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
         "-seekable", "1", "-multiple_requests", "1",
         "-probesize", "25M", "-analyzeduration", "15M", 
-        "-fflags", "+nobuffer", # 🟢 FIX: Removed 'fastseek' which destroys Audio & Subtitle sync when seeking!
+        "-fflags", "+nobuffer+flush_packets", # 🟢 FIX: Restored 'flush_packets' to keep Audio and Video perfectly synced
     ]
 
     # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
@@ -9610,9 +9610,8 @@ async def _api_stream_handler(request):
     try:
         await response.prepare(request)
         while True:
-            # 🟢 FIX: Unleash FFmpeg's output. Read up to 32MB at a time to prevent ANY Python CPU throttling.
-            # This allows FFmpeg to blast the transcoded/remuxed stream at maximum network speed.
-            buf = await proc.stdout.read(33554432) # 32MB limit per cycle
+            # 🟢 FIX: 1MB blasts at full network speed but keeps frames perfectly synchronized.
+            buf = await proc.stdout.read(1048576) 
             if not buf:
                 break
             await response.write(buf)
