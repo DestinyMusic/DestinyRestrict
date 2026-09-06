@@ -7410,13 +7410,19 @@ HTML_DASHBOARD = """
             playbackWatchdogTimer = setTimeout(async () => {
                 const video = document.getElementById('hidden-video');
                 if (!video || playerFallbackAttempted || playerRequiresTranscode) return;
+                
                 if (video.error || video.readyState < 2) {
-                    playerFallbackAttempted = true;
-                    playerRequiresTranscode = true;
-                    playerTimelineOffset = globalTargetTime || 0; // 🟢 Use global tracker
-                    await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true);
+                    // 🟢 THE FIX: Only aggressively hijack the stream for Telegram links.
+                    // Direct HTTP links take time to buffer natively and should not be killed.
+                    if (playerSourceKind === 'tg') {
+                        console.log("[DEBUG] TG Initial load timeout. Forcing transcode.");
+                        playerFallbackAttempted = true;
+                        playerRequiresTranscode = true;
+                        playerTimelineOffset = globalTargetTime || 0;
+                        await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true);
+                    }
                 }
-            }, 6000); // 🟢 Increased to 6s to allow deep Telegram chunks time to load!
+            }, 6000); 
         }
         function disarmPlaybackWatchdog() { clearTimeout(playbackWatchdogTimer); }
 
@@ -7575,33 +7581,36 @@ HTML_DASHBOARD = """
             let stallTimer = null;
             function triggerStallRecovery() {
                 clearTimeout(stallTimer);
+                // 🟢 THE FIX: Do not run stall recovery on Direct Links. Browsers handle HTTP buffering natively.
+                if (playerSourceKind !== 'tg') return; 
+                
                 stallTimer = setTimeout(async () => {
-                    // Only reconnect if the player is actually trying to load/play data
                     if (playerRequiresTranscode && (!vidElem.paused || isTranscodeSeeking)) {
-                        console.log("[DEBUG] Hard stall for 8s. Browser suspended stream. Forcing reconnect from:", globalTargetTime);
+                        console.log("[DEBUG] TG Hard stall for 8s. Browser suspended stream. Forcing reconnect from:", globalTargetTime);
                         playerTimelineOffset = globalTargetTime || 0;
                         try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch(_) {}
                     }
-                }, 8000); // Wait 8 seconds before determining the stream is dead
+                }, 8000); 
             }
 
             vidElem.addEventListener('ended', async () => {
                 wakeHUD();
-                if (playerRequiresTranscode && playerTotalDuration > 0 && globalTargetTime < playerTotalDuration - 5) {
-                    console.log("[DEBUG] Stream ended prematurely. Reconnecting...");
+                // 🟢 THE FIX: Only auto-resume prematurely ended streams if it's a Telegram FFmpeg pipe
+                if (playerSourceKind === 'tg' && playerRequiresTranscode && playerTotalDuration > 0 && globalTargetTime < playerTotalDuration - 5) {
+                    console.log("[DEBUG] TG Stream ended prematurely. Reconnecting...");
                     playerTimelineOffset = globalTargetTime || 0;
                     try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
                 }
             });
             vidElem.addEventListener('waiting', () => { 
                 if (bigPlay) bigPlay.innerHTML = '⏳'; 
-                triggerStallRecovery(); // 🟢 Start the countdown if video starves
+                triggerStallRecovery(); 
             });
             vidElem.addEventListener('stalled', () => { 
                 triggerStallRecovery(); 
             });
             vidElem.addEventListener('playing', () => { 
-                clearTimeout(stallTimer); // 🟢 Cancel reconnect if data arrives!
+                clearTimeout(stallTimer); 
                 isTranscodeSeeking = false;
                 if (bigPlay) bigPlay.innerHTML = pauseSvg; 
             });
@@ -7612,7 +7621,7 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('loadeddata', () => { renderCurrentSubtitle(); applyPlaybackSpeed(); });
             vidElem.addEventListener('seeked', () => renderCurrentSubtitle());
             vidElem.addEventListener('timeupdate', () => {
-                clearTimeout(stallTimer); // 🟢 Clear stall timer because frames are flowing!
+                clearTimeout(stallTimer); 
                 
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
@@ -7629,7 +7638,7 @@ HTML_DASHBOARD = """
                 cur = Math.min(cur, dur);
 
                 if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
-                    globalTargetTime = cur; // 🟢 Constantly save our actual position
+                    globalTargetTime = cur; 
                 }
 
                 const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
@@ -7655,12 +7664,24 @@ HTML_DASHBOARD = """
                 const mediaError = vidElem.error;
                 console.warn('Video element error:', mediaError);
                 if (activeMediaLink) {
-                    console.log("[DEBUG] Stream error. Reconnecting from:", globalTargetTime);
-                    playerRequiresTranscode = true;
-                    playerTimelineOffset = globalTargetTime || 0;
-                    setTimeout(async () => {
-                        try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
-                    }, 2000); // 🟢 Add a 2s delay so we don't spam the server on hard crashes
+                    if (playerSourceKind === 'tg') {
+                        // 🟢 TG ERROR HANDLER
+                        console.log("[DEBUG] TG Stream error. Reconnecting from:", globalTargetTime);
+                        playerRequiresTranscode = true;
+                        playerTimelineOffset = globalTargetTime || 0;
+                        setTimeout(async () => {
+                            try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
+                        }, 2000); 
+                    } else {
+                        // 🟢 DIRECT LINK ERROR HANDLER
+                        if (!playerRequiresTranscode && !playerFallbackAttempted) {
+                            console.log("[DEBUG] Direct link failed natively. Trying FFmpeg fallback...");
+                            playerFallbackAttempted = true;
+                            playerRequiresTranscode = true;
+                            playerTimelineOffset = globalTargetTime || 0;
+                            try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
+                        }
+                    }
                 }
                 wakeHUD();
             });
