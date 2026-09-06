@@ -4769,10 +4769,17 @@ HTML_DASHBOARD = """
         }
 
         /* 15s Seek Zones (Double Tap) */
-        .seek-zone { position: absolute; top: 15%; bottom: 25%; width: 35%; z-index: 10; cursor: pointer; display: flex; align-items: center; justify-content: center; color: rgba(255,255,255,0); font-size: 32px; font-weight: bold; transition: color 0.2s; user-select: none; }
-        .seek-zone.left { left: 0; }
-        .seek-zone.right { right: 0; }
-        .seek-zone:active { color: rgba(255,255,255,0.8); background: radial-gradient(circle, rgba(255,255,255,0.1) 0%, transparent 60%); }
+        .seek-zone { 
+            position: absolute; 
+            top: 30%; bottom: 30%; /* Restricts the zone tightly to the center video area */
+            width: 30%; 
+            z-index: 10; 
+            cursor: pointer; 
+            user-select: none; 
+            -webkit-tap-highlight-color: transparent; /* Removes the Android blue flash */
+        }
+        .seek-zone.left { left: 5%; }
+        .seek-zone.right { right: 5%; }
 
         .cinema-scrubber-bar {
             position: relative; width: 100%; height: 6px; background: rgba(255,255,255,0.25);
@@ -7552,7 +7559,15 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('seeking', () => {
                 if (extAudio && extAudio.src) extAudio.currentTime = vidElem.currentTime;
             });
-            vidElem.addEventListener('ended', () => wakeHUD());
+            vidElem.addEventListener('ended', async () => {
+                wakeHUD();
+                // 🟢 THE FIX: If FFmpeg drops the pipe prematurely due to Telegram rate limits, auto-resume!
+                if (playerRequiresTranscode && playerTotalDuration > 0 && globalTargetTime < playerTotalDuration - 5) {
+                    console.log("[DEBUG] Stream ended prematurely at", globalTargetTime, "s. Reconnecting...");
+                    playerTimelineOffset = globalTargetTime || 0;
+                    try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
+                }
+            });
             vidElem.addEventListener('waiting', () => { if (bigPlay) bigPlay.innerHTML = '⏳'; });
             vidElem.addEventListener('playing', () => { 
                 disarmPlaybackWatchdog(); // 🟢 Disarm Watchdog (Playback Started)
@@ -7612,10 +7627,10 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('error', async () => {
                 const mediaError = vidElem.error;
                 console.warn('Video element error:', mediaError);
-                if (!playerRequiresTranscode && !playerFallbackAttempted && activeMediaLink) {
-                    playerFallbackAttempted = true;
+                if (activeMediaLink) {
+                    console.log("[DEBUG] Stream error. Reconnecting from:", globalTargetTime);
                     playerRequiresTranscode = true;
-                    playerTimelineOffset = globalTargetTime || 0; // 🟢 Use global tracker instead of reset browser time
+                    playerTimelineOffset = globalTargetTime || 0;
                     try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
                 }
                 wakeHUD();
