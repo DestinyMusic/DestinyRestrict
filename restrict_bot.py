@@ -9513,7 +9513,8 @@ async def _api_stream_handler(request):
             mime_type = getattr(media, 'mime_type', 'video/mp4') or 'video/mp4'
             
             sorted_ids_str = ",".join(str(m.id) for m in valid_msgs)
-            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_ids={sorted_ids_str}"
+            # 🟢 FIX: Tag the URL so the proxy knows it's FFmpeg!
+            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_ids={sorted_ids_str}&worker=ffmpeg"
             is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus")) or "audio" in mime_type
         else:
             actual_url = await resolve_direct_link(link)
@@ -9578,8 +9579,8 @@ async def _api_stream_handler(request):
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
         "-rw_timeout", "30000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", # 🟢 ADDED THIS!
-        "-seekable", "1", "-multiple_requests", "1",
+        "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
+        "-seekable", "1", # 🟢 FIX: Removed multiple_requests to stop ghost-connections
         "-probesize", "5M", "-analyzeduration", "5M", 
         "-fflags", "+nobuffer+flush_packets", 
         "-async", "1"
@@ -10028,17 +10029,18 @@ async def _api_tg_stream_handler(request):
         chunk_len = end_byte - start_byte + 1
         
         # 🟢 SMART SCRUB-KILLER: Only cancel ghost tasks if it's a massive video stream!
-        # Ignores tiny metadata probes so the browser accurately displays the Total Duration.
         if "GLOBAL_STREAM_TASKS" not in globals():
             global GLOBAL_STREAM_TASKS
             GLOBAL_STREAM_TASKS = {}
             
         is_metadata_probe = chunk_len < 52428800 # 50 MB
-        # 🟢 FIX: Use the first ID of the split sequence to form the lock key!
+        is_ffmpeg_worker = request.query.get("worker") == "ffmpeg"
+        
         primary_msg_id = msg_ids[0] if msg_ids else 0
         lock_key = f"{user_id}_{chat_id}_{primary_msg_id}"
         
-        if not is_metadata_probe:
+        # 🟢 FIX: Never assassinate FFmpeg's active backend connections!
+        if not is_metadata_probe and not is_ffmpeg_worker:
             old_task = GLOBAL_STREAM_TASKS.get(lock_key)
             if old_task and not old_task.done():
                 old_task.cancel() # Safely kill the old ghost download
@@ -11740,6 +11742,9 @@ async def main():
     await cleanup_startup()
     asyncio.create_task(cleanup_watchdog())
     logger.info("🛡️ Auto-Cleanup Watchdog Started") 
+
+    # 🟢 FIX: Actually boot the worker bots from the database on startup!
+    await init_worker_bots()
 
     # Attach the listener to the main bot so it functions without a User Session!
     app.add_handler(MessageHandler(user_watcher_handler, filters.all))
