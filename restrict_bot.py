@@ -4631,7 +4631,10 @@ HTML_DASHBOARD = """
         }
 
         /* 📱 UNIVERSAL FULLSCREEN ROTATION (iOS, Android, HF iframes, PC, Mac) */
-        .cinema-viewport.rotated-landscape {
+        .cinema-viewport.rotated-landscape,
+        .cinema-viewport.rotated-landscape:fullscreen,
+        .cinema-viewport.rotated-landscape:-webkit-full-screen,
+        .cinema-viewport.rotated-landscape.ios-fullscreen {
             position: fixed !important;
             top: 50% !important;
             left: 50% !important;
@@ -6760,8 +6763,8 @@ HTML_DASHBOARD = """
             }
 
             isForcedLandscape = !isForcedLandscape;
-
             let nativeLocked = false;
+
             try {
                 if (screen.orientation && screen.orientation.lock) {
                     if (isForcedLandscape) {
@@ -6774,46 +6777,45 @@ HTML_DASHBOARD = """
                     nativeLocked = screen.lockOrientation(isForcedLandscape ? 'landscape' : 'portrait');
                 }
             } catch (err) {
-                nativeLocked = false;
+                nativeLocked = false; // iframe blockage natively caught silently
             }
 
-            // Apply explicit JS dimensions to fix Iframe VH/VW bugs
             if (!nativeLocked || isIosFullscreen) {
                 if (isForcedLandscape) {
                     vp.classList.add('rotated-landscape');
                     const w = window.innerWidth;
                     const h = window.innerHeight;
-                    vp.style.width = Math.max(w, h) + 'px';
-                    vp.style.height = Math.min(w, h) + 'px';
+                    vp.style.setProperty('width', Math.max(w, h) + 'px', 'important');
+                    vp.style.setProperty('height', Math.min(w, h) + 'px', 'important');
                 } else {
                     vp.classList.remove('rotated-landscape');
-                    vp.style.width = '';
-                    vp.style.height = '';
+                    vp.style.removeProperty('width');
+                    vp.style.removeProperty('height');
                 }
             } else {
                 vp.classList.remove('rotated-landscape');
-                vp.style.width = '';
-                vp.style.height = '';
+                vp.style.removeProperty('width');
+                vp.style.removeProperty('height');
                 
-                // Smart failsafe: if browser lied about native lock, apply CSS fallback
+                // Smart failsafe: browser lies about success inside iframes, so check physical dimensions
                 setTimeout(() => {
                     let actualLandscape = window.innerWidth > window.innerHeight;
                     if (isForcedLandscape && !actualLandscape) {
                         vp.classList.add('rotated-landscape');
                         const w = window.innerWidth;
                         const h = window.innerHeight;
-                        vp.style.width = Math.max(w, h) + 'px';
-                        vp.style.height = Math.min(w, h) + 'px';
+                        vp.style.setProperty('width', Math.max(w, h) + 'px', 'important');
+                        vp.style.setProperty('height', Math.min(w, h) + 'px', 'important');
                         updateViewportBox();
                         resizePlayerSurface();
                     } else if (!isForcedLandscape && actualLandscape) {
                         vp.classList.remove('rotated-landscape');
-                        vp.style.width = '';
-                        vp.style.height = '';
+                        vp.style.removeProperty('width');
+                        vp.style.removeProperty('height');
                         updateViewportBox();
                         resizePlayerSurface();
                     }
-                }, 500);
+                }, 400);
             }
 
             updateViewportBox();
@@ -6827,8 +6829,8 @@ HTML_DASHBOARD = """
             if (!document.fullscreenElement) {
                 if (vp) {
                     vp.classList.remove('rotated-landscape');
-                    vp.style.width = '';
-                    vp.style.height = '';
+                    vp.style.removeProperty('width');
+                    vp.style.removeProperty('height');
                 }
                 isForcedLandscape = false;
                 if (screen.orientation && screen.orientation.unlock) {
@@ -6843,8 +6845,8 @@ HTML_DASHBOARD = """
             if (!document.webkitFullscreenElement) {
                 if (vp) {
                     vp.classList.remove('rotated-landscape');
-                    vp.style.width = '';
-                    vp.style.height = '';
+                    vp.style.removeProperty('width');
+                    vp.style.removeProperty('height');
                 }
                 isForcedLandscape = false;
                 if (screen.orientation && screen.orientation.unlock) {
