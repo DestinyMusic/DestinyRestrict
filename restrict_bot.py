@@ -7681,7 +7681,7 @@ HTML_DASHBOARD = """
                         playerTimelineOffset = globalTargetTime || 0;
                         try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch(_) {}
                     }
-                }, 25000); // Increased to 25 seconds to allow User Sessions to buffer
+                }, 30000); // Wait 30 seconds before determining the stream is dead
             }
 
             vidElem.addEventListener('ended', async () => {
@@ -9551,11 +9551,12 @@ async def _api_stream_handler(request):
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
         "-rw_timeout", "30000000", 
-        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+        "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
+        "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", # 🟢 ADDED THIS!
         "-seekable", "1", "-multiple_requests", "1",
-        "-probesize", "5M", "-analyzeduration", "5M",  # Lowered so FFmpeg starts playing much faster!
-        "-fflags", "+nobuffer+flush_packets",
-        "-async", "1" # 🟢 FIX: Restored! This forces Audio & Video to pad/trim at the start of a seek so Subtitles perfectly align!
+        "-probesize", "5M", "-analyzeduration", "5M", 
+        "-fflags", "+nobuffer+flush_packets", 
+        "-async", "1"
     ]
 
     # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
