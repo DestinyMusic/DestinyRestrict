@@ -4899,6 +4899,33 @@ HTML_DASHBOARD = """
         .matrix-radio { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--subtext); display: flex; align-items: center; justify-content: center; transition: 0.2s; }
         .matrix-option.active .matrix-radio { border-color: #a3e635; }
         .matrix-option.active .matrix-radio::after { content: ''; width: 8px; height: 8px; background: #a3e635; border-radius: 50%; }
+
+        /* =========================================================
+           PERFORMANCE MODE (Kills all lag on Android TVs)
+           ========================================================= */
+        body.fast-mode::before, 
+        body.fast-mode::after {
+            display: none !important; /* Kills the animated blur blobs entirely */
+        }
+
+        body.fast-mode .card,
+        body.fast-mode .navbar,
+        body.fast-mode .sidebar,
+        body.fast-mode .login-card,
+        body.fast-mode .settings-popup,
+        body.fast-mode .matrix-3d-menu,
+        body.fast-mode .glass-select-dropdown,
+        body.fast-mode .profile-menu {
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+            background: var(--card) !important; /* Replaces glass with solid color */
+            box-shadow: none !important; /* Kills heavy shadow painting */
+            border: 1px solid var(--card-border) !important;
+        }
+
+        /* Fallback solid colors so menus don't become transparent without the blur */
+        body.fast-mode .navbar { background: #0a0a0a !important; border-bottom: 1px solid #1f2937 !important; }
+        body.fast-mode .sidebar { background: #050505 !important; }
     </style>
 </head>
 <body>
@@ -5438,6 +5465,14 @@ HTML_DASHBOARD = """
                 
                 <div class="section-title">Interface Settings</div>
                 <div class="card" style="margin-bottom: 20px;">
+
+                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Performance Mode (Anti-Lag)</h3>
+                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Disables 3D background blobs, glassmorphism, and heavy shadows. Highly recommended for Android TVs.</p>
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 25px;">
+                        <input type="checkbox" id="perf-mode-toggle" style="width: 18px; height: 18px; accent-color: var(--accent);" onchange="togglePerformanceMode(this.checked)">
+                        <label for="perf-mode-toggle" style="font-size: 13px; color: #fff; font-weight: bold; cursor: pointer;">Enable Maximum Performance</label>
+                    </div>
+
                     <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Liquid UI (Fluid Width)</h3>
                     <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Adjust how wide and fluid the dashboard feels. (50% to 100%)</p>
                     <div class="input-group" style="margin-bottom: 25px;">
@@ -5681,6 +5716,32 @@ HTML_DASHBOARD = """
             
             localStorage.setItem('liquid_glass_val', val);
         }
+
+        function togglePerformanceMode(isFast) {
+            const toggle = document.getElementById('perf-mode-toggle');
+            if (toggle) toggle.checked = isFast;
+            if (isFast) {
+                document.body.classList.add('fast-mode');
+                localStorage.setItem('fast_mode', 'true');
+            } else {
+                document.body.classList.remove('fast-mode');
+                localStorage.setItem('fast_mode', 'false');
+            }
+        }
+
+        // Initialize Performance Mode on Load
+        setTimeout(() => {
+            const savedFastMode = localStorage.getItem('fast_mode');
+            if (savedFastMode === 'true') {
+                togglePerformanceMode(true);
+            } else if (savedFastMode === 'false') {
+                togglePerformanceMode(false);
+            } else {
+                // First visit ever: Auto-Detect TVs and Firesticks!
+                const isTV = /(tv|smarttv|bravia|chromecast|appletv|android tv|box)/i.test(navigator.userAgent);
+                togglePerformanceMode(isTV); // Turns ON automatically if it's a TV
+            }
+        }, 100);
 
         if (currentUser) {
             document.getElementById('login-view').style.display = 'none';
@@ -6045,9 +6106,9 @@ HTML_DASHBOARD = """
                 if (document.getElementById('view-logs').classList.contains('active')) fetchLogs();
                 
                 const dlList = document.getElementById('downloads-list');
-                dlList.innerHTML = data.tasks.length ? '' : '<div style="color: #64748b;">No active downloads.</div>';
+                let newDlHtml = data.tasks.length ? '' : '<div style="color: #64748b;">No active downloads.</div>';
                 data.tasks.forEach(t => {
-                    dlList.innerHTML += `
+                    newDlHtml += `
                         <div class="task-row">
                             <div>
                                 <div style="font-weight: 700; color: #fff; font-size: 14px; word-break: break-all;">${t.name}</div>
@@ -6057,11 +6118,16 @@ HTML_DASHBOARD = """
                         </div>
                     `;
                 });
+                
+                // 🟢 FIX: Only update DOM if HTML actually changed (Prevents TV lag spikes)
+                if (dlList.innerHTML !== newDlHtml) {
+                    dlList.innerHTML = newDlHtml;
+                }
 
                 const wList = document.getElementById('watchers-list');
-                wList.innerHTML = data.watchers.length ? '' : '<div style="color: #64748b;">No active watchers.</div>';
+                let newWListHtml = data.watchers.length ? '' : '<div style="color: #64748b;">No active watchers.</div>';
                 data.watchers.forEach(w => {
-                    wList.innerHTML += `
+                    newWListHtml += `
                         <div class="task-row">
                             <div>
                                 <div style="font-weight: 700; color: #fff; font-size: 14px;">📡 ${w.source}</div>
@@ -6071,6 +6137,10 @@ HTML_DASHBOARD = """
                         </div>
                     `;
                 });
+                
+                if (wList.innerHTML !== newWListHtml) {
+                    wList.innerHTML = newWListHtml;
+                }
             } catch(e) {}
         }
 
@@ -6917,7 +6987,9 @@ HTML_DASHBOARD = """
         function renderWebGLFrame() {
             const video = document.getElementById('hidden-video');
             const canvas = document.getElementById('webgl-canvas');
-            if (gl && glProgram && glTexture && video && video.readyState >= video.HAVE_CURRENT_DATA) {
+            
+            // 🟢 FIX: Stop GPU loop if video is paused, ended, or buffering!
+            if (gl && glProgram && glTexture && video && video.readyState >= video.HAVE_CURRENT_DATA && !video.paused && !video.ended) {
                 
                 // Do not crash WebGL on Audio-only files
                 if (video.videoWidth === 0 || video.videoHeight === 0) {
