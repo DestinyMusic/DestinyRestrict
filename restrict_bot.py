@@ -7571,32 +7571,53 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('seeking', () => {
                 if (extAudio && extAudio.src) extAudio.currentTime = vidElem.currentTime;
             });
+            // 🟢 STALL RECOVERY ENGINE
+            let stallTimer = null;
+            function triggerStallRecovery() {
+                clearTimeout(stallTimer);
+                stallTimer = setTimeout(async () => {
+                    // Only reconnect if the player is actually trying to load/play data
+                    if (playerRequiresTranscode && (!vidElem.paused || isTranscodeSeeking)) {
+                        console.log("[DEBUG] Hard stall for 8s. Browser suspended stream. Forcing reconnect from:", globalTargetTime);
+                        playerTimelineOffset = globalTargetTime || 0;
+                        try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch(_) {}
+                    }
+                }, 8000); // Wait 8 seconds before determining the stream is dead
+            }
+
             vidElem.addEventListener('ended', async () => {
                 wakeHUD();
-                // 🟢 THE FIX: If FFmpeg drops the pipe prematurely due to Telegram rate limits, auto-resume!
                 if (playerRequiresTranscode && playerTotalDuration > 0 && globalTargetTime < playerTotalDuration - 5) {
-                    console.log("[DEBUG] Stream ended prematurely at", globalTargetTime, "s. Reconnecting...");
+                    console.log("[DEBUG] Stream ended prematurely. Reconnecting...");
                     playerTimelineOffset = globalTargetTime || 0;
                     try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
                 }
             });
-            vidElem.addEventListener('waiting', () => { if (bigPlay) bigPlay.innerHTML = '⏳'; });
+            vidElem.addEventListener('waiting', () => { 
+                if (bigPlay) bigPlay.innerHTML = '⏳'; 
+                triggerStallRecovery(); // 🟢 Start the countdown if video starves
+            });
+            vidElem.addEventListener('stalled', () => { 
+                triggerStallRecovery(); 
+            });
             vidElem.addEventListener('playing', () => { 
-                disarmPlaybackWatchdog(); // 🟢 Disarm Watchdog (Playback Started)
+                clearTimeout(stallTimer); // 🟢 Cancel reconnect if data arrives!
+                isTranscodeSeeking = false;
                 if (bigPlay) bigPlay.innerHTML = pauseSvg; 
             });
             vidElem.addEventListener('loadedmetadata', () => { 
-                disarmPlaybackWatchdog(); // 🟢 Disarm Watchdog (Metadata Loaded)
+                clearTimeout(stallTimer);
                 updateViewportBox(); resizePlayerSurface(); applyPlaybackSpeed(); 
             });
             vidElem.addEventListener('loadeddata', () => { renderCurrentSubtitle(); applyPlaybackSpeed(); });
             vidElem.addEventListener('seeked', () => renderCurrentSubtitle());
             vidElem.addEventListener('timeupdate', () => {
-                disarmPlaybackWatchdog(); // 🟢 Disarm Watchdog (Frames flowing)
+                clearTimeout(stallTimer); // 🟢 Clear stall timer because frames are flowing!
+                
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
 
-                // 🟢 THE FIX: Mirror the exact duration math from getScrubberTime
+                // 🟢 FFmpeg Duration Sync
                 if (playerRequiresTranscode) {
                     cur = playerTimelineOffset + cur;
                     if (playerTotalDuration > 0) {
@@ -7608,18 +7629,12 @@ HTML_DASHBOARD = """
                 cur = Math.min(cur, dur);
 
                 if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
-                    dur = playerTotalDuration;
-                }
-                cur = Math.min(cur, dur);
-
-                if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
                     globalTargetTime = cur; // 🟢 Constantly save our actual position
                 }
 
                 const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
                 const time = document.getElementById('hud-time');
                 
-                // 🟢 FIX: Do not visually reset the bar while buffering or DRAGGING!
                 if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
                     const fill = document.getElementById('scrubber-fill');
                     if (fill) fill.style.width = `${percent}%`;
@@ -7643,7 +7658,9 @@ HTML_DASHBOARD = """
                     console.log("[DEBUG] Stream error. Reconnecting from:", globalTargetTime);
                     playerRequiresTranscode = true;
                     playerTimelineOffset = globalTargetTime || 0;
-                    try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
+                    setTimeout(async () => {
+                        try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
+                    }, 2000); // 🟢 Add a 2s delay so we don't spam the server on hard crashes
                 }
                 wakeHUD();
             });
