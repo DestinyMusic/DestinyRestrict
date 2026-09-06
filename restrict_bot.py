@@ -6710,6 +6710,8 @@ HTML_DASHBOARD = """
             if (dur === 0) return;
             wakeHUD();
             
+            globalTargetTime = target; // 🟢 Save intended destination instantly
+            
             const video = document.getElementById('hidden-video');
             if (playerRequiresTranscode) {
                 isTranscodeSeeking = true;
@@ -6717,6 +6719,7 @@ HTML_DASHBOARD = """
             } else {
                 if (video) video.currentTime = target;
                 renderCurrentSubtitle(target);
+                if (!playerFallbackAttempted) armPlaybackWatchdog(); // 🟢 Rearm watchdog for deep seek
             }
         }
 
@@ -7374,7 +7377,9 @@ HTML_DASHBOARD = """
         }
 
         let playbackWatchdogTimer = null;
-        function armPlaybackWatchdog(fallbackUrl, currentTargetTime = 0) {
+        let globalTargetTime = 0; // 🟢 NEW: Global tracker for exact playback position
+
+        function armPlaybackWatchdog() {
             clearTimeout(playbackWatchdogTimer);
             playbackWatchdogTimer = setTimeout(async () => {
                 const video = document.getElementById('hidden-video');
@@ -7382,10 +7387,10 @@ HTML_DASHBOARD = """
                 if (video.error || video.readyState < 2) {
                     playerFallbackAttempted = true;
                     playerRequiresTranscode = true;
-                    playerTimelineOffset = currentTargetTime || 0;
-                    await setVideoSource(fallbackUrl, 0, true);
+                    playerTimelineOffset = globalTargetTime || 0; // 🟢 Use global tracker
+                    await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true);
                 }
-            }, 3500);
+            }, 6000); // 🟢 Increased to 6s to allow deep Telegram chunks time to load!
         }
         function disarmPlaybackWatchdog() { clearTimeout(playbackWatchdogTimer); }
 
@@ -7432,14 +7437,9 @@ HTML_DASHBOARD = """
 
                 playerDirectCompatible = true;
                 playerRequiresTranscode = false;
+                globalTargetTime = 0; // 🟢 Reset for new media
                 if (playerSourceKind === 'tg' || /\.(?:mp4|m4v|webm|mp3|m4a|aac|ogg|wav|flac|opus)(?:\?|$)/i.test(link) || /(?:drive\.google\.com\/file\/|gofile\.io\/d\/|buzzheavier\.com\/)/i.test(link)) {
-                    const fallbackParams = new URLSearchParams({
-                        user_id: String(currentUser || ''),
-                        link: activeMediaLink,
-                        quality: 'Original',
-                        transcode: '1'
-                    });
-                    armPlaybackWatchdog(`/api/stream?${fallbackParams.toString()}`, 0);
+                    armPlaybackWatchdog();
                     await setVideoSource(nativeUrl, 0, true);
                 }
 
@@ -7572,6 +7572,10 @@ HTML_DASHBOARD = """
                 }
                 cur = Math.min(cur, dur);
 
+                if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
+                    globalTargetTime = cur; // 🟢 Constantly save our actual position
+                }
+
                 const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
                 const time = document.getElementById('hud-time');
                 
@@ -7598,7 +7602,7 @@ HTML_DASHBOARD = """
                 if (!playerRequiresTranscode && !playerFallbackAttempted && activeMediaLink) {
                     playerFallbackAttempted = true;
                     playerRequiresTranscode = true;
-                    playerTimelineOffset = Number.isFinite(vidElem.currentTime) ? vidElem.currentTime : 0;
+                    playerTimelineOffset = globalTargetTime || 0; // 🟢 Use global tracker instead of reset browser time
                     try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
                 }
                 wakeHUD();
