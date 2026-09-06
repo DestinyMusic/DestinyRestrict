@@ -4881,8 +4881,6 @@ HTML_DASHBOARD = """
         .matrix-option.active .matrix-radio { border-color: #a3e635; }
         .matrix-option.active .matrix-radio::after { content: ''; width: 8px; height: 8px; background: #a3e635; border-radius: 50%; }
     </style>
-    <!-- WebAssembly Subtitle Engine for Anime -->
-    <script src="https://unpkg.com/jassub@latest/dist/jassub.js"></script>
 </head>
 <body>
 
@@ -6300,17 +6298,12 @@ HTML_DASHBOARD = """
         let subtitleCues = [];
         let subtitleAbortController = null;
         let hudTimeout;
-        let jassubRenderer = null;
-        let subtitleSyncOffset = 0;
+        let subtitleSyncOffset = 0; // 🟢 NEW: Global Sync Offset Tracker
         
         function updateSubtitleSync(val) {
             subtitleSyncOffset = parseFloat(val);
             document.getElementById('subtitle-sync-val').innerText = (subtitleSyncOffset > 0 ? "+" : "") + subtitleSyncOffset.toFixed(2) + "s";
-            if (jassubRenderer) {
-                jassubRenderer.setTimeOffset(subtitleSyncOffset);
-            } else {
-                renderCurrentSubtitle();
-            }
+            renderCurrentSubtitle(); // Instantly update text on screen
         }
 
         // ======================================================================
@@ -7029,37 +7022,73 @@ HTML_DASHBOARD = """
             applySubtitleStyle();
         }
         
-         async function applySubtitleSelection() {
+        async function applySubtitleSelection() {
             const subSelect = document.getElementById('pop-sub-select');
-            activeSubtitleIndex = subSelect?.value ?? 'off';
-
-            // 1. Clean up old WebAssembly instances and manual text overlays
-            if (jassubRenderer) {
-                jassubRenderer.destroy();
-                jassubRenderer = null;
-            }
             const overlay = document.getElementById('subtitle-overlay');
+            activeSubtitleIndex = subSelect?.value ?? 'off';
+            subtitleCues = [];
             if (overlay) overlay.innerHTML = '';
+
+            if (subtitleAbortController) {
+                subtitleAbortController.abort();
+                subtitleAbortController = null;
+            }
 
             if (activeSubtitleIndex === 'off' || !activeMediaLink) {
                 wakeHUD();
                 return;
             }
 
-            const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}`;
+            subtitleAbortController = new AbortController();
+            try {
+                const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}`;
+                const response = await fetch(url, { signal: subtitleAbortController.signal, cache: 'force-cache' });
+                if (!response.ok) throw new Error(`Subtitle server returned ${response.status}`);
 
-            // 2. Boot the WebAssembly Anime Subtitle Engine
-            jassubRenderer = new JASSUB({
-                video: document.getElementById('hidden-video'),
-                subUrl: url,
-                workerUrl: 'https://unpkg.com/jassub@latest/dist/jassub-worker.js',
-                wasmUrl: 'https://unpkg.com/jassub@latest/dist/jassub-worker.wasm',
-                fallbackFont: 'sans-serif'
-            });
+                // The server caches extracted WebVTT.  Read it progressively so the
+                // first cues can appear before the entire file has arrived.
+                const reader = response.body?.getReader();
+                if (!reader) {
+                    subtitleCues = parseWebVTT(await response.text());
+                    renderCurrentSubtitle();
+                    return;
+                }
 
-            wakeHUD();
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const blocks = buffer.split(/\\n\\s*\\n/);
+                    buffer = blocks.pop() || '';
+                    for (const block of blocks) {
+                        const cues = parseWebVTT(block + '\\n\\n');
+                        if (cues.length) subtitleCues.push(...cues);
+                    }
+                    subtitleCues.sort((a, b) => a.start - b.start);
+                    renderCurrentSubtitle();
+                }
+
+                buffer += decoder.decode();
+                if (buffer.trim()) {
+                    const cues = parseWebVTT(buffer + '\\n\\n');
+                    if (cues.length) subtitleCues.push(...cues);
+                }
+                subtitleCues.sort((a, b) => a.start - b.start);
+                renderCurrentSubtitle();
+            } catch (err) {
+                if (err?.name !== 'AbortError') {
+                    console.warn('Subtitle load failed:', err);
+                    subtitleCues = [];
+                }
+            } finally {
+                wakeHUD();
+            }
         }
-        
+
         function hexToRgba(hex, alpha) {
             const m = String(hex || '').replace('#', '');
             const n = parseInt(m.length === 3 ? m.split('').map(c => c + c).join('') : m, 16);
@@ -9692,7 +9721,7 @@ async def _api_subtitles_handler(request):
     if cached and cached[1] > now:
         body = cached[0]
         return web.Response(body=body, status=200, headers={
-            "Content-Type": "text/x-ssa; charset=utf-8",
+            "Content-Type": "text/vtt; charset=utf-8",
             "Content-Length": str(len(body)),
             "Access-Control-Allow-Origin": "*",
             "Cache-Control": "public, max-age=3600",
@@ -9719,12 +9748,12 @@ async def _api_subtitles_handler(request):
         "-probesize", "4M", "-analyzeduration", "2M",
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
-        "-vn", "-an", "-c:s", "ass", "-f", "ass", "pipe:1"
+        "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
     ]
     
     import aiohttp
     response = web.StreamResponse(status=200, headers={
-        "Content-Type": "text/x-ssa; charset=utf-8",
+        "Content-Type": "text/vtt; charset=utf-8",
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-cache",
     })
