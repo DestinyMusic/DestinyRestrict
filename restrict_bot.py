@@ -8728,8 +8728,10 @@ async def _direct_upstream_request(url, request):
         if value:
             req_headers[header] = value
 
-    resp = await session.get(
-        resolved,
+    # 🟢 FIX: Mirror the exact request method (GET or HEAD)
+    resp = await session.request(
+        method=request.method,
+        url=resolved,
         headers=req_headers,
         allow_redirects=True,
     )
@@ -8739,7 +8741,7 @@ async def _direct_upstream_request(url, request):
 async def _api_direct_stream_handler(request):
     """Native direct-link proxy with full HTTP Range support and keep-alive reuse."""
     url = request.query.get("url", "").strip()
-    logger.info(f"🌐 [DIRECT STREAM] Proxying HTTP Range request for: {url[:100]}...")
+    logger.info(f"🌐 [DIRECT STREAM] Proxying {request.method} Range request for: {url[:100]}...")
     if not url or not url.lower().startswith(("http://", "https://")):
         return web.Response(status=400, text="Invalid direct media URL")
 
@@ -8761,6 +8763,11 @@ async def _api_direct_stream_handler(request):
     )
     if "Cache-Control" not in out_headers:
         out_headers["Cache-Control"] = "public, max-age=300"
+
+    # 🟢 FAST-PROBE FIX: Return instantly for HEAD requests to unblock FFprobe
+    if request.method == "HEAD":
+        remote.release()
+        return web.Response(status=remote.status, headers=out_headers)
 
     response = web.StreamResponse(status=remote.status, headers=out_headers)
     try:
@@ -9060,9 +9067,10 @@ async def _api_media_probe_handler(request):
                                 real_file_name = m.group(1).strip()
 
             probe_input = actual_url
-            # FFprobe runs natively on the remote direct link to fetch full headers/subs flawlessly
             if not is_tg:
-                logger.debug(f"🔎 [PROBE] Feeding Real URL directly to FFprobe: {probe_input[:100]}...")
+                # 🟢 Restoring Loopback for Direct Links to prevent strict 5XX server blocks
+                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+                logger.debug(f"🔎 [PROBE] Feeding Loopback Proxy to FFprobe: {probe_input[:100]}...")
 
             tg_duration = 0.0
             if is_tg and 'media' in locals() and media:
@@ -9276,8 +9284,9 @@ async def _api_stream_handler(request):
                     )
                 )
             )
-            # 🟢 THE FIX: Bypassing loopback! FFmpeg downloads direct links externally for perfect track extraction.
-            logger.debug(f"🎬 [TRANSCODE] Using Real URL for FFmpeg: {actual_url[:100]}...")
+            # 🟢 Restoring Loopback! FFmpeg downloads direct links securely through our proxy.
+            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+            logger.debug(f"🎬 [TRANSCODE] Using Loopback Proxy for FFmpeg: {actual_url[:100]}...")
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
@@ -9813,8 +9822,9 @@ async def _api_subtitles_handler(request):
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
     else:
         actual_url = await resolve_direct_link(link)
-        # 🟢 THE FIX: Bypassing loopback! Direct links are passed to FFmpeg directly for flawless extraction.
-        logger.debug(f"📝 [SUBTITLES] Feeding Real URL to FFmpeg: {actual_url[:100]}...")
+        # 🟢 Restoring Loopback! Direct links are passed to FFmpeg securely.
+        actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+        logger.debug(f"📝 [SUBTITLES] Feeding Loopback Proxy to FFmpeg: {actual_url[:100]}...")
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
