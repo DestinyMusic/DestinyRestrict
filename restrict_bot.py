@@ -8935,8 +8935,9 @@ async def _api_direct_stream_handler(request):
     response = web.StreamResponse(status=remote.status, headers=out_headers)
     try:
         await response.prepare(request)
-        # 🟢 FIX: Boosted to 4MB chunks. 1MB causes Python event loop starvation for 10GB+ files!
-        async for chunk in remote.content.iter_chunked(4 * 1024 * 1024):
+        # 🟢 FIX: 'iter_any()' pushes data to the browser the exact millisecond it arrives from the server.
+        # This completely unlocks your network speed. (Limitless blasting without waiting for chunks to fill!)
+        async for chunk in remote.content.iter_any():
             if chunk:
                 await response.write(chunk)
         await response.write_eof()
@@ -9608,8 +9609,9 @@ async def _api_stream_handler(request):
     try:
         await response.prepare(request)
         while True:
-            # 🟢 FIX: Boosted to 2MB chunks. 256KB causes 40,000+ Python loop iterations for a 10GB file, creating massive GIL lag!
-            buf = await proc.stdout.read(2097152) 
+            # 🟢 FIX: Unleash FFmpeg's output. Read up to 32MB at a time to prevent ANY Python CPU throttling.
+            # This allows FFmpeg to blast the transcoded/remuxed stream at maximum network speed.
+            buf = await proc.stdout.read(33554432) # 32MB limit per cycle
             if not buf:
                 break
             await response.write(buf)
