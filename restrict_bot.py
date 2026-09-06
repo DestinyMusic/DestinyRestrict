@@ -6736,12 +6736,10 @@ HTML_DASHBOARD = """
             const vp = document.getElementById('cinema-viewport');
             const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
             
-            // 🟢 FIX: Mobile browsers require active fullscreen BEFORE they allow orientation locking.
-            // If not in fullscreen, force fullscreen first!
+            // 🟢 Warn user to enter fullscreen first
             if (!document.fullscreenElement && !document.webkitFullscreenElement && !isIosFullscreen) {
-                toggleFullScreen();
-                // Wait briefly for fullscreen to apply
-                await new Promise(r => setTimeout(r, 200));
+                alert("Please enter Full Screen mode first (⛶) before locking orientation!");
+                return;
             }
             
             try {
@@ -6752,8 +6750,14 @@ HTML_DASHBOARD = """
                     } else {
                         await screen.orientation.lock('portrait');
                     }
+                } else if (screen.lockOrientation) {
+                    const currentType = screen.orientation ? screen.orientation.type : (screen.mozOrientation || screen.msOrientation || 'portrait-primary');
+                    if (currentType.startsWith('portrait')) {
+                        screen.lockOrientation('landscape');
+                    } else {
+                        screen.lockOrientation('portrait');
+                    }
                 } else {
-                    // Fallback for browsers that don't support lock (like iOS Safari)
                     alert("Screen rotation lock is not natively supported on this browser. Please rotate your device manually.");
                 }
             } catch (err) {
@@ -8709,13 +8713,13 @@ def _guess_browser_compatibility(mime_type, filename, streams):
 
 async def _run_ffprobe_json(input_url, fast=True):
     """Fast probe first; retry with a larger probe only when the small probe fails."""
-    probe_pairs = ((2 * 1024 * 1024, 1024 * 1024), (8 * 1024 * 1024, 4 * 1024 * 1024)) if fast else ((8 * 1024 * 1024, 4 * 1024 * 1024),)
+    probe_pairs = ((10 * 1024 * 1024, 5 * 1024 * 1024), (50 * 1024 * 1024, 25 * 1024 * 1024)) if fast else ((50 * 1024 * 1024, 25 * 1024 * 1024),)
     last_error = None
     for probesize, analyzeduration in probe_pairs:
         cmd = [
             "ffprobe", "-v", "error", "-hide_banner",
             "-user_agent", "Mozilla/5.0",
-            "-rw_timeout", "6000000",
+            "-rw_timeout", "15000000",
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
@@ -9508,7 +9512,7 @@ async def _api_tg_stream_handler(request):
             global GLOBAL_STREAM_TASKS
             GLOBAL_STREAM_TASKS = {}
             
-        is_metadata_probe = chunk_len < 5242880 # 5 MB
+        is_metadata_probe = chunk_len < 52428800 # 50 MB
         lock_key = f"{user_id}_{chat_id}_{msg_id}"
         
         if not is_metadata_probe:
