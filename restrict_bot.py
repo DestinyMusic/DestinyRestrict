@@ -9138,14 +9138,17 @@ async def _probe_tg_client(client, chat_id, msg_id):
 
 
 async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
-    """Return accessible bot clients first, then one user-session fallback."""
+    """Dynamically tests Bots and the User Session concurrently. Merges all accessible clients into one super-pool!"""
     key = (chat_id, int(msg_id))
-    cached = TG_ACCESS_CACHE.get(key)
+    
+    # 1. Check Cache
     now = time.time()
+    cached = TG_ACCESS_CACHE.get(key)
     if cached and cached[1] > now:
         pool = [c for c in cached[0] if getattr(c, "is_connected", True)]
         if pool:
-            return pool, False
+            is_only_user = (len(pool) == 1 and not getattr(pool[0], "bot_token", None))
+            return pool, is_only_user
 
     lock = TG_ACCESS_LOCKS[key]
     async with lock:
@@ -9153,22 +9156,22 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
         if cached and cached[1] > time.time():
             pool = [c for c in cached[0] if getattr(c, "is_connected", True)]
             if pool:
-                return pool, False
+                is_only_user = (len(pool) == 1 and not getattr(pool[0], "bot_token", None))
+                return pool, is_only_user
 
         candidates = []
         seen = set()
         
-        # 1. Add the User's Personal Worker Bots
+        # --- A. Add the User's Personal Worker Bots ---
         user_workers = USER_WORKER_BOTS.get(user_id, [])
         for client in user_workers:
-            if client is None or not getattr(client, "is_connected", True):
-                continue
+            if client is None or not getattr(client, "is_connected", True): continue
             marker = _tg_client_cache_name(client)
             if marker not in seen:
                 seen.add(marker)
                 candidates.append(client)
                 
-        # 2. Main Bot Protection: Only allow Admins to use the Main Bot for streaming!
+        # --- B. Main Bot Protection (Admins Only) ---
         if user_id in ADMINS or user_id in SUDOS:
             if getattr(app, "is_connected", True):
                 marker = _tg_client_cache_name(app)
@@ -9176,8 +9179,23 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
                     seen.add(marker)
                     candidates.append(app)
 
+        # --- C. ALWAYS Add the User Session ---
+        user_client = None
+        if fallback_client and getattr(fallback_client, "is_connected", False):
+            user_client = fallback_client
+        else:
+            user_client, _ = await _get_user_stream_client(user_id)
+            
+        if user_client and getattr(user_client, "is_connected", True):
+            marker = _tg_client_cache_name(user_client)
+            if marker not in seen:
+                seen.add(marker)
+                candidates.append(user_client)
+
+        # --- TEST EVERYONE AT ONCE ---
         pool = []
         if candidates:
+            # Ping the chat/message with every candidate simultaneously
             results = await asyncio.gather(
                 *[asyncio.wait_for(_probe_tg_client(c, chat_id, msg_id), timeout=4) for c in candidates],
                 return_exceptions=True,
@@ -9187,21 +9205,14 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
                     pool.append(result)
 
         if pool:
-            TG_ACCESS_CACHE[key] = (pool, time.time() + TG_ACCESS_CACHE_TTL)
-            return pool, False
-
-        if fallback_client is not None and getattr(fallback_client, "is_connected", False):
-            user_client = fallback_client
-        else:
-            user_client, _ = await _get_user_stream_client(user_id)
-
-        if user_client is not None:
-            if await _probe_tg_client(user_client, chat_id, msg_id):
-                TG_ACCESS_CACHE[key] = ([user_client], time.time() + 30)
-                return [user_client], True
+            # Check if the ONLY client that survived the test is the User Session
+            is_only_user_session = (len(pool) == 1 and pool[0] == user_client)
+            
+            # Cache the super-pool
+            TG_ACCESS_CACHE[key] = (pool, time.time() + (30 if is_only_user_session else TG_ACCESS_CACHE_TTL))
+            return pool, is_only_user_session
 
         return [], False
-
 
 async def _invalidate_tg_access(chat_id, msg_id, client=None):
     key = (chat_id, int(msg_id))
@@ -9984,8 +9995,7 @@ async def _api_tg_stream_handler(request):
         if is_zip:
             async def zip_read(off, length):
                 buf = bytearray()
-                # Use concurrency 6 for speed, it drops to 1 if using user session.
-                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length, concurrency=6):
+                async for chunk in parallel_stream_generator(working_pool, chat_id, parts_map, off, length, concurrency=4 if not using_user_session else 1):
                     buf.extend(chunk)
                     if len(buf) >= length:
                         break
@@ -10083,7 +10093,8 @@ async def _api_tg_stream_handler(request):
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
         adjusted_start = start_byte + virtual_data_offset
-        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
+        # 🟢 FIX: Directly supply the working_pool to the generator!
+        gen = parallel_stream_generator(working_pool, chat_id, parts_map, adjusted_start, chunk_len, concurrency=4 if not using_user_session else 1)
         
         try:
             await response.prepare(request)
@@ -10371,19 +10382,19 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
         msg = await get_client_msg(client, chat_id, msg_id)
         data = bytearray()
         
-        # 🟢 FIX: Consume the entire 1MB part without breaking prematurely on the first internal 128KB buffer
-        async for chunk in client.stream_media(msg, offset=chunk_index, limit=1):
-            data.extend(chunk)
-            
-        if not data:
-            raise ValueError(f"Empty chunk at index {chunk_index}")
+        try:
+            # 🟢 FIX: Tolerate EOF cleanly instead of crashing!
+            async for chunk in client.stream_media(msg, offset=chunk_index, limit=1):
+                data.extend(chunk)
+        except Exception as e:
+            logger.debug(f"Pyrogram EOF at chunk {chunk_index}: {e}")
             
         chunk_bytes = bytes(data)
-        TG_CHUNK_CACHE[cache_key] = chunk_bytes
-        
-        if len(TG_CHUNK_CACHE) > TG_CHUNK_CACHE_MAX_SIZE:
-            TG_CHUNK_CACHE.pop(next(iter(TG_CHUNK_CACHE)))
-            
+        if chunk_bytes:
+            TG_CHUNK_CACHE[cache_key] = chunk_bytes
+            if len(TG_CHUNK_CACHE) > TG_CHUNK_CACHE_MAX_SIZE:
+                TG_CHUNK_CACHE.pop(next(iter(TG_CHUNK_CACHE)))
+                
         return chunk_bytes
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
@@ -10397,6 +10408,8 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
         try:
             for chunk_idx in range(start_chunk, end_chunk + 1):
                 chunk_data = await _get_cached_tg_chunk(client, chat_id, msg_id, chunk_idx)
+                if not chunk_data:
+                    break # 🟢 FIX: Clean EOF exit instead of throwing ValueError
                 result_data.extend(chunk_data)
                 
             skip_bytes = offset % CHUNK_SIZE
@@ -10412,42 +10425,17 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             
     raise TimeoutError("Exceeded max retries for chunk")
 
-async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
+async def parallel_stream_generator(working_pool, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
     """Distributes HTTP range requests evenly. Includes a Fast-Path for single clients."""
-    
-    test_msg_id = msg_parts[0]["msg_id"]
-    working_pool = []
-    is_user_session = False
-    
-    for c in ([app] + MULTI_BOT_CLIENTS):
-        try:
-            if await get_client_msg(c, chat_id, test_msg_id):
-                working_pool.append(c)
-        except Exception:
-            pass
-            
-    if not working_pool and fallback_client:
-        try:
-            if await get_client_msg(fallback_client, chat_id, test_msg_id):
-                working_pool = [fallback_client]
-                is_user_session = True
-        except Exception:
-            pass
-
     if not working_pool:
-        working_pool = [fallback_client or app]
-        is_user_session = bool(fallback_client)
-        
-    if is_user_session:
-        safe_concurrency = 1
-    else:
-        safe_concurrency = min(concurrency, len(working_pool))
-        
+        return
+
+    safe_concurrency = min(concurrency, len(working_pool))
     if safe_concurrency < 1: 
         safe_concurrency = 1
 
     # ==========================================
-    # 🟢 THE FIX: FAST-PATH FOR SINGLE CLIENTS
+    # 🟢 FAST-PATH FOR SINGLE CLIENTS
     # ==========================================
     if safe_concurrency == 1:
         client = working_pool[0]
@@ -10461,60 +10449,40 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 internal_limit = min(bytes_needed, part["size"] - internal_offset)
                 
                 try:
-                    # 🟢 SMART ROUTING: Use Cache for small FFmpeg probes, Pipeline for large streaming
-                    if internal_limit <= 1048576 * 2: # 2MB or less -> Use Cache to prevent socket slamming
-                        CHUNK_SIZE = 1048576
-                        start_chunk = internal_offset // CHUNK_SIZE
-                        end_chunk = (internal_offset + internal_limit - 1) // CHUNK_SIZE
-                        
-                        result_data = bytearray()
-                        for chunk_idx in range(start_chunk, end_chunk + 1):
-                            chunk_data = await _get_cached_tg_chunk(client, chat_id, part["msg_id"], chunk_idx)
-                            result_data.extend(chunk_data)
-                            
-                        skip_bytes = internal_offset % CHUNK_SIZE
-                        final_bytes = bytes(result_data[skip_bytes : skip_bytes + internal_limit])
-                        yield final_bytes
-                        
-                        current_offset += internal_limit
-                        bytes_needed -= internal_limit
-                        
-                    else:
-                        # Large bulk read -> Use continuous pipelined socket
-                        CHUNK_SIZE = 1048576
-                        chunk_index = internal_offset // CHUNK_SIZE
-                        skip_bytes = internal_offset % CHUNK_SIZE
-                        
-                        import math
-                        total_to_pull = skip_bytes + internal_limit
-                        chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
-                        
-                        msg = await get_client_msg(client, chat_id, part["msg_id"])
-                        bytes_yielded_this_part = 0
-                        
-                        # 🟢 THE REAL FIX: Pass the raw chunk_index and the calculated chunk limit!
-                        async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
-                            if skip_bytes > 0:
-                                if len(chunk) <= skip_bytes:
-                                    skip_bytes -= len(chunk)
-                                    continue
-                                else:
-                                    chunk = chunk[skip_bytes:]
-                                    skip_bytes = 0
-                                    
-                            if not chunk: continue
-                            
-                            chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
-                            if chunk_to_yield:
-                                yield chunk_to_yield
-                                bytes_yielded_this_part += len(chunk_to_yield)
+                    # Large bulk read -> Use continuous pipelined socket
+                    CHUNK_SIZE = 1048576
+                    chunk_index = internal_offset // CHUNK_SIZE
+                    skip_bytes = internal_offset % CHUNK_SIZE
+                    
+                    import math
+                    total_to_pull = skip_bytes + internal_limit
+                    chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
+                    
+                    msg = await get_client_msg(client, chat_id, part["msg_id"])
+                    bytes_yielded_this_part = 0
+                    
+                    async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
+                        if skip_bytes > 0:
+                            if len(chunk) <= skip_bytes:
+                                skip_bytes -= len(chunk)
+                                continue
+                            else:
+                                chunk = chunk[skip_bytes:]
+                                skip_bytes = 0
                                 
-                            if bytes_yielded_this_part >= internal_limit:
-                                break
-                                
-                        current_offset += internal_limit
-                        bytes_needed -= internal_limit
+                        if not chunk: continue
                         
+                        chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
+                        if chunk_to_yield:
+                            yield chunk_to_yield
+                            bytes_yielded_this_part += len(chunk_to_yield)
+                            
+                        if bytes_yielded_this_part >= internal_limit:
+                            break
+                            
+                    current_offset += internal_limit
+                    bytes_needed -= internal_limit
+                    
                 except Exception as e:
                     logger.error(f"Fast-path stream failed: {e}")
                     raise e
@@ -10554,6 +10522,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         
         for i, res in enumerate(results):
             if isinstance(res, Exception): 
+                logger.error(f"Chunk fetch failed in parallel generator: {res}")
                 raise res 
             
             block_idx = current_block + i
@@ -10570,7 +10539,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 bytes_yielded += yield_len
                 
         current_block += batch_count
-
 
 USER_WORKER_BOTS = defaultdict(list)
 
