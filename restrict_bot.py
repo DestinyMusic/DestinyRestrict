@@ -8576,28 +8576,27 @@ async def _get_direct_http_session():
     async with DIRECT_HTTP_SESSION_LOCK:
         if DIRECT_HTTP_SESSION is None or DIRECT_HTTP_SESSION.closed:
             connector = aiohttp.TCPConnector(
-                limit=64,
-                limit_per_host=12,
+                limit=0,          # 🟢 FIX: Unlimited global connections
+                limit_per_host=0, # 🟢 FIX: Prevents FFmpeg '-multiple_requests 1' connection starvation!
                 ttl_dns_cache=300,
-                keepalive_timeout=30,
+                keepalive_timeout=60, # 🟢 FIX: Longer keepalive for heavy scrubbing
                 enable_cleanup_closed=True,
             )
             timeout = aiohttp.ClientTimeout(
                 total=None,
                 connect=15,
                 sock_connect=15,
-                sock_read=120,
+                sock_read=None, # 🟢 FIX: No read timeout so massive 10GB streams don't drop mid-transcode!
             )
             DIRECT_HTTP_SESSION = aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout,
                 headers={
-                    "User-Agent": "Mozilla/5.0",
-                    "Accept-Encoding": "identity",
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    "Accept-Encoding": "identity", # 🟢 FIX: Forces server to skip gzip to preserve Native Range headers
                 },
             )
     return DIRECT_HTTP_SESSION
-
 
 async def _close_direct_http_session():
     global DIRECT_HTTP_SESSION
@@ -8675,25 +8674,34 @@ async def resolve_direct_link(url):
                         confirm_match = re.search(r"confirm=([a-zA-Z0-9_-]+)", text)
                         if confirm_match:
                             result = f"https://drive.google.com/uc?id={file_id}&export=download&confirm={confirm_match.group(1)}"
+                        elif "download_warning" in str(r.url):
+                            # 🟢 GDrive changed the warning page structure! Token is now hidden in the redirect URL.
+                            m = re.search(r"confirm=([a-zA-Z0-9_-]+)", str(r.url))
+                            if m:
+                                result = f"https://drive.google.com/uc?id={file_id}&export=download&confirm={m.group(1)}"
+                            else:
+                                result = f"https://drive.google.com/uc?id={file_id}&export=download&confirm=t"
                         else:
-                            # 🟢 If no confirm token, GDrive redirects directly to the UserContent media URL. Use it!
                             result = str(r.url)
                 except Exception as exc:
                     logger.warning(f"GDrive native bypass failed: {exc}")
-                    result = original # 🟢 FIX: Never fallback to dead workers! Let the loopback proxy handle it natively.
+                    result = original # 🟢 Never fall back to dead workers
 
         # 7. GoFile API
         if result == original:
             gofile_match = re.search(r"gofile\.io/d/([a-zA-Z0-9]+)", original)
             if gofile_match:
                 try:
-                    async with session.post("https://api.gofile.io/accounts") as r:
+                    # 🟢 FIX: GoFile requires a specific User-Agent to bypass Cloudflare
+                    g_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+                    async with session.post("https://api.gofile.io/accounts", headers=g_headers) as r:
                         token_data = await r.json(content_type=None)
                     token = ((token_data.get('data') or {}).get('token') or '').strip()
                     if token:
+                        g_headers["Authorization"] = f"Bearer {token}"
                         async with session.get(
                             f"https://api.gofile.io/contents/{gofile_match.group(1)}?wt=4fd6sg89d7s6",
-                            headers={"Authorization": f"Bearer {token}"},
+                            headers=g_headers,
                         ) as r:
                             data = await r.json(content_type=None)
                         for item in ((data.get('data') or {}).get('children') or {}).values():
@@ -8708,11 +8716,11 @@ async def resolve_direct_link(url):
             buzz_match = re.search(r"buzzheavier\.com/([a-zA-Z0-9]+)", original)
             if buzz_match:
                 try:
-                    async with session.get(
-                        original,
-                        headers={"Accept": "text/html,application/xhtml+xml"},
-                        allow_redirects=True,
-                    ) as r:
+                    b_headers = {
+                        "Accept": "text/html,application/xhtml+xml",
+                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    }
+                    async with session.get(original, headers=b_headers, allow_redirects=True) as r:
                         html_text = await r.text(errors='ignore')
                     patterns = [
                         r'href=["\'](https://[^"\']+\.(?:mp4|mkv|webm|m4v|mp3|m4a|flac|opus)(?:\?[^"\']*)?)["\']',
@@ -8726,12 +8734,34 @@ async def resolve_direct_link(url):
                 except Exception as exc:
                     logger.warning(f"Buzzheavier resolve failed: {exc}")
 
-        # 9. Last resort: a single ranged GET resolves redirects and captures useful headers
+        # 9. 🟢 UNIVERSAL HTML MEDIA SCRAPER (Catches VikingFile, Extralink, and hundreds of custom hosts!)
+        if result == original:
+            try:
+                u_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+                async with session.get(original, headers=u_headers, allow_redirects=True) as r:
+                    content_type = r.headers.get("Content-Type", "").lower()
+                    if "text/html" in content_type:
+                        html_text = await r.text(errors='ignore')
+                        # Match 1: HTML5 Video/Source Tags
+                        m = re.search(r'(?:<source[^>]+src=["\']|<video[^>]+src=["\'])(https?://[^"\']+\.(?:mp4|mkv|webm|m4v|mp3|m4a|flac|opus)(?:\?[^"\']*)?)["\']', html_text, re.I)
+                        if m:
+                            result = m.group(1).replace('&amp;', '&')
+                        else:
+                            # Match 2: Direct media links floating in hrefs
+                            m = re.search(r'href=["\'](https?://[^"\']+\.(?:mp4|mkv|webm|m4v|mp3|m4a|flac|opus)(?:\?[^"\']*)?)["\']', html_text, re.I)
+                            if m:
+                                result = m.group(1).replace('&amp;', '&')
+                    else:
+                        result = str(r.url) # If it auto-redirected directly to the raw file!
+            except Exception:
+                pass
+
+        # 10. Last resort: a single ranged GET resolves redirects and captures useful headers
         if result == original:
             try:
                 async with session.get(
                     original,
-                    headers={"Range": "bytes=0-0"},
+                    headers={"Range": "bytes=0-0", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
                     allow_redirects=True,
                 ) as r:
                     result = str(r.url)
@@ -8758,9 +8788,11 @@ async def _direct_upstream_request(url, request):
     """Open a direct HTTP source through the shared keep-alive session."""
     resolved = await resolve_direct_link(url)
     session = await _get_direct_http_session()
+    
+    # 🟢 FIX: Force a real modern Chrome User-Agent to bypass Cloudflare 403s on file hosts!
     req_headers = {
-        "User-Agent": request.headers.get("User-Agent", "Mozilla/5.0"),
-        "Accept": request.headers.get("Accept", "*/*"),
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "*/*",
         "Accept-Encoding": "identity",
     }
     for header in (
@@ -8901,8 +8933,8 @@ async def _run_ffprobe_json(input_url, fast=True):
     for probesize, analyzeduration in probe_pairs:
         cmd = [
             "ffprobe", "-v", "error", "-hide_banner",
-            "-user_agent", "Mozilla/5.0",
-            "-rw_timeout", "15000000",
+            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real User-Agent
+            "-rw_timeout", "30000000", # 🟢 FIX: 30s timeout for slow Cloudflare Workers
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
@@ -9363,17 +9395,11 @@ async def _api_stream_handler(request):
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-user_agent", "Mozilla/5.0",
-        "-rw_timeout", "12000000",
+        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real User-Agent
+        "-rw_timeout", "30000000", # 🟢 FIX: 30s timeout
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-    ]
-
-    # 🟢 FAST-SEEK FIX: Forces FFmpeg to use HTTP Range requests. Isolated safely from TG links!
-    if not is_tg and actual_url.startswith("http"):
-        cmd += ["-seekable", "1", "-multiple_requests", "1"]
-
-    cmd += [
-        "-probesize", "10M", "-analyzeduration", "5M", # 🟢 FAST 4K PROBE: Enough for Dolby Vision, but loads instantly
+        "-seekable", "1", "-multiple_requests", "1",
+        "-probesize", "10M", "-analyzeduration", "5M",
         "-fflags", "+nobuffer+flush_packets",
     ]
 
@@ -9877,16 +9903,10 @@ async def _api_subtitles_handler(request):
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-user_agent", "Mozilla/5.0",
-        "-rw_timeout", "12000000",
+        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real User-Agent
+        "-rw_timeout", "30000000", # 🟢 FIX: 30s timeout
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-    ]
-    
-    # 🟢 FAST-SEEK FIX: Instantly jumps to the subtitle index without downloading massive files!
-    if not is_tg and actual_url.startswith("http"):
-        cmd += ["-seekable", "1", "-multiple_requests", "1"]
-        
-    cmd += [
+        "-seekable", "1", "-multiple_requests", "1",
         "-probesize", "4M", "-analyzeduration", "2M",
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
