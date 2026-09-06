@@ -9528,7 +9528,7 @@ async def _api_stream_handler(request):
         "-seekable", "1", "-multiple_requests", "1",
         "-probesize", "25M", "-analyzeduration", "15M", 
         "-fflags", "+nobuffer+flush_packets", 
-        "-async", "1" # 🟢 FIX: Forces FFmpeg to stretch/squeeze audio to maintain perfect sync without stalling the remuxer!
+        # 🟢 FIX: Removed '-async 1' because it artificially alters A/V timestamps, causing them to drift away from the fixed Subtitle track!
     ]
 
     # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
@@ -10036,17 +10036,27 @@ async def _api_subtitles_handler(request):
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
     else:
         actual_url = await resolve_direct_link(link)
-        # 🟢 Restoring Loopback! Direct links are passed to FFmpeg securely.
-        actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
-        logger.debug(f"📝 [SUBTITLES] Feeding Loopback Proxy to FFmpeg: {actual_url[:100]}...")
+        # 🟢 FIX: Do NOT use loopback for subtitles. Let FFmpeg fetch directly to extract text instantly.
+        logger.debug(f"📝 [SUBTITLES] Direct FFmpeg Extraction (No Loopback): {actual_url[:100]}...")
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
-        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real User-Agent
-        "-rw_timeout", "30000000", # 🟢 FIX: 30s timeout
+        "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
+        "-rw_timeout", "30000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
         "-seekable", "1", "-multiple_requests", "1",
         "-probesize", "4M", "-analyzeduration", "2M",
+    ]
+    
+    # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg for subtitles
+    if not is_tg:
+        from urllib.parse import urlparse
+        parsed_res = urlparse(actual_url)
+        referer = f"{parsed_res.scheme}://{parsed_res.netloc}/"
+        headers_str = f"Accept: */*\r\nReferer: {referer}\r\nOrigin: {referer}\r\nSec-Fetch-Dest: video\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Site: cross-site\r\n"
+        cmd += ["-headers", headers_str]
+
+    cmd += [
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
         "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
