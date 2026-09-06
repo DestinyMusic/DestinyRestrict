@@ -6756,7 +6756,7 @@ HTML_DASHBOARD = """
             const isIosFullscreen = vp && vp.classList.contains('ios-fullscreen');
             const isNativeFullscreen = Boolean(document.fullscreenElement || document.webkitFullscreenElement);
 
-            let debugLog = "[Orientation Debug Logs]\n";
+            let debugLog = "[Orientation Debug Logs]\\n";
 
             if (!isNativeFullscreen && !isIosFullscreen) {
                 alert("Please enter Full Screen mode first (⛶) before rotating orientation!");
@@ -6764,41 +6764,41 @@ HTML_DASHBOARD = """
             }
 
             isForcedLandscape = !isForcedLandscape;
-            debugLog += `1. Target State: ${isForcedLandscape ? 'Landscape' : 'Portrait'}\n`;
+            debugLog += `1. Target State: ${isForcedLandscape ? 'Landscape' : 'Portrait'}\\n`;
 
             let nativeLocked = false;
             try {
                 if (screen.orientation && screen.orientation.lock) {
-                    debugLog += "2. Native API found. Attempting Lock...\n";
+                    debugLog += "2. Native API found. Attempting Lock...\\n";
                     if (isForcedLandscape) {
                         await screen.orientation.lock('landscape');
                     } else {
                         await screen.orientation.lock('portrait');
                     }
                     nativeLocked = true;
-                    debugLog += "3. Native API SUCCESS (No error thrown).\n";
+                    debugLog += "3. Native API SUCCESS (No error thrown).\\n";
                 } else if (screen.lockOrientation) {
-                    debugLog += "2. Old lockOrientation API found.\n";
+                    debugLog += "2. Old lockOrientation API found.\\n";
                     nativeLocked = screen.lockOrientation(isForcedLandscape ? 'landscape' : 'portrait');
-                    debugLog += `3. Old API returned: ${nativeLocked}\n`;
+                    debugLog += `3. Old API returned: ${nativeLocked}\\n`;
                 } else {
-                    debugLog += "2. Native API NOT SUPPORTED.\n";
+                    debugLog += "2. Native API NOT SUPPORTED.\\n";
                 }
             } catch (err) {
                 nativeLocked = false;
-                debugLog += `3. Native API ERROR: ${err.message}\n`;
+                debugLog += `3. Native API ERROR: ${err.message}\\n`;
             }
 
             // If Native failed OR it's an iOS/CSS-fullscreen, apply CSS rotation immediately
             if (!nativeLocked || isIosFullscreen) {
-                debugLog += "4. Applying CSS Rotation Fallback...\n";
+                debugLog += "4. Applying CSS Rotation Fallback...\\n";
                 if (isForcedLandscape) {
                     vp.classList.add('rotated-landscape');
                 } else {
                     vp.classList.remove('rotated-landscape');
                 }
             } else {
-                debugLog += "4. Native lock claims success, stripping CSS.\n";
+                debugLog += "4. Native lock claims success, stripping CSS.\\n";
                 vp.classList.remove('rotated-landscape');
                 
                 // --- 🟢 THE SMART FAILSAFE ---
