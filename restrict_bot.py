@@ -9528,7 +9528,7 @@ async def _api_stream_handler(request):
         "-seekable", "1", "-multiple_requests", "1",
         "-probesize", "25M", "-analyzeduration", "15M", 
         "-fflags", "+nobuffer+flush_packets", 
-        # 🟢 FIX: Removed '-async 1' because it artificially alters A/V timestamps, causing them to drift away from the fixed Subtitle track!
+        "-async", "1" # 🟢 FIX: Restored! This forces Audio & Video to pad/trim at the start of a seek so Subtitles perfectly align!
     ]
 
     # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
@@ -10036,7 +10036,7 @@ async def _api_subtitles_handler(request):
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
     else:
         actual_url = await resolve_direct_link(link)
-        # 🟢 FIX: Do NOT use loopback for subtitles. Let FFmpeg fetch directly to extract text instantly.
+        # 🟢 FIX: Let FFmpeg fetch directly to extract text instantly without stalling the server!
         logger.debug(f"📝 [SUBTITLES] Direct FFmpeg Extraction (No Loopback): {actual_url[:100]}...")
 
     cmd = [
@@ -10061,7 +10061,7 @@ async def _api_subtitles_handler(request):
         "-map", f"0:{sub_idx}",
         "-vn", "-an", "-c:s", "webvtt", "-f", "webvtt", "pipe:1"
     ]
-    
+
     import aiohttp
     response = web.StreamResponse(status=200, headers={
         "Content-Type": "text/vtt; charset=utf-8",
