@@ -8576,24 +8576,24 @@ async def _get_direct_http_session():
     async with DIRECT_HTTP_SESSION_LOCK:
         if DIRECT_HTTP_SESSION is None or DIRECT_HTTP_SESSION.closed:
             connector = aiohttp.TCPConnector(
-                limit=0,          # 🟢 FIX: Unlimited global connections
-                limit_per_host=0, # 🟢 FIX: Prevents FFmpeg '-multiple_requests 1' connection starvation!
+                limit=0,          # 🟢 FIX: Unlimited global connections to stop FFmpeg deadlocks
+                limit_per_host=0, # 🟢 FIX: Prevents FFmpeg '-multiple_requests 1' starvation on 10GB files!
                 ttl_dns_cache=300,
-                keepalive_timeout=60, # 🟢 FIX: Longer keepalive for heavy scrubbing
+                keepalive_timeout=60,
                 enable_cleanup_closed=True,
             )
             timeout = aiohttp.ClientTimeout(
                 total=None,
                 connect=15,
                 sock_connect=15,
-                sock_read=None, # 🟢 FIX: No read timeout so massive 10GB streams don't drop mid-transcode!
+                sock_read=None,   # 🟢 FIX: No read timeout so massive files don't drop!
             )
             DIRECT_HTTP_SESSION = aiohttp.ClientSession(
                 connector=connector,
                 timeout=timeout,
                 headers={
-                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                    "Accept-Encoding": "identity", # 🟢 FIX: Forces server to skip gzip to preserve Native Range headers
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real Chrome UA bypasses Cloudflare/GoFile!
+                    "Accept-Encoding": "identity",
                 },
             )
     return DIRECT_HTTP_SESSION
@@ -8675,7 +8675,7 @@ async def resolve_direct_link(url):
                         if confirm_match:
                             result = f"https://drive.google.com/uc?id={file_id}&export=download&confirm={confirm_match.group(1)}"
                         elif "download_warning" in str(r.url):
-                            # 🟢 GDrive changed the warning page structure! Token is now hidden in the redirect URL.
+                            # 🟢 FIX: GDrive changed warning page URL structure!
                             m = re.search(r"confirm=([a-zA-Z0-9_-]+)", str(r.url))
                             if m:
                                 result = f"https://drive.google.com/uc?id={file_id}&export=download&confirm={m.group(1)}"
@@ -8685,14 +8685,14 @@ async def resolve_direct_link(url):
                             result = str(r.url)
                 except Exception as exc:
                     logger.warning(f"GDrive native bypass failed: {exc}")
-                    result = original # 🟢 Never fall back to dead workers
+                    result = original # 🟢 FIX: Never fallback to dead workers
 
         # 7. GoFile API
         if result == original:
             gofile_match = re.search(r"gofile\.io/d/([a-zA-Z0-9]+)", original)
             if gofile_match:
                 try:
-                    # 🟢 FIX: GoFile requires a specific User-Agent to bypass Cloudflare
+                    # 🟢 FIX: GoFile blocks generic clients. Use Real Chrome UA!
                     g_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
                     async with session.post("https://api.gofile.io/accounts", headers=g_headers) as r:
                         token_data = await r.json(content_type=None)
@@ -8716,11 +8716,11 @@ async def resolve_direct_link(url):
             buzz_match = re.search(r"buzzheavier\.com/([a-zA-Z0-9]+)", original)
             if buzz_match:
                 try:
-                    b_headers = {
-                        "Accept": "text/html,application/xhtml+xml",
-                        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                    }
-                    async with session.get(original, headers=b_headers, allow_redirects=True) as r:
+                    async with session.get(
+                        original,
+                        headers={"Accept": "text/html,application/xhtml+xml", "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"},
+                        allow_redirects=True,
+                    ) as r:
                         html_text = await r.text(errors='ignore')
                     patterns = [
                         r'href=["\'](https://[^"\']+\.(?:mp4|mkv|webm|m4v|mp3|m4a|flac|opus)(?:\?[^"\']*)?)["\']',
@@ -9132,13 +9132,13 @@ async def _api_media_probe_handler(request):
                     mime_type = cached_headers.get("content_type") or mime_type
                     cd = cached_headers.get("content_disposition", "")
                     if cd:
-                        m = re.search(r"filename\\*=UTF-8''([^;]+)", cd, re.I)
+                        m = re.search(r"filename\*=UTF-8''([^;]+)", cd, re.I) # 🟢 FIX: Better Regex for RFC 5987
                         if m:
                             real_file_name = unquote(m.group(1).strip().strip('"'))
                         else:
-                            m = re.search(r"filename=\"?([^\";]+)", cd, re.I)
+                            m = re.search(r'filename=["\']?([^"\';]+)', cd, re.I) # 🟢 FIX: Catches all standard filename headers
                             if m:
-                                real_file_name = m.group(1).strip()
+                                real_file_name = unquote(m.group(1).strip())
 
             probe_input = actual_url
             if not is_tg:
@@ -9381,6 +9381,9 @@ async def _api_stream_handler(request):
         if not audio_codec:
             audio_codec = meta.get("audio_codec", "").lower()
         video_codec = meta.get("video_codec", "").lower()
+        # 🟢 FIX: Apply the properly resolved true file name from the cache, so we don't show "download"!
+        if meta.get("file_name") and meta.get("file_name") not in ("Unknown_Media", "download"):
+            filename = meta.get("file_name").lower()
 
     # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
     bad_audio = {"dts", "truehd", "ac3", "eac3"}
