@@ -717,79 +717,64 @@ def _parse_chat_target(text: str):
     return text, None
 
 def _parse_source_link(src_link: str):
-    raw = (src_link or "").strip()
+    raw_links = [l.strip() for l in src_link.split(",") if l.strip()]
     
-    if "t.me/" in raw:
-        raw = raw.split("t.me/")[-1]
-    elif "telegram.me/" in raw:
-        raw = raw.split("telegram.me/")[-1]
+    chat_id = None
+    topic_id = None
+    msg_ids = set()
+    kind = "public"
+    join_target = None
+    
+    for link in raw_links:
+        raw = link
+        if "t.me/" in raw:
+            raw = raw.split("t.me/")[-1]
+        elif "telegram.me/" in raw:
+            raw = raw.split("telegram.me/")[-1]
+        if raw.startswith("s/"):
+            raw = raw[2:]
+        raw = raw.split("?", 1)[0].strip("/")
         
-    if raw.startswith("s/"):
-        raw = raw[2:]
+        parts = raw.split("/")
         
-    raw = raw.split("?", 1)[0].strip("/")
+        # Grab chat and topic info from the first valid link
+        if chat_id is None:
+            if raw.startswith("c/"):
+                kind = "private_c"
+                chat_id = int("-100" + parts[1])
+                if len(parts) >= 4 and parts[2].isdigit():
+                    topic_id = int(parts[2])
+            else:
+                if parts[0].startswith("+") or "joinchat" in parts[0]:
+                    kind = "invite"
+                    join_target = f"https://t.me/{raw}"
+                else:
+                    kind = "public"
+                    join_target = parts[0]
+                    chat_id = parts[0]
+                if len(parts) >= 3 and parts[1].isdigit():
+                    topic_id = int(parts[1])
 
-    is_private_c = raw.startswith("c/")
-    if is_private_c:
-        clean = raw[2:]
-        parts = clean.split("/")
-        source_id = int("-100" + parts[0])
-        topic_id = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
-        
-        # Range Parsing for Private Links
-        msg_id = None
-        msg_range = None
+        # Extract message ID or Hyphen Range
         last_segment = parts[-1].strip()
         if "-" in last_segment:
             r_parts = last_segment.split("-", 1)
-            if r_parts[0].isdigit() and r_parts[1].isdigit():
-                msg_id = int(r_parts[0])
-                msg_range = (int(r_parts[0]), int(r_parts[1]))
+            if r_parts[0].strip().isdigit() and r_parts[1].strip().isdigit():
+                start_id, end_id = int(r_parts[0].strip()), int(r_parts[1].strip())
+                for i in range(start_id, end_id + 1):
+                    msg_ids.add(i)
         elif last_segment.isdigit():
-            msg_id = int(last_segment)
-            
-        return {
-            "kind": "private_c",
-            "join_target": None,
-            "chat_id": source_id,
-            "topic_id": topic_id,
-            "msg_id": msg_id,
-            "msg_range": msg_range,
-        }
+            msg_ids.add(int(last_segment))
 
-    parts = raw.split("/")
-    username = parts[0]
-    topic_id = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
-    
-    # Range Parsing for Public/Invite Links
-    msg_id = None
-    msg_range = None
-    last_segment = parts[-1].strip()
-    if "-" in last_segment:
-        r_parts = last_segment.split("-", 1)
-        if r_parts[0].isdigit() and r_parts[1].isdigit():
-            msg_id = int(r_parts[0])
-            msg_range = (int(r_parts[0]), int(r_parts[1]))
-    elif last_segment.isdigit():
-        msg_id = int(last_segment)
-
-    if username.startswith("+") or "joinchat" in username:
-        return {
-            "kind": "invite",
-            "join_target": f"https://t.me/{raw}",
-            "chat_id": None,
-            "topic_id": topic_id,
-            "msg_id": msg_id,
-            "msg_range": msg_range,
-        }
-
+    msg_ids_sorted = sorted(list(msg_ids))
     return {
-        "kind": "public",
-        "join_target": username,
-        "chat_id": username,
+        "kind": kind,
+        "join_target": join_target,
+        "chat_id": chat_id,
         "topic_id": topic_id,
-        "msg_id": msg_id,
-        "msg_range": msg_range,
+        "msg_ids": msg_ids_sorted,
+        "msg_id": msg_ids_sorted[0] if msg_ids_sorted else None,
+        "msg_range": (msg_ids_sorted[0], msg_ids_sorted[-1]) if len(msg_ids_sorted) > 1 else None
     }
 
 def _pretty_bytes(n: float) -> str:
@@ -9249,19 +9234,41 @@ async def _api_media_probe_handler(request):
             if is_tg:
                 parsed = _parse_source_link(link)
                 chat_id = parsed.get("chat_id")
-                msg_id = parsed.get("msg_id")
-                if chat_id is None or msg_id is None:
+                msg_ids = parsed.get("msg_ids")
+                if chat_id is None or not msg_ids:
                     return web.json_response({"status": "error", "message": "Invalid Telegram link"}, status=400)
-                pool, user_fallback = await _get_working_tg_pool(user_id, chat_id, msg_id)
+                pool, user_fallback = await _get_working_tg_pool(user_id, chat_id, msg_ids[0])
                 if not pool:
                     return web.json_response({"status": "error", "message": "Telegram file is not accessible"}, status=403)
-                msg = await get_client_msg(pool[0], chat_id, msg_id)
-                media = msg.document or msg.video or msg.audio
-                if not media:
+                
+                # Verify, filter junk, and sort all parts
+                valid_msgs = []
+                for mid in msg_ids:
+                    try:
+                        m = await get_client_msg(pool[0], chat_id, mid)
+                        if m and (m.document or m.video or m.audio):
+                            valid_msgs.append(m)
+                    except Exception: pass
+                
+                if not valid_msgs:
                     return web.json_response({"status": "error", "message": "No media found"}, status=404)
-                real_file_name = getattr(media, "file_name", None) or getattr(media, "title", None) or f"Telegram_Media_{msg_id}"
+                
+                def get_sort_key(m):
+                    media_obj = m.document or m.video or m.audio
+                    fname = getattr(media_obj, "file_name", "") or ""
+                    s_info = parse_split_info(fname)
+                    if s_info: return (s_info[0], s_info[1])
+                    return (fname, m.id)
+                valid_msgs.sort(key=get_sort_key)
+                
+                msg = valid_msgs[0]
+                media = msg.document or msg.video or msg.audio
+                raw_fname = getattr(media, "file_name", None) or getattr(media, "title", None) or f"Telegram_Media_{msg.id}"
+                real_file_name = strip_part_suffix(raw_fname)
                 mime_type = getattr(media, "mime_type", None) or "video/mp4"
-                actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+                
+                sorted_ids_str = ",".join(str(m.id) for m in valid_msgs)
+                actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_ids={sorted_ids_str}"
             else:
                 actual_url = await resolve_direct_link(link)
                 real_file_name = _guess_filename_from_url(actual_url, _guess_filename_from_url(link, "Direct_Stream_Media"))
@@ -9475,19 +9482,38 @@ async def _api_stream_handler(request):
         if is_tg:
             parsed = _parse_source_link(link)
             chat_id = parsed.get("chat_id")
-            msg_id = parsed.get("msg_id")
-            if chat_id is None or msg_id is None:
+            msg_ids = parsed.get("msg_ids")
+            if chat_id is None or not msg_ids:
                 return web.Response(status=400, text="Invalid Telegram link")
-            pool, _ = await _get_working_tg_pool(user_id, chat_id, msg_id)
+            pool, _ = await _get_working_tg_pool(user_id, chat_id, msg_ids[0])
             if not pool:
                 return web.Response(status=403, text="Telegram source is not accessible")
-            msg = await get_client_msg(pool[0], chat_id, msg_id)
-            media = msg.document or msg.video or msg.audio
-            if not media:
+                
+            valid_msgs = []
+            for mid in msg_ids:
+                try:
+                    m = await get_client_msg(pool[0], chat_id, mid)
+                    if m and (m.document or m.video or m.audio): valid_msgs.append(m)
+                except Exception: pass
+            if not valid_msgs:
                 return web.Response(status=404, text="Media not found")
-            filename = str(getattr(media, 'file_name', '') or '').lower()
+                
+            def get_sort_key(m):
+                media_obj = m.document or m.video or m.audio
+                fname = getattr(media_obj, "file_name", "") or ""
+                s_info = parse_split_info(fname)
+                if s_info: return (s_info[0], s_info[1])
+                return (fname, m.id)
+            valid_msgs.sort(key=get_sort_key)
+            
+            msg = valid_msgs[0]
+            media = msg.document or msg.video or msg.audio
+            raw_filename = str(getattr(media, 'file_name', '') or '').lower()
+            filename = strip_part_suffix(raw_filename)
             mime_type = getattr(media, 'mime_type', 'video/mp4') or 'video/mp4'
-            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+            
+            sorted_ids_str = ",".join(str(m.id) for m in valid_msgs)
+            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_ids={sorted_ids_str}"
             is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus")) or "audio" in mime_type
         else:
             actual_url = await resolve_direct_link(link)
@@ -9519,7 +9545,7 @@ async def _api_stream_handler(request):
     # which the browser cannot decode directly.
     if quality == "Original" and (audio_idx is None or str(audio_idx).strip() == "") and not force_transcode:
         if is_tg:
-            raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}")
+            raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_ids={sorted_ids_str}")
         raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}")
 
     # 🟢 DYNAMIC CODEC RETRIEVAL: Pull cached metadata to ensure we don't blind-copy incompatible streams
@@ -9828,84 +9854,91 @@ async def _api_tg_stream_handler(request):
         user_id = 0
 
     link = request.query.get("link")
+    msg_ids_str = request.query.get("msg_ids")
+    
     logger.info(f"🌐 [TG STREAM] Native Byte-Range Request | User: {user_id} | Link: {str(link)[:60]}...")
+    
+    msg_ids = []
     if link:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
-        msg_id = parsed.get("msg_id")
+        msg_ids = parsed.get("msg_ids") or []
     else:
         chat_id = request.query.get("chat_id")
-        msg_id = request.query.get("msg_id")
+        if msg_ids_str:
+            msg_ids = [int(x.strip()) for x in msg_ids_str.split(",") if x.strip().isdigit()]
+        else:
+            single_id = request.query.get("msg_id")
+            if single_id and single_id.isdigit():
+                msg_ids.append(int(single_id))
 
-    if chat_id is None or msg_id is None:
-        return web.Response(status=400, text="Missing chat_id/msg_id or link")
+    if chat_id is None or not msg_ids:
+        return web.Response(status=400, text="Missing chat_id/msg_ids or link")
 
-    msg_id = int(msg_id)
     chat_id = int(chat_id) if str(chat_id).lstrip('-').isdigit() else chat_id
 
     response = None
     temp_client = None
     try:
-        # Prefer any bot that can read the file; only create/use the user's
-        # session when all bots are unable to access it.
-        working_pool, using_user_session = await _get_working_tg_pool(user_id, chat_id, msg_id)
+        working_pool, using_user_session = await _get_working_tg_pool(user_id, chat_id, msg_ids[0])
         if not working_pool:
             return web.Response(status=403, text="Telegram file is not accessible")
         primary_client = working_pool[0]
 
-        msg = await get_client_msg(primary_client, chat_id, msg_id)
+        valid_msgs = []
+        for mid in msg_ids:
+            try:
+                m = await get_client_msg(primary_client, chat_id, mid)
+                if m and (m.document or m.video or m.audio):
+                    valid_msgs.append(m)
+            except Exception: pass
+            
+        if not valid_msgs:
+            return web.Response(status=404, text="No media found")
+            
+        def get_sort_key(m):
+            media_obj = m.document or m.video or m.audio
+            fname = getattr(media_obj, "file_name", "") or ""
+            s_info = parse_split_info(fname)
+            if s_info: return (s_info[0], s_info[1])
+            return (fname, m.id)
+            
+        valid_msgs.sort(key=get_sort_key)
+        msg = valid_msgs[0]
         media = msg.document or msg.video or msg.audio
-        if not media:
-            return web.Response(status=404)
-
-        filename = str(getattr(media, "file_name", "") or "").lower()
+        
+        raw_filename = str(getattr(media, "file_name", "") or "").lower()
+        filename = strip_part_suffix(raw_filename)
         mime_type = getattr(media, "mime_type", "application/octet-stream") or "application/octet-stream"
 
         parts_map = []
         global_offset = 0
 
-        range_spec = request.query.get("range", "")
-        range_match = re.match(r"^(\d+)-(\d+)$", range_spec)
+        # Construct map from explicit sorted IDs
+        for m in valid_msgs:
+            doc = m.document or m.video or m.audio
+            psz = int(getattr(doc, "file_size", 0) or 0)
+            if psz > 0:
+                parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
+                global_offset += psz
 
-        if range_match:
-            start_id, end_id = int(range_match.group(1)), int(range_match.group(2))
-            for mid in range(start_id, end_id + 1):
-                try:
-                    m = await get_client_msg(primary_client, chat_id, mid)
-                    doc = m.document or m.video or m.audio
-                    if doc:
-                        psz = int(doc.file_size or 0)
-                        if psz > 0:
-                            parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
-                            global_offset += psz
-                except Exception:
-                    continue
-        else:
-            match = re.search(r'\.(\d{2,3})$', filename)
-            if match and int(match.group(1)) == 1:
-                current_id = msg_id
+        # Fallback Auto-Discovery if only 1 ID was provided and it matches a part syntax
+        if len(parts_map) == 1:
+            match = _find_split_match(raw_filename)
+            if match and match[2] == 1: # If it's part 1
+                current_id = msg_ids[0] + 1
                 while True:
                     try:
                         m = await get_client_msg(primary_client, chat_id, current_id)
-                        doc = m.document or m.video
-                        if not doc:
-                            break
-                        psz = int(doc.file_size or 0)
+                        doc = m.document or m.video or m.audio
+                        if not doc: break
+                        psz = int(getattr(doc, "file_size", 0) or 0)
+                        fname = str(getattr(doc, "file_name", "") or "")
+                        if not parse_split_info(fname): break
                         parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
                         global_offset += psz
                         current_id += 1
-                        next_m = await get_client_msg(primary_client, chat_id, current_id)
-                        next_doc = next_m.document or next_m.video
-                        if not next_doc or not re.search(r'\.\d{2,3}$', next_doc.file_name or ""):
-                            break
-                    except Exception:
-                        break
-            else:
-                part_size = int(getattr(media, "file_size", 0) or 0)
-                if part_size <= 0:
-                    return web.Response(status=502, text="Telegram media has no usable file size")
-                parts_map.append({"msg_id": msg_id, "start": 0, "end": part_size, "size": part_size})
-                global_offset = part_size
+                    except Exception: break
 
         if not parts_map:
             return web.Response(status=404, text="No readable media parts")
@@ -10058,10 +10091,30 @@ async def _api_subtitles_handler(request):
     if is_tg:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
-        msg_id = parsed.get("msg_id")
-        if chat_id is None or msg_id is None:
+        msg_ids = parsed.get("msg_ids")
+        if chat_id is None or not msg_ids:
             return web.Response(status=400, text="Invalid Telegram link")
-        actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+            
+        pool, _ = await _get_working_tg_pool(user_id, chat_id, msg_ids[0])
+        valid_msgs = []
+        if pool:
+            for mid in msg_ids:
+                try:
+                    m = await get_client_msg(pool[0], chat_id, mid)
+                    if m and (m.document or m.video or m.audio): valid_msgs.append(m)
+                except Exception: pass
+        if valid_msgs:
+            def get_sort_key(m):
+                media_obj = m.document or m.video or m.audio
+                fname = getattr(media_obj, "file_name", "") or ""
+                s_info = parse_split_info(fname)
+                if s_info: return (s_info[0], s_info[1])
+                return (fname, m.id)
+            valid_msgs.sort(key=get_sort_key)
+            sorted_ids_str = ",".join(str(m.id) for m in valid_msgs)
+            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_ids={sorted_ids_str}"
+        else:
+            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_ids={msg_ids[0]}"
     else:
         actual_url = await resolve_direct_link(link)
         # 🟢 FIX: Let FFmpeg fetch directly to extract text instantly without stalling the server!
@@ -10195,6 +10248,39 @@ async def resolve_zip_entry(read_fn, zip_size):
         if data_offset + cd["size"] > zip_size: return None
         return {"method": 0, "name": cd["name"], "data_offset": data_offset, "size": cd["size"], "comp_size": cd["comp_size"], "has_descriptor": False}
     except Exception: return None
+
+from typing import Optional, Tuple
+
+_VIDEO_EXTENSIONS = r'mkv|mp4|avi|ts|m4v|mov|wmv|webm|flv|m2ts|mpg|mpeg'
+_ARCHIVE_EXTENSIONS = r'zip|rar|7z|tar'
+_TRAILING_NUMERIC_PATTERN = re.compile(rf'(?i)\.({_VIDEO_EXTENSIONS}|{_ARCHIVE_EXTENSIONS})\.(\d{{2,3}})(?=$|\D)')
+_GENERIC_PART_PATTERN = re.compile(r'(?i)\.part(\d+)(?=$|\D)')
+_NORMALIZE_RE = re.compile(r'[\.\-_ ]+')
+
+def _normalize_name(base: str) -> str:
+    return _NORMALIZE_RE.sub('.', base).strip('.').lower()
+
+def _find_split_match(name: str) -> Optional[Tuple[int, int, int, Optional[str]]]:
+    if not name: return None
+    m = _TRAILING_NUMERIC_PATTERN.search(name)
+    if m: return m.start(), m.end(), int(m.group(2)), m.group(1)
+    m2 = _GENERIC_PART_PATTERN.search(name)
+    if m2: return m2.start(), m2.end(), int(m2.group(1)), None
+    return None
+
+def parse_split_info(filename: str) -> Optional[Tuple[str, int]]:
+    match = _find_split_match(filename)
+    if not match: return None
+    start, end, part_num, ext = match
+    remainder = (filename[:start] + '.' + ext) if ext else (filename[:start] + filename[end:])
+    return _normalize_name(remainder), part_num
+
+def strip_part_suffix(filename: str) -> str:
+    if not filename: return filename
+    match = _find_split_match(filename)
+    if not match: return filename
+    start, end, _, ext = match
+    return (filename[:start] + '.' + ext) if ext else (filename[:start] + filename[end:])
 
 CLIENT_MSG_CACHE = {}
 
