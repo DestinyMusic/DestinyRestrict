@@ -9526,8 +9526,8 @@ async def _api_stream_handler(request):
         "-rw_timeout", "30000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
         "-seekable", "1", "-multiple_requests", "1",
-        "-probesize", "25M", "-analyzeduration", "15M", # 🟢 FIX: Boosted for 10GB+ files to prevent stuttering
-        "-fflags", "+nobuffer+flush_packets+fastseek", # 🟢 FIX: Added fastseek for instant jumps
+        "-probesize", "25M", "-analyzeduration", "15M", 
+        "-fflags", "+nobuffer", # 🟢 FIX: Removed 'fastseek' which destroys Audio & Subtitle sync when seeking!
     ]
 
     # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
@@ -9586,7 +9586,8 @@ async def _api_stream_handler(request):
         else:
             cmd += ["-c:a", "aac", "-b:a", "192k"]
 
-        cmd += ["-avoid_negative_ts", "make_zero", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # 🟢 FIX: Added '-max_muxing_queue_size 9999' so audio/video stays perfectly glued together even at infinite download speeds
+        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
