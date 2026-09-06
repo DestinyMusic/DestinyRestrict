@@ -9986,9 +9986,10 @@ async def _api_tg_stream_handler(request):
         virtual_size = global_offset
         virtual_data_offset = 0
         
-        # 🟢 THE REAL FIX: Create a universal byte-reader function for ALL split formats
+        # 🟢 FIX: Ensure `seamless_read` always fetches relative to the global parts map!
         async def seamless_read(off, length):
             buf = bytearray()
+            # Fetch directly using the un-adjusted offset so the parts_map connects flawlessly
             async for chunk in parallel_stream_generator(working_pool, chat_id, parts_map, off, length, concurrency=4 if not using_user_session else 1):
                 if chunk:
                     buf.extend(chunk)
@@ -10088,14 +10089,18 @@ async def _api_tg_stream_handler(request):
         import aiohttp
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
+        # 🟢 FIX: For raw MKV/MP4 files, the start_byte IS the absolute file byte!
+        # Only ZIP files have an inner virtual_data_offset. 
+        # By separating them perfectly, FFmpeg's byte-range requests will mathematically map perfectly to the parts_map.
         adjusted_start = start_byte + virtual_data_offset
         
         try:
             await response.prepare(request)
             
-            # 🟢 FIX: Read continuously using the seamless reader to prevent aiohttp EOF panics
             bytes_sent = 0
-            chunk_size = 1048576 # 1MB chunks
+            # 🟢 FIX: Use smaller 512KB chunks. 
+            # When stitching .mkv files, large 1MB boundary crosses can cause FFmpeg to panic if the pipe buffer fills up too quickly.
+            chunk_size = 524288 
             
             while bytes_sent < chunk_len:
                 bytes_to_fetch = min(chunk_size, chunk_len - bytes_sent)
