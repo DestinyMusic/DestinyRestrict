@@ -9993,7 +9993,9 @@ async def _api_tg_stream_handler(request):
             GLOBAL_STREAM_TASKS = {}
             
         is_metadata_probe = chunk_len < 52428800 # 50 MB
-        lock_key = f"{user_id}_{chat_id}_{msg_id}"
+        # 🟢 FIX: Use the first ID of the split sequence to form the lock key!
+        primary_msg_id = msg_ids[0] if msg_ids else 0
+        lock_key = f"{user_id}_{chat_id}_{primary_msg_id}"
         
         if not is_metadata_probe:
             old_task = GLOBAL_STREAM_TASKS.get(lock_key)
