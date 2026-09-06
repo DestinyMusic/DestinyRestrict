@@ -9914,12 +9914,20 @@ async def _api_tg_stream_handler(request):
         parts_map = []
         global_offset = 0
 
-        # Construct map from explicit sorted IDs
+        # 🟢 FIX: Sort strictly to ensure exact binary byte boundaries!
+        # This guarantees .001 connects perfectly to .002
+        valid_msgs.sort(key=lambda m: getattr(m.document or m.video or m.audio, "file_name", ""))
+
         for m in valid_msgs:
             doc = m.document or m.video or m.audio
             psz = int(getattr(doc, "file_size", 0) or 0)
             if psz > 0:
-                parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
+                parts_map.append({
+                    "msg_id": m.id, 
+                    "start": global_offset, 
+                    "end": global_offset + psz, 
+                    "size": psz
+                })
                 global_offset += psz
 
         # Fallback Auto-Discovery if only 1 ID was provided and it matches a part syntax
@@ -9935,13 +9943,46 @@ async def _api_tg_stream_handler(request):
                         psz = int(getattr(doc, "file_size", 0) or 0)
                         fname = str(getattr(doc, "file_name", "") or "")
                         if not parse_split_info(fname): break
-                        parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
+                        parts_map.append({
+                            "msg_id": m.id, 
+                            "start": global_offset, 
+                            "end": global_offset + psz, 
+                            "size": psz
+                        })
                         global_offset += psz
                         current_id += 1
                     except Exception: break
 
         if not parts_map:
             return web.Response(status=404, text="No readable media parts")
+
+        # 🟢 FIX: Ensure the virtual size completely respects the combined raw file size!
+        virtual_size = global_offset
+        virtual_data_offset = 0
+
+        # We keep the ZIP resolver, but only run it IF it's actually a ZIP split!
+        is_zip = filename.endswith(".zip") or ".zip." in filename
+        if is_zip:
+            async def zip_read(off, length):
+                buf = bytearray()
+                # Use concurrency 6 for speed, it drops to 1 if using user session.
+                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length, concurrency=6):
+                    buf.extend(chunk)
+                    if len(buf) >= length:
+                        break
+                return bytes(buf[:length])
+
+            entry = await resolve_zip_entry(zip_read, virtual_size)
+            if entry and entry["method"] == 0:
+                virtual_size = entry["size"]
+                virtual_data_offset = entry["data_offset"]
+                mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
+        else:
+            # 🟢 Mkv/Mp4 parts: Map Mime-Type correctly for raw streaming
+            ext = Path(filename).suffix.lower()
+            if ext == ".mkv": mime_type = "video/x-matroska"
+            elif ext == ".mp4": mime_type = "video/mp4"
+            elif ext == ".webm": mime_type = "video/webm"
 
         virtual_size = global_offset
         virtual_data_offset = 0
