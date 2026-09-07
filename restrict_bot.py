@@ -6159,7 +6159,7 @@ HTML_DASHBOARD = """
                         chatsLoaded = true;
                     }
                 } else {
-                    tgStatusEl.innerHTML = '<span style="color: #ef4444;">❌ Not Connected — Login below!</span>';
+                    tgStatusEl.innerHTML = '<span style="color: #ef4444;">❌ Not Connected — Login First!</span>';
                     document.getElementById('tg-login-step1').style.display = 'block';
                     document.getElementById('tg-logout-btn').style.display = 'none';
                     chatsLoaded = false;
