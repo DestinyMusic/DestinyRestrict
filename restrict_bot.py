@@ -5312,7 +5312,8 @@ HTML_DASHBOARD = """
                         <label>Load Stream (Telegram Post Link or Direct Video/Audio URL)</label>
                         <div style="display: flex; gap: 8px;">
                             <input type="text" id="theater-stream-url" placeholder="https://t.me/c/123/456 or https://domain.com/movie.mkv" style="flex: 1;">
-                            <button class="primary-btn" style="width: auto; padding: 0 24px;" onclick="loadTheaterMedia()">Load & Play</button>
+                            <button class="primary-btn" id="theater-load-btn" style="width: auto; padding: 0 24px;" onclick="loadTheaterMedia()">Load & Play</button>
+                            <button class="primary-btn" style="width: auto; padding: 0 15px; background: #ef4444;" onclick="cancelTheaterStream()">Stop</button>
                         </div>
                     </div>
                     <!-- NEW: External Media Tracks (URL & Local File) -->
@@ -5360,7 +5361,10 @@ HTML_DASHBOARD = """
             <div id="view-chats" class="view-section">
                 <div class="section-title">
                     <span>Your Telegram Dialogs</span>
-                    <button id="refresh-chats-btn" class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="loadWebChats(true)">🔄 Refresh</button>
+                    <div style="display: flex; gap: 8px;">
+                        <button id="refresh-chats-btn" class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="loadWebChats(true)">🔄 Refresh</button>
+                        <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px; background: #10b981;" onclick="downloadChatsTxt()">📥 Download</button>
+                    </div>
                 </div>
                 
                 <div id="web-chats-warning" class="card" style="display:none; border-color: var(--danger); margin-bottom: 20px;">
@@ -5437,6 +5441,7 @@ HTML_DASHBOARD = """
                     <span>System & Maintenance Logs</span>
                     <div style="display: flex; gap: 8px;">
                         <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="fetchLogs()">🔄 Refresh</button>
+                        <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px; background: #3b82f6;" onclick="copyLogs()">📋 Copy</button>
                         <a id="download-log-btn" href="/api/logs/download" class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px; text-decoration: none; text-align: center; background: #10b981;" download="bot.log">📥 Download</a>
                     </div>
                 </div>
@@ -6060,6 +6065,47 @@ HTML_DASHBOARD = """
             await loadWebChats();
         }
 
+        function downloadChatsTxt() {
+            if (!allLoadedChats || allLoadedChats.length === 0) {
+                return alert("No chats to download! Please wait for them to load or click Refresh.");
+            }
+            let groups = [], channels = [], bots = [], users = [];
+            
+            allLoadedChats.forEach(c => {
+                let type = c.name.toLowerCase();
+                if (type.includes('[group]')) groups.push(c);
+                else if (type.includes('[channel]')) channels.push(c);
+                else if (type.includes('[bot]')) bots.push(c);
+                else if (type.includes('[user]')) users.push(c);
+            });
+
+            let txt = "DESTINY TG FORWARDER - CHATS & IDs EXPORT\n";
+            txt += "=========================================\n\n";
+
+            const appendSection = (title, items) => {
+                if (items.length === 0) return;
+                txt += `--- ${title} (${items.length}) ---\n`;
+                // Removes the [Channel] tag prefix so the text file looks clean
+                items.forEach(i => txt += `${i.name.replace(/\\[.*?\\]\\s*/, '')} | ID: ${i.id}\n`);
+                txt += "\n";
+            };
+
+            appendSection("GROUPS & SUPERGROUPS", groups);
+            appendSection("CHANNELS", channels);
+            appendSection("USERS", users);
+            appendSection("BOTS", bots);
+
+            const blob = new Blob([txt], { type: 'text/plain;charset=utf-8' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `tg_chats_${currentUser}.txt`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
         async function loadWorkerTokens() {
             if (!currentUser) return;
             try {
@@ -6262,6 +6308,14 @@ HTML_DASHBOARD = """
         function toggleLiveLogs(isChecked) {
             if (isChecked) { fetchLogs(); liveLogInterval = setInterval(fetchLogs, 3000); } 
             else clearInterval(liveLogInterval);
+        }
+
+        function copyLogs() {
+            const term = document.getElementById('log-terminal');
+            if (!term || !term.innerText) return alert("No logs to copy!");
+            navigator.clipboard.writeText(term.innerText)
+                .then(() => alert("Logs copied to clipboard!"))
+                .catch(() => alert("Failed to copy logs. Your browser might block clipboard access."));
         }
 
         // --- CHAT & TOPIC SELECTOR MODAL LOGIC ---
@@ -7526,6 +7580,61 @@ HTML_DASHBOARD = """
             option.textContent = label ?? String(value ?? '');
             if (dataset) Object.entries(dataset).forEach(([k, v]) => option.dataset[k] = String(v ?? ''));
             select.appendChild(option);
+        }
+
+        function cancelTheaterStream() {
+            const video = document.getElementById('hidden-video');
+            const extAudio = document.getElementById('ext-audio-player');
+            const titleEl = document.getElementById('cinema-title');
+            const btn = document.getElementById('theater-load-btn') || document.querySelector('button[onclick="loadTheaterMedia()"]');
+            
+            // 1. Force the browser to sever the HTTP socket connection immediately
+            if (video) {
+                video.pause();
+                video.removeAttribute('src');
+                video.load(); 
+            }
+            if (extAudio) {
+                extAudio.pause();
+                extAudio.removeAttribute('src');
+                extAudio.load();
+            }
+
+            // 2. Clear subtitles
+            document.getElementById('subtitle-overlay').innerHTML = '';
+            if (subtitleAbortController) {
+                subtitleAbortController.abort();
+                subtitleAbortController = null;
+            }
+            
+            // 3. Reset internal player state
+            activeMediaLink = "";
+            playerRequiresTranscode = false;
+            playerTotalDuration = 0;
+            globalTargetTime = 0;
+            disarmPlaybackWatchdog();
+            
+            // 4. Reset UI visuals
+            if (titleEl) titleEl.innerText = 'No Media Loaded';
+            if (btn) { btn.innerText = 'Load & Play'; btn.disabled = false; }
+            
+            // Clear the 3D WebGL projection surface
+            if (typeof gl !== 'undefined' && gl) {
+                try {
+                    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+                    gl.clear(gl.COLOR_BUFFER_BIT);
+                } catch(e) {}
+            }
+            
+            // Reset Dropdowns to default states
+            const qSelect = document.getElementById('pop-quality-select');
+            if(qSelect) qSelect.innerHTML = '<option value="Original">Original</option>';
+            const aSelect = document.getElementById('pop-audio-select');
+            if(aSelect) aSelect.innerHTML = '<option value="">Default Audio</option>';
+            const sSelect = document.getElementById('pop-sub-select');
+            if(sSelect) sSelect.innerHTML = '<option value="off">Off</option>';
+            
+            setTimeout(initCustomSelects, 50);
         }
 
         async function loadTheaterMedia() {
