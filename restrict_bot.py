@@ -6079,15 +6079,15 @@ HTML_DASHBOARD = """
                 else if (type.includes('[user]')) users.push(c);
             });
 
-            let txt = "DESTINY TG FORWARDER - CHATS & IDs EXPORT\n";
-            txt += "=========================================\n\n";
+            // 🟢 FIX: Added double backslashes so Python doesn't break the JS string!
+            let txt = "DESTINY TG FORWARDER - CHATS & IDs EXPORT\\n";
+            txt += "=========================================\\n\\n";
 
             const appendSection = (title, items) => {
                 if (items.length === 0) return;
-                txt += `--- ${title} (${items.length}) ---\n`;
-                // Removes the [Channel] tag prefix so the text file looks clean
-                items.forEach(i => txt += `${i.name.replace(/\\[.*?\\]\\s*/, '')} | ID: ${i.id}\n`);
-                txt += "\n";
+                txt += `--- ${title} (${items.length}) ---\\n`;
+                items.forEach(i => txt += `${i.name.replace(/\\[.*?\\]\\s*/, '')} | ID: ${i.id}\\n`);
+                txt += "\\n";
             };
 
             appendSection("GROUPS & SUPERGROUPS", groups);
