@@ -6071,12 +6071,13 @@ HTML_DASHBOARD = """
             }
             let groups = [], channels = [], bots = [], users = [];
             
+            // 🟢 FIX: Search for the category word anywhere inside the string to bypass the emojis!
             allLoadedChats.forEach(c => {
                 let type = c.name.toLowerCase();
-                if (type.includes('[group]')) groups.push(c);
-                else if (type.includes('[channel]')) channels.push(c);
-                else if (type.includes('[bot]')) bots.push(c);
-                else if (type.includes('[user]')) users.push(c);
+                if (type.includes('group')) groups.push(c);
+                else if (type.includes('channel')) channels.push(c);
+                else if (type.includes('bot')) bots.push(c);
+                else if (type.includes('user')) users.push(c);
             });
 
             // 🟢 FIX: Added double backslashes so Python doesn't break the JS string!
@@ -7125,7 +7126,6 @@ HTML_DASHBOARD = """
         function parseWebVTT(text) {
             if (!text) return [];
             const cues = [];
-            // Handle both Windows (\\r\\n) and Unix (\\n) line endings seamlessly
             const lines = String(text).replace(/\\r/g, '').split('\\n');
             let i = 0;
             
@@ -7133,7 +7133,11 @@ HTML_DASHBOARD = """
                 if (lines[i].includes('-->')) {
                     const timeParts = lines[i].split('-->');
                     const start = vttTimeToSeconds(timeParts[0]);
-                    const end = vttTimeToSeconds(timeParts[1].trim().split(/\\s+/)[0]);
+                    
+                    // 🟢 FIX: Parse end time AND extra VTT settings (like line:10%)
+                    const endMatch = timeParts[1].trim().match(/^(\\S+)(.*)/);
+                    const end = endMatch ? vttTimeToSeconds(endMatch[1]) : 0;
+                    const settings = endMatch ? endMatch[2].trim() : '';
                     
                     let payload = [];
                     i++;
@@ -7142,10 +7146,22 @@ HTML_DASHBOARD = """
                         i++;
                     }
                     
-                    // Strip HTML tags AND complex ASS animation/position tags from Anime MKVs
-                    const cleanText = payload.join('\\n').replace(/<[^>]*>/g, '').replace(/\\{[^}]*\\}/g, '').trim();
+                    let rawText = payload.join('\\n');
+                    
+                    // 🟢 DETECT SDH INTENT: Top-Screen detection from ASS tags or VTT settings
+                    let isTop = false;
+                    if (rawText.includes('{\\an8}') || rawText.includes('{\\an7}') || rawText.includes('{\\an9}') || settings.includes('line:0') || settings.includes('line:10%')) {
+                        isTop = true;
+                    }
+                    
+                    // Strip complex ASS brackets but KEEP basic HTML formatting (colors, bold, italics)
+                    let cleanText = rawText.replace(/\\{[^}]*\\}/g, '').trim();
+                    
+                    // Convert WebVTT color tags to HTML spans so the browser parses them correctly
+                    cleanText = cleanText.replace(/<c\\.([^>]+)>([^<]+)<\\/c>/gi, '<span style="color:$1;">$2</span>');
+                    
                     if (cleanText && Number.isFinite(start) && Number.isFinite(end)) {
-                        cues.push({ start, end, text: cleanText });
+                        cues.push({ start, end, text: cleanText, isTop: isTop });
                     }
                 } else {
                     i++;
@@ -7172,13 +7188,20 @@ HTML_DASHBOARD = """
 
             // 🟢 Apply the manual sync offset slider
             const adjustedTime = t - subtitleSyncOffset;
-
             const hits = subtitleCues.filter(c => adjustedTime >= c.start && adjustedTime <= c.end);
+            
             if (!hits.length) {
                 overlay.innerHTML = '';
                 return;
             }
-            const safeText = hits.map(c => c.text).join('\\n');
+            
+            let htmlContent = '';
+            let hasTop = false;
+            
+            hits.forEach(c => {
+                if (c.isTop) hasTop = true;
+                htmlContent += `<div class="subtitle-text">${c.text}</div>`;
+            });
             
             // 3D Split-Screen (VR/SBS) Subtitle Duplication
             if (matrix3DOut === 'vr') {
@@ -7186,15 +7209,18 @@ HTML_DASHBOARD = """
                 overlay.style.right = '0';
                 overlay.innerHTML = `
                     <div style="display: flex; width: 100%; justify-content: space-around;">
-                        <div style="flex: 1; display: flex; justify-content: center;"><div class="subtitle-text">${safeText}</div></div>
-                        <div style="flex: 1; display: flex; justify-content: center;"><div class="subtitle-text">${safeText}</div></div>
+                        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>
+                        <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>
                     </div>
                 `;
             } else {
                 overlay.style.left = '5%';
                 overlay.style.right = '5%';
-                overlay.innerHTML = `<div class="subtitle-text">${safeText}</div>`;
+                overlay.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>`;
             }
+            
+            // Flag the overlay so applySubtitleStyle knows where to put it
+            overlay.dataset.isTop = hasTop ? 'true' : 'false';
             applySubtitleStyle();
         }
         
@@ -7285,9 +7311,16 @@ HTML_DASHBOARD = """
             
             const overlay = document.getElementById('subtitle-overlay');
             if (overlay) {
-                overlay.style.bottom = 'auto'; // Disable CSS bottom anchor
-                overlay.style.top = `${pos}%`; // Apply slider value to move it exactly where you want
-                overlay.style.alignItems = 'center'; // Center it vertically relative to its new coordinate
+                overlay.style.bottom = 'auto'; 
+                
+                // 🟢 SDH OVERRIDE: If the subtitle is marked as top-intent, ignore the manual slider!
+                if (overlay.dataset.isTop === 'true') {
+                    overlay.style.top = '10%';
+                } else {
+                    overlay.style.top = `${pos}%`; 
+                }
+                
+                overlay.style.alignItems = 'center'; 
             }
 
             document.querySelectorAll('#subtitle-overlay .subtitle-text').forEach(text => {
