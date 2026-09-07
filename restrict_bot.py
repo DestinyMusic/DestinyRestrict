@@ -3523,7 +3523,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 user_workers = 8
                 
                 acc = Client(
-                    name=f"temp_acc_{user_id}_{uuid.uuid4().hex()}", 
+                    name=f"temp_acc_{user_id}_{uuid.uuid4().hex}", 
                     in_memory=True,
                     session_string=user_data, 
                     api_hash=api_hash, 
@@ -5442,7 +5442,7 @@ HTML_DASHBOARD = """
                     <div style="display: flex; gap: 8px;">
                         <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="fetchLogs()">🔄 Refresh</button>
                         <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px; background: #3b82f6;" onclick="copyLogs()">📋 Copy</button>
-                        <a id="download-log-btn" href="/api/logs/download" class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px; text-decoration: none; text-align: center; background: #10b981;" download="bot.log">📥 Download</a>
+                        <a id="download-log-btn" href="#" onclick="downloadLogsAuth(event)" class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px; text-decoration: none; text-align: center; background: #10b981;">📥 Download</a>
                     </div>
                 </div>
                 <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
@@ -6295,7 +6295,7 @@ HTML_DASHBOARD = """
             if (isFetchingLogs) return; // Prevent freeze if you click refresh 10 times fast
             isFetchingLogs = true;
             try {
-                const res = await fetch('/api/logs');
+                const res = await fetch(`/api/logs?user_id=${currentUser}`);
                 const data = await res.json();
                 const term = document.getElementById('log-terminal');
                 term.innerText = data.logs || "No logs generated yet.";
@@ -6308,6 +6308,11 @@ HTML_DASHBOARD = """
         function toggleLiveLogs(isChecked) {
             if (isChecked) { fetchLogs(); liveLogInterval = setInterval(fetchLogs, 3000); } 
             else clearInterval(liveLogInterval);
+        }
+        
+        function downloadLogsAuth(e) {
+            e.preventDefault();
+            window.location.href = `/api/logs/download?user_id=${currentUser}`;
         }
 
         function copyLogs() {
@@ -8239,12 +8244,28 @@ def _read_logs_sync():
 
 async def _api_logs_handler(request):
     try:
+        uid = int(request.query.get("user_id", 0))
+    except:
+        uid = 0
+        
+    if uid not in ADMINS and uid not in SUDOS:
+        return web.json_response({"logs": "⚠️ ACCESS DENIED: You must be a Bot Admin to view server logs."})
+        
+    try:
         logs = await asyncio.to_thread(_read_logs_sync)
         return web.json_response({"logs": logs})
     except Exception as e:
         return web.json_response({"logs": f"Error reading logs: {e}"})
 
 async def _api_download_log_handler(request):
+    try:
+        uid = int(request.query.get("user_id", 0))
+    except:
+        uid = 0
+        
+    if uid not in ADMINS and uid not in SUDOS:
+        return web.Response(text="ACCESS DENIED: Admins Only", status=403)
+        
     try:
         if os.path.exists("bot.log"):
             return web.FileResponse("bot.log", headers={"Content-Disposition": "attachment; filename=bot.log"})
@@ -8259,7 +8280,7 @@ async def _api_tg_send_code(request):
     uid = int(data.get("user_id"))
     phone = data.get("phone")
     
-    client = Client(f"web_auth_{uid}_{uuid.uuid4().hex()}", in_memory=True, api_id=API_ID, api_hash=API_HASH)
+    client = Client(f"web_auth_{uid}_{uuid.uuid4().hex}", in_memory=True, api_id=API_ID, api_hash=API_HASH)
     await client.connect()
     try:
         code = await client.send_code(phone)
@@ -8370,7 +8391,7 @@ async def _api_chats_handler(request):
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(f"temp_chats_{uid}_{uuid.uuid4().hex()}", in_memory=True, session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+            uclient = Client(f"temp_chats_{uid}_{uuid.uuid4().hex}", in_memory=True, session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
             await uclient.connect()
             is_temp = True
         except Exception as e:
@@ -8562,7 +8583,7 @@ async def _api_topics_handler(request):
             
             user_workers = 4
             uclient = Client(
-                name=f"temp_topics_{uid}_{uuid.uuid4().hex()}", 
+                name=f"temp_topics_{uid}_{uuid.uuid4().hex}", 
                 in_memory=True,
                 session_string=session_str, 
                 api_id=api_id, 
