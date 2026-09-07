@@ -7065,6 +7065,11 @@ HTML_DASHBOARD = """
             canvas.style.transform = 'translate(-50%, -50%)';
             canvas.style.width = `${drawW}px`;
             canvas.style.height = `${drawH}px`;
+            
+            // Re-sync subtitle position instantly when phone rotates or screen resizes
+            if (typeof applySubtitleStyle === 'function') {
+                applySubtitleStyle();
+            }
         }
 
         function renderWebGLFrame() {
@@ -7318,14 +7323,29 @@ HTML_DASHBOARD = """
             const stretch = document.getElementById('subtitle-width-slider')?.value || 92;
             
             const overlay = document.getElementById('subtitle-overlay');
+            const canvas = document.getElementById('webgl-canvas');
+            
             if (overlay) {
                 overlay.style.bottom = 'auto'; 
                 
-                // 🟢 SDH OVERRIDE: If the subtitle is marked as top-intent, ignore the manual slider!
-                if (overlay.dataset.isTop === 'true') {
-                    overlay.style.top = '10%';
+                if (canvas && canvas.style.display !== 'none') {
+                    // Portrait/Letterbox Fix: Calculate position strictly within the active video bounds
+                    const viewportHeight = overlay.parentElement.clientHeight;
+                    const canvasHeight = canvas.clientHeight || viewportHeight;
+                    const topEdge = (viewportHeight - canvasHeight) / 2;
+                    
+                    if (overlay.dataset.isTop === 'true') {
+                        overlay.style.top = `${Math.max(0, topEdge + (canvasHeight * 0.10))}px`;
+                    } else {
+                        overlay.style.top = `${Math.max(0, topEdge + (canvasHeight * (pos / 100)))}px`; 
+                    }
                 } else {
-                    overlay.style.top = `${pos}%`; 
+                    // Fallback if audio-only or canvas is missing
+                    if (overlay.dataset.isTop === 'true') {
+                        overlay.style.top = '10%';
+                    } else {
+                        overlay.style.top = `${pos}%`; 
+                    }
                 }
                 
                 overlay.style.alignItems = 'center'; 
