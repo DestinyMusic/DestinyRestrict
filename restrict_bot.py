@@ -9784,10 +9784,10 @@ async def _api_stream_handler(request):
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
         "-rw_timeout", "30000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1",
+        "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", # 🟢 ADDED THIS!
         "-seekable", "1", "-multiple_requests", "1",
         "-probesize", "5M", "-analyzeduration", "5M", 
-        "-fflags", "+nobuffer+flush_packets",
+        "-fflags", "+nobuffer+flush_packets", 
         "-async", "1"
     ]
 
@@ -9837,7 +9837,6 @@ async def _api_stream_handler(request):
                 cmd += ["-strict", "experimental"]
         else:
             cmd += [
-                "-vsync", "0",
                 "-vf", f"scale={scale_filter or 'trunc(iw/2)*2:trunc(ih/2)*2'}",
                 "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
                 "-pix_fmt", "yuv420p", "-threads", "0",
