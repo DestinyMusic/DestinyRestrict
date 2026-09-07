@@ -4669,10 +4669,10 @@ HTML_DASHBOARD = """
             will-change: width, height, transform;
         }
 
-        /* iPadOS WebKit fix: keep opacity at 0.001 and behind the canvas so Safari does not suspend decoding */
+        /* iPadOS WebKit fix: keep opacity at 1 so Safari does not suspend decoding. The opaque WebGL canvas covers it. */
         .hidden-video-feed {
             position: absolute; inset: 0; width: 100%; height: 100%;
-            object-fit: fill; opacity: 0.001; pointer-events: none; z-index: 1;
+            object-fit: fill; opacity: 1; pointer-events: none; z-index: 1;
         }
 
         /* iPad / PWA CSS Fullscreen Fallback */
@@ -5088,7 +5088,7 @@ HTML_DASHBOARD = """
 
                 <div class="cinema-viewport" id="cinema-viewport">
                     <canvas id="webgl-canvas"></canvas>
-                    <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline crossorigin="anonymous" preload="auto"></video>
+                    <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline preload="auto"></video>
                     <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
 
                     <!-- Video Title Bar -->
@@ -9859,15 +9859,26 @@ async def _api_stream_handler(request):
         stderr=asyncio.subprocess.PIPE,
     )
     import aiohttp
-    response = web.StreamResponse(status=200, headers={
+    
+    # 🟢 iOS SAFARI HACK: Apple devices strictly refuse to play MP4 streams that return '200 OK'.
+    # We must fake a '206 Partial Content' response with an infinite range to trick Safari into keeping the socket open!
+    stream_headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Type",
+        "Access-Control-Expose-Headers": "Content-Type, Content-Range, Accept-Ranges",
         "Cache-Control": "no-store",
-        "Accept-Ranges": "none",
-    })
-
+    }
     
+    if request.headers.get("Range"):
+        stream_headers["Accept-Ranges"] = "bytes"
+        stream_headers["Content-Range"] = "bytes 0-99999999999/100000000000"
+        status_code = 206
+    else:
+        stream_headers["Accept-Ranges"] = "none"
+        status_code = 200
+
+    response = web.StreamResponse(status=status_code, headers=stream_headers)
+
     try:
         await response.prepare(request)
         while True:
