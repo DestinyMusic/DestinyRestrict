@@ -7593,6 +7593,15 @@ HTML_DASHBOARD = """
             const titleEl = document.getElementById('cinema-title');
             const btn = document.getElementById('theater-load-btn') || document.querySelector('button[onclick="loadTheaterMedia()"]');
             
+            // 0. 🟢 SEND SIGNAL TO PYTHON BACKEND TO KILL INTERNAL PROCESSES FOR THIS USER ONLY
+            try {
+                fetch('/api/stream/kill', { 
+                    method: 'POST', 
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: currentUser})
+                });
+            } catch(e) {}
+
             // 1. Force the browser to sever the HTTP socket connection immediately
             if (video) {
                 video.pause();
@@ -10705,6 +10714,31 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_post("/api/mediainfo", _api_mediainfo_web_handler)
     app_web.router.add_get("/api/settings/tokens", _api_get_worker_tokens)
     app_web.router.add_post("/api/settings/tokens", _api_save_worker_tokens)
+    
+    # 🟢 ADD THIS NEW ROUTE FOR THE STOP BUTTON
+    async def _api_kill_stream(request):
+        try:
+            data = await request.json()
+            uid = str(data.get("user_id", ""))
+            
+            if "GLOBAL_STREAM_TASKS" in globals() and uid:
+                keys_to_delete = []
+                # Safely find and cancel ONLY the streams belonging to this user
+                for key, task in list(GLOBAL_STREAM_TASKS.items()):
+                    if key.startswith(f"{uid}_"):
+                        if not task.done():
+                            task.cancel()
+                        keys_to_delete.append(key)
+                
+                # Remove them from the global dictionary
+                for k in keys_to_delete:
+                    GLOBAL_STREAM_TASKS.pop(k, None)
+                    
+            return web.json_response({"status": "success", "message": "User streams killed cleanly."})
+        except Exception as e:
+            return web.json_response({"status": "error", "message": str(e)})
+
+    app_web.router.add_post("/api/stream/kill", _api_kill_stream)
         
     runner = web.AppRunner(app_web)
     await runner.setup()
