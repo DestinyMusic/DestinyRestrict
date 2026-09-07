@@ -9785,7 +9785,7 @@ async def _api_stream_handler(request):
         "-rw_timeout", "30000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", # 🟢 ADDED THIS!
-        "-seekable", "1", "-multiple_requests", "1",
+        "-seekable", "1",
         "-probesize", "5M", "-analyzeduration", "5M", 
         "-fflags", "+nobuffer+flush_packets", 
         "-async", "1"
@@ -9859,19 +9859,30 @@ async def _api_stream_handler(request):
         stderr=asyncio.subprocess.PIPE,
     )
     import aiohttp
+    import re
     
-    # 🟢 iOS SAFARI HACK: Apple AVPlayer drops live MP4 streams if they use "Transfer-Encoding: chunked".
-    # By returning 200 OK and faking a massive Content-Length, we force Python to send a raw, unchunked byte stream that Safari can play natively!
+    # 🟢 iOS SAFARI HACK: Apple demands 206 Partial Content for MP4s, AND rejects chunked encoding.
+    # We fake an infinite 2GB file size and dynamically reply to Safari's Range requests so it never drops the connection!
     stream_headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Type",
+        "Access-Control-Expose-Headers": "Content-Type, Content-Range, Accept-Ranges",
         "Cache-Control": "no-store",
-        "Accept-Ranges": "none",
-        "Content-Length": "2147483648" # Fake 2GB size to disable chunked encoding!
+        "Content-Length": "2147483648" # Fake 2GB size disables chunked encoding
     }
 
-    response = web.StreamResponse(status=200, headers=stream_headers)
+    req_range = request.headers.get("Range")
+    if req_range:
+        stream_headers["Accept-Ranges"] = "bytes"
+        m = re.match(r"bytes=(\d+)-", req_range)
+        start_b = m.group(1) if m else "0"
+        stream_headers["Content-Range"] = f"bytes {start_b}-2147483647/2147483648"
+        status_code = 206
+    else:
+        stream_headers["Accept-Ranges"] = "none"
+        status_code = 200
+
+    response = web.StreamResponse(status=status_code, headers=stream_headers)
 
     try:
         await response.prepare(request)
