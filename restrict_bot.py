@@ -9785,7 +9785,7 @@ async def _api_stream_handler(request):
         "-rw_timeout", "30000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", # 🟢 ADDED THIS!
-        "-seekable", "1", "-multiple_requests", "1",
+        "-seekable", "1",
         "-probesize", "5M", "-analyzeduration", "5M", 
         "-fflags", "+nobuffer+flush_packets", 
         "-async", "1"
@@ -9859,29 +9859,24 @@ async def _api_stream_handler(request):
         stderr=asyncio.subprocess.PIPE,
     )
     import aiohttp
-    import re
     
-    # 🟢 iOS SAFARI HACK: Apple AVPlayer strictly demands valid RFC-compliant '206 Partial Content' headers for MP4 files.
-    # We intercept Safari's exact requested byte range and echo it back flawlessly with a faked 2GB total size.
+    # 🟢 iOS SAFARI HACK: Apple AVPlayer demands a 206 Partial Content response for MP4s.
+    # However, since FFmpeg generates a live pipe, we cannot slice byte ranges dynamically.
+    # We MUST ignore Safari's requested range (e.g. 0-1) and forcefully return the full faked 2GB range.
+    # This tricks Safari into accepting the stream continuously without looping FFmpeg or crashing!
     stream_headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
         "Access-Control-Expose-Headers": "Content-Type, Content-Range, Accept-Ranges",
         "Cache-Control": "no-store",
+        "Accept-Ranges": "none" # Prevents Safari from attempting further seeks
     }
 
-    req_range = request.headers.get("Range")
-    if req_range:
-        stream_headers["Accept-Ranges"] = "bytes"
-        m = re.match(r"bytes=(\d+)-(.*)", req_range)
-        start_b = m.group(1) if m else "0"
-        end_b = m.group(2) if m and m.group(2) else "2147483647"
-        
-        stream_headers["Content-Range"] = f"bytes {start_b}-{end_b}/2147483648"
-        stream_headers["Content-Length"] = str(int(end_b) - int(start_b) + 1)
+    if request.headers.get("Range"):
+        stream_headers["Content-Range"] = "bytes 0-2147483647/2147483648"
+        stream_headers["Content-Length"] = "2147483648"
         status_code = 206
     else:
-        stream_headers["Accept-Ranges"] = "none"
         stream_headers["Content-Length"] = "2147483648"
         status_code = 200
 
