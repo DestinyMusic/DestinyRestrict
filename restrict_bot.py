@@ -4700,14 +4700,16 @@ HTML_DASHBOARD = """
             max-width: 92%;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
-            line-height: 1.35;
+            line-height: 1.25;
             font-size: 24px;
             font-weight: 600;
             color: #ffffff;
-            background: rgba(0, 0, 0, 0.70);
-            border-radius: 7px;
-            padding: 4px 10px;
+            background: rgba(0, 0, 0, 0.75);
+            border-radius: 8px;
+            padding: 4px 14px;
             text-shadow: 0 2px 4px rgba(0,0,0,0.95);
+            display: inline-block; /* 🟢 Forces the background box to hug the text neatly */
+            text-align: center;
         }
         .cinema-viewport.fullscreen-subtitle .subtitle-overlay { bottom: 13%; }
 
@@ -7154,12 +7156,15 @@ HTML_DASHBOARD = """
                         isTop = true;
                     }
                     
-                    // Strip complex ASS brackets but KEEP basic HTML formatting (colors, bold, italics)
+                    // Strip complex ASS brackets but KEEP basic HTML formatting
                     let cleanText = rawText.replace(/\\{[^}]*\\}/g, '').trim();
                     
-                    // Convert WebVTT color tags to HTML spans so the browser parses them correctly
+                    // Convert WebVTT color tags to HTML spans
                     cleanText = cleanText.replace(/<c\\.([^>]+)>([^<]+)<\\/c>/gi, '<span style="color:$1;">$2</span>');
                     
+                    // 🟢 COMPACT LYRIC FIX: If a music note is pushed to a new line just for styling, pull it inline or tidy it up
+                    cleanText = cleanText.replace(/\\n\\s*([♪♫♬♩])\\s*$/g, ' $1').replace(/^([♪♫♬♩])\\s*\\n/g, '$1 ');
+
                     if (cleanText && Number.isFinite(start) && Number.isFinite(end)) {
                         cues.push({ start, end, text: cleanText, isTop: isTop });
                     }
