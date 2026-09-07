@@ -9860,24 +9860,18 @@ async def _api_stream_handler(request):
     )
     import aiohttp
     
-    # 🟢 iOS SAFARI HACK: Apple devices strictly refuse to play MP4 streams that return '200 OK'.
-    # We must fake a '206 Partial Content' response with an infinite range to trick Safari into keeping the socket open!
+    # 🟢 iOS SAFARI HACK: Apple AVPlayer drops live MP4 streams if they use "Transfer-Encoding: chunked".
+    # By returning 200 OK and faking a massive Content-Length, we force Python to send a raw, unchunked byte stream that Safari can play natively!
     stream_headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Type, Content-Range, Accept-Ranges",
+        "Access-Control-Expose-Headers": "Content-Type",
         "Cache-Control": "no-store",
+        "Accept-Ranges": "none",
+        "Content-Length": "2147483648" # Fake 2GB size to disable chunked encoding!
     }
-    
-    if request.headers.get("Range"):
-        stream_headers["Accept-Ranges"] = "bytes"
-        stream_headers["Content-Range"] = "bytes 0-99999999999/100000000000"
-        status_code = 206
-    else:
-        stream_headers["Accept-Ranges"] = "none"
-        status_code = 200
 
-    response = web.StreamResponse(status=status_code, headers=stream_headers)
+    response = web.StreamResponse(status=200, headers=stream_headers)
 
     try:
         await response.prepare(request)
