@@ -2134,24 +2134,24 @@ async def login_handler(bot: Client, message: Message):
                 break # Break out of outer OTP loop since we solved 2FA
 
         # --- SUCCESSFUL LOGIN ---
+        try:
+            me_auth = await client_auth.get_me()
+            # 🟢 ENFORCE ID MATCH: Prevent cross-account chat leaks!
+            if me_auth.id != user_id:
+                await bot.send_message(user_id, f"⚠️ **Telegram ID Mismatch!**\n\nYou are chatting with me using ID `{user_id}`, but the phone number you entered belongs to ID `{me_auth.id}`.\n\nTo prevent cross-account chat mix-ups, you must log in using the exact same account you are chatting from!")
+                await client_auth.disconnect()
+                return
+            is_prem = getattr(me_auth, "is_premium", False)
+            first_name = me_auth.first_name or "User"
+        except Exception:
+            is_prem = False
+            first_name = "User"
+
         string_session = await client_auth.export_session_string()
         await client_auth.disconnect()
         
         if len(string_session) < SESSION_STRING_SIZE:
             return await bot.send_message(user_id, '❌ **Fatal Error:** Invalid session string generated.')
-            
-        is_prem = False
-        first_name = "User"
-        try:
-            uclient = Client(":memory:", session_string=string_session, api_id=api_id, api_hash=api_hash)
-            await uclient.connect()
-            me = await uclient.get_me()
-            is_prem = getattr(me, "is_premium", False)
-            first_name = me.first_name or "User"
-            try: await uclient.disconnect()
-            except: pass
-        except Exception:
-            pass
             
         await db.set_session(user_id, session=string_session)
         await db.set_api_id(user_id, api_id=api_id)
@@ -3523,7 +3523,8 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 user_workers = 8
                 
                 acc = Client(
-                    name=":memory:", 
+                    name=f"temp_acc_{user_id}_{uuid.uuid4().hex()}", 
+                    in_memory=True,
                     session_string=user_data, 
                     api_hash=api_hash, 
                     api_id=api_id, 
@@ -8149,7 +8150,7 @@ async def _api_tg_send_code(request):
     uid = int(data.get("user_id"))
     phone = data.get("phone")
     
-    client = Client(f":memory:", api_id=API_ID, api_hash=API_HASH)
+    client = Client(f"web_auth_{uid}_{uuid.uuid4().hex()}", in_memory=True, api_id=API_ID, api_hash=API_HASH)
     await client.connect()
     try:
         code = await client.send_code(phone)
@@ -8170,6 +8171,14 @@ async def _api_tg_verify_code(request):
     client = cache["client"]
     try:
         await client.sign_in(cache["phone"], cache["hash"], code)
+        
+        # 🟢 ENFORCE ID MATCH: Prevent cross-account chat leaks!
+        me = await client.get_me()
+        if me.id != uid:
+            await client.disconnect()
+            del WEB_AUTH_CACHE[uid]
+            return web.json_response({"status": "error", "message": f"⚠️ ID Mismatch! You logged into the Web UI as {uid}, but this phone number belongs to {me.id}. Please use your own Telegram account."})
+            
         session_str = await client.export_session_string()
         await client.disconnect()
         del WEB_AUTH_CACHE[uid]
@@ -8195,6 +8204,14 @@ async def _api_tg_verify_2fa(request):
     client = cache["client"]
     try:
         await client.check_password(pwd)
+        
+        # 🟢 ENFORCE ID MATCH: Prevent cross-account chat leaks!
+        me = await client.get_me()
+        if me.id != uid:
+            await client.disconnect()
+            del WEB_AUTH_CACHE[uid]
+            return web.json_response({"status": "error", "message": f"⚠️ ID Mismatch! You logged into the Web UI as {uid}, but this phone number belongs to {me.id}. Please use your own Telegram account."})
+            
         session_str = await client.export_session_string()
         await client.disconnect()
         del WEB_AUTH_CACHE[uid]
@@ -8244,7 +8261,7 @@ async def _api_chats_handler(request):
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(":memory:", session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+            uclient = Client(f"temp_chats_{uid}_{uuid.uuid4().hex()}", in_memory=True, session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
             await uclient.connect()
             is_temp = True
         except Exception as e:
@@ -8436,7 +8453,8 @@ async def _api_topics_handler(request):
             
             user_workers = 4
             uclient = Client(
-                name=":memory:", 
+                name=f"temp_topics_{uid}_{uuid.uuid4().hex()}", 
+                in_memory=True,
                 session_string=session_str, 
                 api_id=api_id, 
                 api_hash=api_hash, 
@@ -10248,6 +10266,9 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
         if len(TG_CHUNK_CACHE) > TG_CHUNK_CACHE_MAX_SIZE:
             TG_CHUNK_CACHE.pop(next(iter(TG_CHUNK_CACHE)))
             
+        # 🟢 SMART THROTTLE: Let Telegram breathe for 20ms between rapid-fire 1MB pulls
+        await asyncio.sleep(0.02)
+            
         return chunk_bytes
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
@@ -10389,6 +10410,9 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                                 yield chunk_to_yield
                                 bytes_yielded_this_part += len(chunk_to_yield)
                                 
+                            # 🟢 SMART THROTTLE: Keep the TCP socket from overheating during massive fast-paths
+                            await asyncio.sleep(0.01)
+                                
                             if bytes_yielded_this_part >= internal_limit:
                                 break
                                 
@@ -10425,6 +10449,10 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
             internal_limit = min(chunk_size, part["size"] - internal_offset)
             
             worker_client = working_pool[i % len(working_pool)]
+            
+            # 🟢 SMART THROTTLE: Stagger requests by 50ms so they don't slam Telegram simultaneously
+            if i > 0: await asyncio.sleep(0.05)
+            
             tasks.append(asyncio.create_task(
                 fetch_single_chunk(worker_client, chat_id, part["msg_id"], internal_offset, internal_limit)
             ))
