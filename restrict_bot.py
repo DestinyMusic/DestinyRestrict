@@ -4700,16 +4700,14 @@ HTML_DASHBOARD = """
             max-width: 92%;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
-            line-height: 1.25;
+            line-height: 1.35;
             font-size: 24px;
             font-weight: 600;
             color: #ffffff;
-            background: rgba(0, 0, 0, 0.75);
-            border-radius: 8px;
-            padding: 4px 14px;
+            background: rgba(0, 0, 0, 0.70);
+            border-radius: 7px;
+            padding: 4px 10px;
             text-shadow: 0 2px 4px rgba(0,0,0,0.95);
-            display: inline-block; /* 🟢 Forces the background box to hug the text neatly */
-            text-align: center;
         }
         .cinema-viewport.fullscreen-subtitle .subtitle-overlay { bottom: 13%; }
 
@@ -5274,6 +5272,13 @@ HTML_DASHBOARD = """
                             <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">TOP</span>
                             <input id="subtitle-pos-slider" type="range" min="2" max="95" value="88" oninput="applySubtitleStyle()" style="flex: 1; accent-color: var(--accent);">
                             <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">BOT</span>
+                        </div>
+
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold; margin-top: 10px;">SUBTITLE WIDTH (STRETCH LINES)</label>
+                        <div style="display: flex; gap: 8px; margin-bottom: 14px; align-items: center;">
+                            <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">NARROW</span>
+                            <input id="subtitle-width-slider" type="range" min="30" max="100" value="92" oninput="applySubtitleStyle()" style="flex: 1; accent-color: var(--accent);">
+                            <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">WIDE</span>
                         </div>
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
@@ -7156,15 +7161,12 @@ HTML_DASHBOARD = """
                         isTop = true;
                     }
                     
-                    // Strip complex ASS brackets but KEEP basic HTML formatting
+                    // Strip complex ASS brackets but KEEP basic HTML formatting (colors, bold, italics)
                     let cleanText = rawText.replace(/\\{[^}]*\\}/g, '').trim();
                     
-                    // Convert WebVTT color tags to HTML spans
+                    // Convert WebVTT color tags to HTML spans so the browser parses them correctly
                     cleanText = cleanText.replace(/<c\\.([^>]+)>([^<]+)<\\/c>/gi, '<span style="color:$1;">$2</span>');
                     
-                    // 🟢 COMPACT LYRIC FIX: If a music note is pushed to a new line just for styling, pull it inline or tidy it up
-                    cleanText = cleanText.replace(/\\n\\s*([♪♫♬♩])\\s*$/g, ' $1').replace(/^([♪♫♬♩])\\s*\\n/g, '$1 ');
-
                     if (cleanText && Number.isFinite(start) && Number.isFinite(end)) {
                         cues.push({ start, end, text: cleanText, isTop: isTop });
                     }
@@ -7313,6 +7315,7 @@ HTML_DASHBOARD = """
             const weight = document.getElementById('subtitle-weight-select')?.value || '600';
             
             const pos = document.getElementById('subtitle-pos-slider')?.value || 88;
+            const stretch = document.getElementById('subtitle-width-slider')?.value || 92;
             
             const overlay = document.getElementById('subtitle-overlay');
             if (overlay) {
@@ -7334,6 +7337,7 @@ HTML_DASHBOARD = """
                 text.style.background = hexToRgba(bg, alpha);
                 text.style.fontFamily = font;
                 text.style.fontWeight = weight;
+                text.style.maxWidth = `${stretch}%`;
             });
         }
 
