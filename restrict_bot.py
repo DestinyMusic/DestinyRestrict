@@ -9346,6 +9346,7 @@ async def _get_user_stream_client(user_id):
             workers=4,
             no_updates=True,
             ipv6=False,
+            max_concurrent_transmissions=1,
         )
         await uclient.start()
         USER_CLIENTS[user_id] = uclient
@@ -9365,7 +9366,7 @@ async def _probe_tg_client(client, chat_id, msg_id):
 
 async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
     """Return accessible bot clients first, then one user-session fallback."""
-    key = (chat_id, int(msg_id))
+    key = (user_id, chat_id, int(msg_id))
     cached = TG_ACCESS_CACHE.get(key)
     now = time.time()
     if cached and cached[1] > now:
@@ -9432,8 +9433,8 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
         return [], False
 
 
-async def _invalidate_tg_access(chat_id, msg_id, client=None):
-    key = (chat_id, int(msg_id))
+async def _invalidate_tg_access(user_id, chat_id, msg_id, client=None):
+    key = (user_id, chat_id, int(msg_id))
     cached = TG_ACCESS_CACHE.get(key)
     if not cached:
         return
@@ -9905,167 +9906,6 @@ async def _api_stream_handler(request):
     return response
 
 
-CLIENT_MSG_CACHE = {}
-CLIENT_MSG_CACHE_MAX = 2048
-CLIENT_MSG_LOCKS = defaultdict(asyncio.Lock)
-
-
-async def get_client_msg(client, chat_id, msg_id):
-    """Cache Telegram messages and coalesce simultaneous metadata requests."""
-    key = (id(client), chat_id, int(msg_id))
-    cached = CLIENT_MSG_CACHE.get(key)
-    if cached is not None:
-        return cached
-    lock = CLIENT_MSG_LOCKS[key]
-    async with lock:
-        cached = CLIENT_MSG_CACHE.get(key)
-        if cached is not None:
-            return cached
-        msg = await client.get_messages(chat_id, msg_id)
-        if getattr(msg, "empty", True) or not (msg.document or msg.video or msg.audio):
-            raise ValueError(f"Empty Message for client {getattr(client, 'name', 'Unknown')}")
-        CLIENT_MSG_CACHE[key] = msg
-        if len(CLIENT_MSG_CACHE) > CLIENT_MSG_CACHE_MAX:
-            try:
-                CLIENT_MSG_CACHE.pop(next(iter(CLIENT_MSG_CACHE)))
-            except Exception:
-                pass
-        return msg
-
-
-async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk strictly. Retries on transient errors with clean byte skipping."""
-    # 🟢 FIX: Universal 1MB Alignment - Rock solid for Telegram MTProto
-    ALIGNMENT = 1048576
-    aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
-    target_bytes = limit
-    
-    for attempt in range(4):
-        # MUST reset skip_bytes on every retry loop to prevent data corruption
-        skip_bytes = offset - aligned_offset
-        fetch_limit = target_bytes + skip_bytes
-        try:
-            msg = await get_client_msg(client, chat_id, msg_id)
-            data = bytearray()
-            
-            # 🟢 FIX: Pass fetch_limit to let Pyrogram safely close the connection automatically
-            async for chunk in client.stream_media(msg, offset=aligned_offset, limit=fetch_limit):
-                if skip_bytes > 0:
-                    if len(chunk) <= skip_bytes:
-                        skip_bytes -= len(chunk)
-                        continue
-                    else:
-                        chunk = chunk[skip_bytes:]
-                        skip_bytes = 0
-                        
-                data.extend(chunk)
-                # Removed manual 'break' to stop severing sockets mid-stream
-                    
-            if not data: 
-                raise ValueError("EOF Reached or Empty Chunk")
-                
-            return bytes(data[:target_bytes])
-            
-        except FloodWait as e:
-            logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
-            await asyncio.sleep(e.value + 1)
-        except Exception as e:
-            if attempt == 3:
-                raise e
-            await asyncio.sleep(1)
-            
-    raise TimeoutError("Exceeded max retries for chunk")
-
-async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=2 * 1024 * 1024, concurrency=6):
-    """Fast Telegram range generator with cached client selection and split-safe work units."""
-    if total_length <= 0:
-        return
-
-    user_id = 0
-    # The fallback client is already scoped to the current user session when one
-    # exists. Pool discovery uses app + worker bots first and falls back to that
-    # user session only when no bot can read the file.
-    if fallback_client in USER_CLIENTS.values():
-        for uid, candidate in USER_CLIENTS.items():
-            if candidate is fallback_client:
-                user_id = uid
-                break
-
-    try:
-        pool, is_user_session = await _get_working_tg_pool(user_id, chat_id, msg_parts[0]["msg_id"], fallback_client=fallback_client)
-    except Exception:
-        pool, is_user_session = ([fallback_client] if fallback_client else [app]), bool(fallback_client and fallback_client is not app)
-
-    if not pool:
-        pool = [fallback_client or app]
-        is_user_session = bool(fallback_client and fallback_client is not app)
-
-    if is_user_session:
-        safe_concurrency = 1
-    else:
-        requested = max(1, int(os.environ.get("TG_STREAM_CONCURRENCY", str(concurrency))))
-        safe_concurrency = min(requested, len(pool))
-
-    # Build precise units that never cross split-file boundaries.
-    range_start = int(start_byte)
-    range_end = range_start + int(total_length)
-    units = []
-    for part in msg_parts:
-        p_start = int(part["start"])
-        p_end = int(part["end"])
-        if p_end <= range_start or p_start >= range_end:
-            continue
-        cursor = max(range_start, p_start)
-        limit_end = min(range_end, p_end)
-        while cursor < limit_end:
-            take = min(int(chunk_size), limit_end - cursor)
-            units.append((part, cursor - p_start, take))
-            cursor += take
-
-    if not units:
-        return
-
-    if safe_concurrency == 1:
-        client = pool[0]
-        for part, internal_offset, internal_limit in units:
-            try:
-                yield await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
-            except Exception:
-                await _invalidate_tg_access(chat_id, part["msg_id"], client)
-                raise
-        return
-
-    # Multi-bot path. Each batch is fetched in parallel but yielded in source
-    # order so the HTTP byte stream remains perfectly ordered.
-    cursor = 0
-    while cursor < len(units):
-        batch = units[cursor:cursor + safe_concurrency]
-
-        async def _fetch_with_failover(unit_idx, unit):
-            part, internal_offset, internal_limit = unit
-            preferred = pool[unit_idx % len(pool)]
-            candidates = [preferred] + [c for c in pool if c is not preferred]
-            last_exc = None
-            for client in candidates:
-                try:
-                    return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
-                except Exception as exc:
-                    last_exc = exc
-                    await _invalidate_tg_access(chat_id, part["msg_id"], client)
-            raise last_exc or RuntimeError("Telegram chunk fetch failed")
-
-        results = await asyncio.gather(
-            *[_fetch_with_failover(i, unit) for i, unit in enumerate(batch)],
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, Exception):
-                raise result
-            if result:
-                yield result
-        cursor += len(batch)
-
-
 async def _api_tg_stream_handler(request):
     """High-speed Telegram Range proxy with multi-bot routing, user fallback, split files and ZIP extraction."""
     try:
@@ -10162,7 +10002,7 @@ async def _api_tg_stream_handler(request):
         if is_zip:
             async def zip_read(off, length):
                 buf = bytearray()
-                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length, concurrency=6):
+                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length, concurrency=1, user_id=user_id):
                     buf.extend(chunk)
                     if len(buf) >= length:
                         break
@@ -10233,7 +10073,7 @@ async def _api_tg_stream_handler(request):
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
         adjusted_start = start_byte + virtual_data_offset
-        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
+        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=1, user_id=user_id)
         
         try:
             await response.prepare(request)
@@ -10512,20 +10352,15 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             
     raise TimeoutError("Exceeded max retries for chunk")
 
-async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
-    """Distributes HTTP range requests evenly. Includes a Fast-Path for single clients."""
+async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=1, user_id=0):
+    """Distributes HTTP range requests safely using the correct per-user Telegram pool."""
     
     test_msg_id = msg_parts[0]["msg_id"]
     working_pool = []
     is_user_session = False
-    
-    # Derive the exact user_id from the active fallback session
-    user_id = 0
-    if fallback_client in USER_CLIENTS.values():
-        for uid, candidate in USER_CLIENTS.items():
-            if candidate is fallback_client:
-                user_id = uid
-                break
+
+    # user_id is supplied by the HTTP request. Do not infer identity from a worker bot.
+    # Worker bots are separate Telegram accounts and are therefore not present in USER_CLIENTS.
 
     # Use ONLY the user's specific worker bots
     user_worker_bots = list(USER_WORKER_BOTS.get(user_id, []))
@@ -10644,7 +10479,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     # ==========================================
     end_byte = start_byte + total_length
     first_block = start_byte // chunk_size
-    last_block = end_byte // chunk_size
+    last_block = (end_byte - 1) // chunk_size
     
     current_block = first_block
     bytes_yielded = 0
@@ -10726,7 +10561,8 @@ async def init_worker_bots(user_id=None):
                     bot_token=token.strip(),
                     workers=4,
                     no_updates=True,
-                    ipv6=False
+                    ipv6=False,
+                    max_concurrent_transmissions=1,
                 )
                 await bot_client.start()
                 USER_WORKER_BOTS[uid].append(bot_client)
