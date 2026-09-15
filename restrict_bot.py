@@ -9192,7 +9192,7 @@ async def _api_direct_stream_handler(request):
         # Gracefully exit on seek/close rather than raising an uncaught exception
         return response
     except Exception as exc:
-        if "Connection closed" not in str(exc):
+        if "Connection closed" not in str(exc) and "BrokenPipeError" not in str(exc):
             logger.debug(f"Direct stream disconnect/error: {exc}")
         return response
     finally:
@@ -10244,7 +10244,7 @@ async def _api_tg_stream_handler(request):
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError, BrokenPipeError, ConnectionAbortedError):
             pass # Normal client disconnect, ignore safely
         except Exception as exc:
-            if "Connection closed" not in str(exc):
+            if "Connection closed" not in str(exc) and "BrokenPipeError" not in str(exc):
                 logger.debug(f"Telegram stream disconnect/error: {exc}")
         finally:
             try: await gen.aclose() # Force generator destruction
@@ -10471,7 +10471,7 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
         data = bytearray()
         
         # 🟢 FIX: Auto-retry on Telegram Server Connection Drops
-        for attempt in range(4):
+        for attempt in range(5):
             try:
                 data.clear()
                 async for chunk in client.stream_media(msg, offset=chunk_index, limit=1):
@@ -10479,11 +10479,11 @@ async def _get_cached_tg_chunk(client, chat_id, msg_id, chunk_index):
                 if data:
                     break # Success!
             except (ConnectionResetError, TimeoutError, OSError, aiohttp.client_exceptions.ClientConnectionError) as e:
-                logger.debug(f"Chunk fetch reset: {e}. Retry {attempt+1}/4")
+                logger.debug(f"Chunk fetch reset: {e}. Retry {attempt+1}/5")
                 await asyncio.sleep(1.5 + attempt)
             except Exception as e:
                 if "Connection closed" in str(e):
-                    logger.debug(f"Server closed connection. Retry {attempt+1}/4")
+                    logger.debug(f"Server closed connection. Retry {attempt+1}/5")
                     await asyncio.sleep(1.5 + attempt)
                 else:
                     raise e
