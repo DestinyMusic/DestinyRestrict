@@ -9192,7 +9192,7 @@ async def _api_direct_stream_handler(request):
         # Gracefully exit on seek/close rather than raising an uncaught exception
         return response
     except Exception as exc:
-        if "Connection closed" not in str(exc) and "BrokenPipeError" not in str(exc):
+        if "Connection closed" not in str(exc):
             logger.debug(f"Direct stream disconnect/error: {exc}")
         return response
     finally:
@@ -9941,7 +9941,14 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
     target_bytes = limit
     
-    for attempt in range(4):
+    for attempt in range(6): # 🟢 INCREASED RETRIES FOR STABILITY
+        # 🟢 CRITICAL FIX: Instantly revive dead worker bots if Telegram severed the socket
+        if not getattr(client, "is_connected", False):
+            try:
+                await client.connect()
+            except Exception:
+                pass
+
         # MUST reset skip_bytes on every retry loop to prevent data corruption
         skip_bytes = offset - aligned_offset
         fetch_limit = target_bytes + skip_bytes
@@ -9955,7 +9962,7 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
                     if len(chunk) <= skip_bytes:
                         skip_bytes -= len(chunk)
                         continue
-                    else:
+                else:
                         chunk = chunk[skip_bytes:]
                         skip_bytes = 0
                         
@@ -9971,9 +9978,10 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             logger.warning(f"[{getattr(client, 'name', 'Client')}] Rate-limited for {e.value}s. Sleeping...")
             await asyncio.sleep(e.value + 1)
         except Exception as e:
-            if attempt == 3:
+            logger.debug(f"Chunk fetch error on {getattr(client, 'name', 'Client')} (attempt {attempt+1}/6): {e}")
+            if attempt == 5:
                 raise e
-            await asyncio.sleep(1)
+            await asyncio.sleep(1.5 + attempt) # 🟢 EXPONENTIAL BACKOFF FOR TG DROPS
             
     raise TimeoutError("Exceeded max retries for chunk")
 
@@ -10207,7 +10215,10 @@ async def _api_tg_stream_handler(request):
             GLOBAL_STREAM_TASKS = {}
             
         is_metadata_probe = chunk_len < 52428800 # 50 MB
-        lock_key = f"{user_id}_{chat_id}_{msg_id}"
+        # 🟢 NO-INTERFERENCE FIX: Bound the lock to the specific user's IP Address!
+        # Two users sharing an account or watching on different TVs will never cancel each other.
+        client_ip = request.remote or "unknown_ip"
+        lock_key = f"{user_id}_{chat_id}_{msg_id}_{client_ip}"
         
         if not is_metadata_probe:
             old_task = GLOBAL_STREAM_TASKS.get(lock_key)
@@ -10242,9 +10253,9 @@ async def _api_tg_stream_handler(request):
                 await response.write(chunk)
             await response.write_eof()
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-            pass # Normal client disconnect, ignore safely
+            pass # 🟢 FIX: Silently handle expected browser disconnects
         except Exception as exc:
-            if "Connection closed" not in str(exc) and "BrokenPipeError" not in str(exc):
+            if "Connection closed" not in str(exc):
                 logger.debug(f"Telegram stream disconnect/error: {exc}")
         finally:
             try: await gen.aclose() # Force generator destruction
