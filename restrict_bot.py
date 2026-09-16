@@ -9948,7 +9948,7 @@ async def _api_stream_handler(request):
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, # 🟢 FIX: Prevents OS pipe buffer deadlock
     )
     import aiohttp
     
@@ -10300,16 +10300,14 @@ async def _api_tg_stream_handler(request):
             global GLOBAL_STREAM_TASKS
             GLOBAL_STREAM_TASKS = {}
             
-        is_metadata_probe = chunk_len < 52428800 # 50 MB
-        
+        # 🟢 FIX: Make the lock key unique with a UUID so simultaneous parallel requests 
+        # from VLC or FFmpeg don't aggressively cancel each other out, 
+        # while still allowing the Web UI "Stop" button to kill them cleanly!
+        import uuid
         client_ip = request.remote or "unknown_ip"
-        lock_key = f"{user_id}_{chat_id}_{msg_id}_{client_ip}"
+        lock_key = f"{user_id}_{chat_id}_{msg_id}_{client_ip}_{uuid.uuid4().hex}"
         
-        if not is_metadata_probe:
-            old_task = GLOBAL_STREAM_TASKS.get(lock_key)
-            if old_task and not old_task.done():
-                old_task.cancel()
-            GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
+        GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
 
         headers = {
             "Accept-Ranges": "bytes",
