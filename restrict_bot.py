@@ -9922,7 +9922,7 @@ async def _api_stream_handler(request):
         "-rw_timeout", "120000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
-        "-seekable", "0", # 🟢 FIX 1: Force FFmpeg to read linearly (like engine.py). Prevents HTTP seek crashes!
+        "-seekable", "1", # 🟢 FIX: Allow FFmpeg to use HTTP Range requests for instant seeking!
         "-probesize", "5M", "-analyzeduration", "5M", 
         "-fflags", "+nobuffer+flush_packets", 
         "-async", "1"
