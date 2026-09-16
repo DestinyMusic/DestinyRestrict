@@ -10211,6 +10211,7 @@ async def _api_tg_stream_handler(request):
             
         is_metadata_probe = chunk_len < 52428800 # 50 MB
         
+        # 🟢 PER-USER IP LOCK: Prevents sharing interference
         client_ip = request.remote or "unknown_ip"
         lock_key = f"{user_id}_{chat_id}_{msg_id}_{client_ip}"
         
@@ -10594,6 +10595,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                     
                     remaining_bytes = internal_limit - bytes_yielded_this_part
                     total_to_pull = skip_bytes + remaining_bytes
+                    import math
                     chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
                     
                     msg = await get_client_msg(client, chat_id, part["msg_id"])
@@ -12071,5 +12073,4 @@ if __name__ == "__main__":
     try:
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
-        pass
-        
+        pass        
