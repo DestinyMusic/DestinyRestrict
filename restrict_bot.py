@@ -719,6 +719,31 @@ def _parse_chat_target(text: str):
 def _parse_source_link(src_link: str):
     raw = (src_link or "").strip()
     
+    msg_range = None
+    
+    # 🟢 FIX: Handle both Comma-Separated Links AND Hyphen Ranges seamlessly
+    if "," in raw:
+        links = [l.strip() for l in raw.split(",")]
+        raw = links[0] # Base the core logic off the first link
+        last_link = links[-1]
+        try:
+            start_id = int(raw.rstrip("/").split("/")[-1].split("?")[0])
+            end_id = int(last_link.rstrip("/").split("/")[-1].split("?")[0])
+            if start_id <= end_id:
+                msg_range = (start_id, end_id)
+        except: pass
+    else:
+        m = re.search(r"/(\d+)\s*(?:-|to)\s*(\d+)$", raw, re.IGNORECASE)
+        if m:
+            try:
+                start_id = int(m.group(1))
+                end_id = int(m.group(2))
+                if start_id <= end_id:
+                    msg_range = (start_id, end_id)
+                raw = raw[:m.start(0)] + "/" + m.group(1) # Clean tail so it parses as a normal link
+            except: pass
+
+    # Normal parsing for the base link
     if "t.me/" in raw:
         raw = raw.split("t.me/")[-1]
     elif "telegram.me/" in raw:
@@ -736,16 +761,9 @@ def _parse_source_link(src_link: str):
         source_id = int("-100" + parts[0])
         topic_id = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
         
-        # Range Parsing for Private Links
         msg_id = None
-        msg_range = None
         last_segment = parts[-1].strip()
-        if "-" in last_segment:
-            r_parts = last_segment.split("-", 1)
-            if r_parts[0].isdigit() and r_parts[1].isdigit():
-                msg_id = int(r_parts[0])
-                msg_range = (int(r_parts[0]), int(r_parts[1]))
-        elif last_segment.isdigit():
+        if last_segment.isdigit():
             msg_id = int(last_segment)
             
         return {
@@ -754,23 +772,16 @@ def _parse_source_link(src_link: str):
             "chat_id": source_id,
             "topic_id": topic_id,
             "msg_id": msg_id,
-            "msg_range": msg_range,
+            "msg_range": msg_range, # 🟢 Pass the clean range mapping
         }
 
     parts = raw.split("/")
     username = parts[0]
     topic_id = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
     
-    # Range Parsing for Public/Invite Links
     msg_id = None
-    msg_range = None
     last_segment = parts[-1].strip()
-    if "-" in last_segment:
-        r_parts = last_segment.split("-", 1)
-        if r_parts[0].isdigit() and r_parts[1].isdigit():
-            msg_id = int(r_parts[0])
-            msg_range = (int(r_parts[0]), int(r_parts[1]))
-    elif last_segment.isdigit():
+    if last_segment.isdigit():
         msg_id = int(last_segment)
 
     if username.startswith("+") or "joinchat" in username:
@@ -9610,6 +9621,7 @@ async def _api_media_probe_handler(request):
                 parsed = _parse_source_link(link)
                 chat_id = parsed.get("chat_id")
                 msg_id = parsed.get("msg_id")
+                msg_range = parsed.get("msg_range") # 🟢 Extract range
                 if chat_id is None or msg_id is None:
                     return web.json_response({"status": "error", "message": "Invalid Telegram link"}, status=400)
                 pool, user_fallback = await _get_working_tg_pool(user_id, chat_id, msg_id)
@@ -9622,6 +9634,8 @@ async def _api_media_probe_handler(request):
                 real_file_name = getattr(media, "file_name", None) or getattr(media, "title", None) or f"Telegram_Media_{msg_id}"
                 mime_type = getattr(media, "mime_type", None) or "video/mp4"
                 actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+                if msg_range:
+                    actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
             else:
                 actual_url = await resolve_direct_link(link)
                 real_file_name = _guess_filename_from_url(actual_url, _guess_filename_from_url(link, "Direct_Stream_Media"))
@@ -9837,6 +9851,7 @@ async def _api_stream_handler(request):
             parsed = _parse_source_link(link)
             chat_id = parsed.get("chat_id")
             msg_id = parsed.get("msg_id")
+            msg_range = parsed.get("msg_range") # 🟢 Extract range
             if chat_id is None or msg_id is None:
                 return web.Response(status=400, text="Invalid Telegram link")
             pool, _ = await _get_working_tg_pool(user_id, chat_id, msg_id)
@@ -9849,6 +9864,8 @@ async def _api_stream_handler(request):
             filename = str(getattr(media, 'file_name', '') or '').lower()
             mime_type = getattr(media, 'mime_type', 'video/mp4') or 'video/mp4'
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+            if msg_range:
+                actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
             is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus")) or "audio" in mime_type
         else:
             actual_url = await resolve_direct_link(link)
@@ -10214,13 +10231,19 @@ async def _api_tg_stream_handler(request):
 
     link = request.query.get("link")
     logger.info(f"🌐 [TG STREAM] Native Byte-Range Request | User: {user_id} | Link: {str(link)[:60]}...")
+    msg_range = None
     if link:
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
         msg_id = parsed.get("msg_id")
+        msg_range = parsed.get("msg_range")
     else:
         chat_id = request.query.get("chat_id")
         msg_id = request.query.get("msg_id")
+        range_spec = request.query.get("range", "")
+        if range_spec:
+            rm = re.match(r"^(\d+)-(\d+)$", range_spec)
+            if rm: msg_range = (int(rm.group(1)), int(rm.group(2)))
 
     if chat_id is None or msg_id is None:
         return web.Response(status=400, text="Missing chat_id/msg_id or link")
@@ -10247,11 +10270,9 @@ async def _api_tg_stream_handler(request):
         parts_map = []
         global_offset = 0
 
-        range_spec = request.query.get("range", "")
-        range_match = re.match(r"^(\d+)-(\d+)$", range_spec)
-
-        if range_match:
-            start_id, end_id = int(range_match.group(1)), int(range_match.group(2))
+        # 🟢 FIX: Directly utilize the perfectly parsed msg_range for seamless multi-part chunking!
+        if msg_range:
+            start_id, end_id = msg_range[0], msg_range[1]
             for mid in range(start_id, end_id + 1):
                 try:
                     m = await get_client_msg(primary_client, chat_id, mid)
@@ -10438,9 +10459,12 @@ async def _api_subtitles_handler(request):
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
         msg_id = parsed.get("msg_id")
+        msg_range = parsed.get("msg_range") # 🟢 Extract range
         if chat_id is None or msg_id is None:
             return web.Response(status=400, text="Invalid Telegram link")
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+        if msg_range:
+            actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
     else:
         actual_url = await resolve_direct_link(link)
         # 🟢 FIX: Let FFmpeg fetch directly to extract text instantly without stalling the server!
@@ -12186,4 +12210,3 @@ if __name__ == "__main__":
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-        
