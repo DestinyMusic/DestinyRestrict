@@ -9841,6 +9841,11 @@ async def _api_stream_handler(request):
     is_tg = _is_tg_link(link)
     logger.info(f"🎬 [TRANSCODE] Request | User: {user_id} | Is TG: {is_tg} | Link: {link[:100]}...")
     
+    # 🟢 FIX 1: Detect Apple Devices to route them to MPEG-TS
+    user_agent = request.headers.get("User-Agent", "").lower()
+    is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
+    
+    msg_range = None
     actual_url = link
     mime_type = "video/mp4"
     filename = "media"
@@ -9919,9 +9924,8 @@ async def _api_stream_handler(request):
     needs_video_transcode = video_codec in unsupported_web_codecs or force_x264 or quality != "Original"
 
     bad_audio = {"dts", "truehd", "ac3", "eac3"}
-    # 🟢 FIX: If we are transcoding the video for web compatibility, we MUST also force the audio to transcode!
-    # Browsers instantly crash or loop endlessly when fed 5.1/6-channel audio inside a fragmented MP4!
-    if audio_codec in bad_audio or needs_video_transcode:
+    # 🟢 FIX 2: Apple MPEG-TS streams strictly require AAC audio. Force transcode if iOS.
+    if audio_codec in bad_audio or needs_video_transcode or is_apple:
         copy_audio = False
     else:
         copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'flac'} or (audio_idx is None and not force_transcode)
@@ -9973,8 +9977,13 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
-        cmd += ["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+            
+        # 🟢 FIX 3a: Apple prefers raw ADTS pipes for pure audio streams
+        if is_apple:
+            cmd += ["-f", "adts", "pipe:1"]
+        else:
+            cmd += ["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
     else:
         cmd += ["-map", "0:v:0?"]
         if audio_idx is not None and str(audio_idx).strip():
@@ -9985,7 +9994,7 @@ async def _api_stream_handler(request):
 
         if copy_video and not scale_filter:
             cmd += ["-c:v", "copy"]
-            if video_codec in {"hevc", "h265", "hvc1"}:
+            if video_codec in {"hevc", "h265", "hvc1"} and not is_apple:
                 cmd += ["-tag:v", "hvc1"]
             elif video_codec in {"vp9", "vp8", "av1"}:
                 cmd += ["-strict", "experimental"]
@@ -9999,9 +10008,14 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
 
-        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # 🟢 FIX 3b: Force MPEG-TS (HLS Format) for iOS Safari! 
+        # Safari completely rejects Fragmented MP4 pipes over 200 OK. It natively loves MPEG-TS.
+        if is_apple:
+            cmd += ["-f", "mpegts", "pipe:1"]
+        else:
+            cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
@@ -10009,72 +10023,32 @@ async def _api_stream_handler(request):
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL, # 🟢 FIX: Prevents OS pipe buffer deadlock
+        stderr=asyncio.subprocess.DEVNULL, 
     )
     import aiohttp
     
-    # 🟢 FIX: Separate HTTP Header logic strictly for iOS/Apple devices!
-    user_agent = request.headers.get("User-Agent", "").lower()
-    is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
-
+    # 🟢 FIX 3c: Clean, unified 200 OK headers. 
     stream_headers = {
-        "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-store",
+        "Accept-Ranges": "none",
+        "Connection": "keep-alive"
     }
 
-    apple_target_length = None
     if is_apple:
-        stream_headers["Accept-Ranges"] = "bytes"
-        client_range = request.headers.get("Range", "")
-        if client_range:
-            start_byte = 0
-            end_byte = 2147483647 # Fake 2GB Maximum
-            
-            match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
-            if match:
-                if match.group(1): start_byte = int(match.group(1))
-                if match.group(2): end_byte = int(match.group(2))
-                
-            fake_total = 2147483648
-            end_byte = min(end_byte, fake_total - 1)
-            
-            # Mathematical compliance for Safari's strict AVPlayer parser
-            stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
-            
-            apple_target_length = end_byte - start_byte + 1
-            stream_headers["Content-Length"] = str(apple_target_length)
-            status_code = 206
-        else:
-            stream_headers["Content-Length"] = "2147483648"
-            status_code = 200
+        stream_headers["Content-Type"] = "audio/aac" if is_audio else "video/mp2t"
     else:
-        # ULTRA-STABLE 200 OK RESPONSE FOR CHROME, ANDROID, WINDOWS
-        stream_headers["Accept-Ranges"] = "none"
-        status_code = 200
+        stream_headers["Content-Type"] = "video/mp4"
 
-    response = web.StreamResponse(status=status_code, headers=stream_headers)
+    response = web.StreamResponse(status=200, headers=stream_headers)
 
     try:
         await response.prepare(request)
-        bytes_sent = 0
         while True:
             buf = await proc.stdout.read(262144) 
             if not buf:
                 break
-                
-            # 🟢 FIX: If Safari only asked for a specific chunk size (e.g., 2 bytes for a probe),
-            # we MUST forcefully truncate the data and close the stream. 
-            # If we send more data than we promised in the Content-Length, Safari instantly kills playback!
-            if is_apple and apple_target_length is not None:
-                if bytes_sent + len(buf) >= apple_target_length:
-                    buf = buf[:apple_target_length - bytes_sent]
-                    await response.write(buf)
-                    break
-                    
             await response.write(buf)
-            bytes_sent += len(buf)
-            
         await response.write_eof()
     except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
         pass
