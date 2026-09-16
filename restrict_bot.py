@@ -9292,7 +9292,7 @@ async def _run_ffprobe_json(input_url, fast=True):
         cmd = [
             "ffprobe", "-v", "error", "-hide_banner",
             "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real User-Agent
-            "-rw_timeout", "30000000", # 🟢 FIX: 30s timeout for slow Cloudflare Workers
+            "-rw_timeout", "120000000", # 🟢 FIX: 120s timeout for slow Cloudflare Workers
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
@@ -9783,7 +9783,7 @@ async def _api_stream_handler(request):
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
-        "-rw_timeout", "30000000", 
+        "-rw_timeout", "120000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", # 🟢 ADDED THIS!
         "-seekable", "1",
@@ -10245,7 +10245,12 @@ async def _api_tg_stream_handler(request):
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
         adjusted_start = start_byte + virtual_data_offset
-        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
+        
+        # 🟢 THE SHIELD: If FFmpeg is just probing small metadata (less than 10MB request),
+        # use only 1 worker to prevent triggering Telegram's DDoS ban-hammer.
+        active_concurrency = 6 if chunk_len > 10485760 else 1
+        
+        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=active_concurrency)
         
         try:
             await response.prepare(request)
@@ -10258,13 +10263,14 @@ async def _api_tg_stream_handler(request):
             if "Connection closed" not in str(exc):
                 logger.debug(f"Telegram stream disconnect/error: {exc}")
         finally:
-            try: await gen.aclose() # Force generator destruction
-            except: pass
-            
-        # 🟢 FIX: Prevent 500 error crashes if the browser abruptly disconnects before preparation
-        if not response.prepared:
-            return web.Response(status=499, text="Client Closed Request")
-        return response
+            # 🟢 FIX: Forcefully kill the generator with a 1-second timeout!
+            # If Telegram's server is hanging, this prevents your entire web API from freezing.
+            if hasattr(gen, 'aclose'):
+                try: 
+                    import asyncio
+                    await asyncio.wait_for(gen.aclose(), timeout=1.0)
+                except Exception:
+                    pass
 
     except asyncio.CancelledError:
         raise
@@ -10329,7 +10335,7 @@ async def _api_subtitles_handler(request):
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
-        "-rw_timeout", "30000000", 
+        "-rw_timeout", "120000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
         "-seekable", "1", "-multiple_requests", "1",
         "-probesize", "4M", "-analyzeduration", "2M",
