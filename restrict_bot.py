@@ -9913,8 +9913,8 @@ async def _api_stream_handler(request):
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
         "-rw_timeout", "120000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
-        "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", # 🟢 ADDED THIS!
-        "-seekable", "1",
+        "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
+        "-seekable", "0", # 🟢 FIX 1: Force FFmpeg to read linearly (like engine.py). Prevents HTTP seek crashes!
         "-probesize", "5M", "-analyzeduration", "5M", 
         "-fflags", "+nobuffer+flush_packets", 
         "-async", "1"
@@ -9991,23 +9991,19 @@ async def _api_stream_handler(request):
     # However, since FFmpeg generates a live pipe, we cannot slice byte ranges dynamically.
     # We MUST ignore Safari's requested range (e.g. 0-1) and forcefully return the full faked 2GB range.
     # This tricks Safari into accepting the stream continuously without looping FFmpeg or crashing!
+    # 🟢 FIX 2: Replicate engine.py headers. Send a pure 200 OK stream with NO Content-Length.
+    # This forces the browser to treat the FFmpeg pipe as a continuous Live Stream.
+    # It completely prevents Chrome/Safari from disconnecting and looping endlessly!
     stream_headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Type, Content-Range, Accept-Ranges",
-        "Cache-Control": "no-store",
-        "Accept-Ranges": "none" # Prevents Safari from attempting further seeks
+        "Cache-Control": "no-cache",
+        "Accept-Ranges": "none" 
     }
 
-    if request.headers.get("Range"):
-        stream_headers["Content-Range"] = "bytes 0-2147483647/2147483648"
-        stream_headers["Content-Length"] = "2147483648"
-        status_code = 206
-    else:
-        stream_headers["Content-Length"] = "2147483648"
-        status_code = 200
-
-    response = web.StreamResponse(status=status_code, headers=stream_headers)
+    # We ignore the browser's Byte-Range requests entirely. 
+    # Seeking is handled mathematically by FFmpeg via the &start= seconds URL parameter!
+    response = web.StreamResponse(status=200, headers=stream_headers)
 
     try:
         await response.prepare(request)
