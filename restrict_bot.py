@@ -10100,8 +10100,6 @@ async def _api_tg_stream_handler(request):
     response = None
     temp_client = None
     try:
-        # Prefer any bot that can read the file; only create/use the user's
-        # session when all bots are unable to access it.
         working_pool, using_user_session = await _get_working_tg_pool(user_id, chat_id, msg_id)
         if not working_pool:
             return web.Response(status=403, text="Telegram file is not accessible")
@@ -10207,21 +10205,19 @@ async def _api_tg_stream_handler(request):
 
         chunk_len = end_byte - start_byte + 1
         
-        # 🟢 SMART SCRUB-KILLER: Only cancel ghost tasks if it's a massive video stream!
         if "GLOBAL_STREAM_TASKS" not in globals():
             global GLOBAL_STREAM_TASKS
             GLOBAL_STREAM_TASKS = {}
             
         is_metadata_probe = chunk_len < 52428800 # 50 MB
         
-        # 🟢 PER-USER IP LOCK: Prevents sharing interference
         client_ip = request.remote or "unknown_ip"
         lock_key = f"{user_id}_{chat_id}_{msg_id}_{client_ip}"
         
         if not is_metadata_probe:
             old_task = GLOBAL_STREAM_TASKS.get(lock_key)
             if old_task and not old_task.done():
-                old_task.cancel() # Safely kill the old ghost download
+                old_task.cancel()
             GLOBAL_STREAM_TASKS[lock_key] = asyncio.current_task()
 
         headers = {
@@ -10234,7 +10230,6 @@ async def _api_tg_stream_handler(request):
             "Cache-Control": "no-store",
         }
 
-        # 🟢 FAST-PROBE FIX: Instantly return headers for HEAD requests!
         if request.method == "HEAD":
             return web.Response(status=206 if range_header else 200, headers=headers)
 
@@ -10250,14 +10245,13 @@ async def _api_tg_stream_handler(request):
                 await response.write(chunk)
             await response.write_eof()
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-            pass # 🟢 Normal client disconnect, ignore safely
+            pass # Normal browser disconnects ignored
         except Exception as exc:
-            if "Connection closed" not in str(exc):
+            if "Connection closed" not in str(exc) and "BrokenPipeError" not in str(exc):
                 logger.debug(f"Telegram stream disconnect/error: {exc}")
         finally:
             if hasattr(gen, 'aclose'):
                 try: 
-                    # 🟢 Safely timeout generator cleanup without polluting the local variable scope!
                     await asyncio.wait_for(gen.aclose(), timeout=1.0)
                 except Exception:
                     pass
@@ -10537,13 +10531,14 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     raise TimeoutError("Exceeded max retries for chunk")
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
-    """Distributes HTTP range requests evenly. Includes a Fast-Path for single clients."""
-    
+    """Ultra-Stable Continuous Stream Generator with Auto-Recovery and Bot Rotation."""
+    if total_length <= 0:
+        return
+
     test_msg_id = msg_parts[0]["msg_id"]
     working_pool = []
-    is_user_session = False
     
-    # Derive the exact user_id from the active fallback session
+    # Safely get the user ID
     user_id = 0
     if fallback_client in USER_CLIENTS.values():
         for uid, candidate in USER_CLIENTS.items():
@@ -10551,173 +10546,93 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 user_id = uid
                 break
 
-    # Use ONLY the user's specific worker bots
+    # Add all active worker bots to the pool
     user_worker_bots = list(USER_WORKER_BOTS.get(user_id, []))
     for c in user_worker_bots:
         try:
-            # 🟢 Dynamically reconnect if dropped
             if not getattr(c, "is_connected", False):
                 await c.connect()
-            if await get_client_msg(c, chat_id, test_msg_id):
-                working_pool.append(c)
+            working_pool.append(c)
         except Exception:
             pass
             
-    if not working_pool and fallback_client:
+    # Add the user session to the pool as a fallback
+    if fallback_client:
         try:
-            # 🟢 Dynamically reconnect user session if dropped
             if not getattr(fallback_client, "is_connected", False):
                 await fallback_client.connect()
-            if await get_client_msg(fallback_client, chat_id, test_msg_id):
-                working_pool = [fallback_client]
-                is_user_session = True
+            working_pool.append(fallback_client)
         except Exception:
             pass
 
     if not working_pool:
-        working_pool = [fallback_client or app]
-        is_user_session = bool(fallback_client)
-        
-    if is_user_session:
-        safe_concurrency = 1
-    else:
-        safe_concurrency = min(concurrency, len(working_pool))
-        
-    if safe_concurrency < 1: 
-        safe_concurrency = 1
+        working_pool = [app]
 
-    # ==========================================
-    # 🟢 THE FIX: FAST-PATH FOR SINGLE CLIENTS
-    # ==========================================
-    if safe_concurrency == 1:
-        client = working_pool[0]
-        bytes_needed = total_length
-        current_offset = start_byte
-        
-        for part in msg_parts:
-            if bytes_needed <= 0: break
-            if part["start"] <= current_offset < part["end"]:
-                internal_offset = current_offset - part["start"]
-                internal_limit = min(bytes_needed, part["size"] - internal_offset)
-                
+    bytes_needed = total_length
+    current_offset = start_byte
+    bot_index = 0 # Used to rotate bots if one fails
+
+    for part in msg_parts:
+        if bytes_needed <= 0: break
+        if part["start"] <= current_offset < part["end"]:
+            internal_offset = current_offset - part["start"]
+            internal_limit = min(bytes_needed, part["size"] - internal_offset)
+            
+            bytes_yielded_this_part = 0
+            
+            while bytes_yielded_this_part < internal_limit:
+                # 🟢 Automatically rotate to the next bot in the pool if the current one dropped!
+                client = working_pool[bot_index % len(working_pool)]
                 try:
-                    # 🟢 SMART ROUTING: Use Cache for small FFmpeg probes, Pipeline for large streaming
-                    if internal_limit <= 1048576 * 2: # 2MB or less -> Use Cache to prevent socket slamming
-                        CHUNK_SIZE = 1048576
-                        start_chunk = internal_offset // CHUNK_SIZE
-                        end_chunk = (internal_offset + internal_limit - 1) // CHUNK_SIZE
+                    if not getattr(client, "is_connected", False):
+                        await client.connect()
+
+                    current_byte_offset = internal_offset + bytes_yielded_this_part
+                    CHUNK_SIZE = 1048576
+                    chunk_index = current_byte_offset // CHUNK_SIZE
+                    skip_bytes = current_byte_offset % CHUNK_SIZE
+                    
+                    remaining_bytes = internal_limit - bytes_yielded_this_part
+                    total_to_pull = skip_bytes + remaining_bytes
+                    chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
+                    
+                    msg = await get_client_msg(client, chat_id, part["msg_id"])
+                    
+                    async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
+                        if skip_bytes > 0:
+                            if len(chunk) <= skip_bytes:
+                                skip_bytes -= len(chunk)
+                                continue
+                            else:
+                                chunk = chunk[skip_bytes:]
+                                skip_bytes = 0
+                                
+                        if not chunk: continue
                         
-                        result_data = bytearray()
-                        for chunk_idx in range(start_chunk, end_chunk + 1):
-                            chunk_data = await _get_cached_tg_chunk(client, chat_id, part["msg_id"], chunk_idx)
-                            result_data.extend(chunk_data)
+                        chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
+                        if chunk_to_yield:
+                            yield chunk_to_yield
+                            bytes_yielded_this_part += len(chunk_to_yield)
                             
-                        skip_bytes = internal_offset % CHUNK_SIZE
-                        final_bytes = bytes(result_data[skip_bytes : skip_bytes + internal_limit])
-                        yield final_bytes
-                        
-                        current_offset += internal_limit
-                        bytes_needed -= internal_limit
-                        
-                    else:
-                        # Large bulk read -> Use continuous pipelined socket
-                        CHUNK_SIZE = 1048576
-                        chunk_index = internal_offset // CHUNK_SIZE
-                        skip_bytes = internal_offset % CHUNK_SIZE
-                        
-                        import math
-                        total_to_pull = skip_bytes + internal_limit
-                        chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
-                        
-                        msg = await get_client_msg(client, chat_id, part["msg_id"])
-                        bytes_yielded_this_part = 0
-                        
-                        # 🟢 THE REAL FIX: Pass the raw chunk_index and the calculated chunk limit!
-                        async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
-                            if skip_bytes > 0:
-                                if len(chunk) <= skip_bytes:
-                                    skip_bytes -= len(chunk)
-                                    continue
-                                else:
-                                    chunk = chunk[skip_bytes:]
-                                    skip_bytes = 0
-                                    
-                            if not chunk: continue
+                        await asyncio.sleep(0.001) # Yield to event loop to prevent hanging
                             
-                            chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
-                            if chunk_to_yield:
-                                yield chunk_to_yield
-                                bytes_yielded_this_part += len(chunk_to_yield)
-                                
-                            # 🟢 SMART THROTTLE: Keep the TCP socket from overheating during massive fast-paths
-                            await asyncio.sleep(0.01)
-                                
-                            if bytes_yielded_this_part >= internal_limit:
-                                break
-                                
-                        current_offset += internal_limit
-                        bytes_needed -= internal_limit
-                        
+                        if bytes_yielded_this_part >= internal_limit:
+                            break
+                            
+                except (ConnectionResetError, TimeoutError, OSError, aiohttp.client_exceptions.ClientConnectionError) as e:
+                    logger.debug(f"Stream dropped: {e}. Switching bots and resuming...")
+                    bot_index += 1
+                    await asyncio.sleep(1.5)
                 except Exception as e:
-                    logger.error(f"Fast-path stream failed: {e}")
-                    raise e
-        return
+                    if "Connection closed" in str(e) or "Timeout" in str(e) or "reset by peer" in str(e):
+                        logger.debug(f"Stream dropped: {e}. Switching bots and resuming...")
+                        bot_index += 1
+                        await asyncio.sleep(1.5)
+                    else:
+                        raise e
 
-    # ==========================================
-    # MULTI-BOT PARALLEL PATH (Worker Bots Only)
-    # ==========================================
-    end_byte = start_byte + total_length
-    first_block = start_byte // chunk_size
-    last_block = end_byte // chunk_size
-    
-    current_block = first_block
-    bytes_yielded = 0
-
-    while current_block <= last_block:
-        tasks = []
-        batch_count = min(safe_concurrency, (last_block - current_block) + 1)
-        
-        for i in range(batch_count):
-            block_idx = current_block + i
-            block_offset = block_idx * chunk_size
-            
-            part = next((p for p in msg_parts if p["start"] <= block_offset < p["end"]), None)
-            if not part: continue
-            
-            internal_offset = block_offset - part["start"]
-            internal_limit = min(chunk_size, part["size"] - internal_offset)
-            
-            worker_client = working_pool[i % len(working_pool)]
-            
-            # 🟢 SMART THROTTLE: Stagger requests by 50ms so they don't slam Telegram simultaneously
-            if i > 0: await asyncio.sleep(0.05)
-            
-            tasks.append(asyncio.create_task(
-                fetch_single_chunk(worker_client, chat_id, part["msg_id"], internal_offset, internal_limit)
-            ))
-            
-        if not tasks: break
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        for i, res in enumerate(results):
-            if isinstance(res, Exception): 
-                raise res 
-            
-            block_idx = current_block + i
-            block_offset = block_idx * chunk_size
-            valid_data = res
-            
-            if block_idx == first_block:
-                skip = start_byte - block_offset
-                valid_data = valid_data[skip:]
-                
-            yield_len = min(len(valid_data), total_length - bytes_yielded)
-            if yield_len > 0:
-                yield valid_data[:yield_len]
-                bytes_yielded += yield_len
-                
-        current_block += batch_count
-
+            current_offset += internal_limit
+            bytes_needed -= internal_limit
 
 USER_WORKER_BOTS = defaultdict(list)
 
