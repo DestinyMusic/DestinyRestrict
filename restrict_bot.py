@@ -5146,9 +5146,13 @@ HTML_DASHBOARD = """
                             <button onclick="toggleSettingsPopup()" style="background: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: bold; cursor: pointer;">Close ✕</button>
                         </div>
                         
-                        <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                            <button class="primary-btn" style="padding: 8px; font-size: 11px; background: #ea580c;" onclick="openExternalPlayer('vlc')">Open in VLC</button>
-                            <button class="primary-btn" style="padding: 8px; font-size: 11px; background: #2563eb;" onclick="openExternalPlayer('mx')">Open in MX</button>
+                        <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">EXTERNAL PLAYERS</label>
+                        <div style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;">
+                            <button class="primary-btn" style="padding: 8px 12px; font-size: 11px; background: #ea580c; width: auto;" onclick="openExternalPlayer('vlc')">VLC</button>
+                            <button class="primary-btn" style="padding: 8px 12px; font-size: 11px; background: #2563eb; width: auto;" onclick="openExternalPlayer('mx')">MX Player</button>
+                            <button class="primary-btn" style="padding: 8px 12px; font-size: 11px; background: #8b5cf6; width: auto;" onclick="openExternalPlayer('mpv')">MPV</button>
+                            <button class="primary-btn" style="padding: 8px 12px; font-size: 11px; background: #f59e0b; width: auto;" onclick="openExternalPlayer('infuse')">Infuse</button>
+                            <button class="primary-btn" style="padding: 8px 12px; font-size: 11px; background: #10b981; width: auto;" onclick="openExternalPlayer('outplayer')">Outplayer</button>
                         </div>
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">VIDEO QUALITY</label>
@@ -7540,19 +7544,40 @@ HTML_DASHBOARD = """
 
         function openExternalPlayer(appType) {
             if (!activeMediaLink) return alert("Please load a stream first!");
-            const streamUrl = window.location.origin + (playerDirectCompatible ? buildNativeUrl() : buildStreamUrl());
+            let streamUrl = window.location.origin + (playerDirectCompatible ? buildNativeUrl() : buildStreamUrl());
             
-            // Detect Apple devices specifically for the x-callback requirement
-            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            // 1. Get the actual file name from the UI title
+            let title = document.getElementById('cinema-title')?.innerText || "Media Stream";
+            
+            // 2. URL TRICK: Append a fake filename to the end of the URL.
+            // Many players (especially on iOS/PC) parse the URL string to guess the file name!
+            let safeTitle = encodeURIComponent(title.replace(/[^a-zA-Z0-9.\-_ ()]/g, '_'));
+            if (!streamUrl.includes('&/')) {
+                streamUrl += `&/${safeTitle}`;
+            }
 
+            const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+            const isAndroid = /Android/.test(navigator.userAgent);
+
+            // 3. Android uses Android Intents which support explicit "S.title" extras to force the exact title!
             if (appType === 'vlc') {
-                if (isIOS) {
+                if (isAndroid) {
+                    window.location.href = `intent:${streamUrl}#Intent;package=org.videolan.vlc;type=video/*;S.title=${encodeURIComponent(title)};end`;
+                } else if (isIOS) {
                     window.location.href = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(streamUrl)}`;
                 } else {
                     window.location.href = `vlc://${streamUrl}`;
                 }
             } else if (appType === 'mx') {
-                window.location.href = `intent:${streamUrl}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;end`;
+                window.location.href = `intent:${streamUrl}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;S.title=${encodeURIComponent(title)};end`;
+            } else if (appType === 'mpv') {
+                window.location.href = `intent:${streamUrl}#Intent;package=is.xyz.mpv;type=video/*;S.title=${encodeURIComponent(title)};end`;
+            } else if (appType === 'infuse') {
+                // Infuse (Apple/iOS/Mac)
+                window.location.href = `infuse://x-callback-url/play?url=${encodeURIComponent(streamUrl)}`;
+            } else if (appType === 'outplayer') {
+                // Outplayer (iOS)
+                window.location.href = `outplayer://url/${streamUrl}`;
             }
         }
 
