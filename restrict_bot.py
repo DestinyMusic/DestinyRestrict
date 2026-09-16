@@ -9384,15 +9384,15 @@ def _guess_browser_compatibility(mime_type, filename, streams):
     if mime == "video/webm" or ext == ".webm":
         return vc in {"vp8", "vp9", "av1"} and ac not in bad_audio
 
-    # MP4/M4V native route. H.264/HEVC/VP9/AV1 are allowed here; the
+    # MP4/M4V native route. H.264/VP9/AV1 are allowed here; the
     # browser-side player separately remains conservative about audio.
     if ext in {".mp4", ".m4v"} or mime in {"video/mp4", "application/mp4"}:
+        # 🟢 FIX 1: Removed 'hevc', 'h265', 'hvc1'. Chrome/Firefox/Android CANNOT play HEVC natively!
         return vc in {
-            "h264", "avc", "avc1", "hevc", "h265", "hvc1", "vp9", "av1"
+            "h264", "avc", "avc1", "vp9", "av1"
         } and ac not in bad_audio
 
     return False
-
 
 async def _run_ffprobe_json(input_url, fast=True):
     """Fast probe first; retry with a larger probe only when the small probe fails."""
@@ -9887,8 +9887,14 @@ async def _api_stream_handler(request):
     else:
         copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'flac'} or (audio_idx is None and quality == 'Original' and not force_transcode)
         
-    # 🟢 FIX: If the browser rejected HEVC, force x264 encoding while keeping original resolution
-    copy_video = quality == "Original" and not force_x264 
+    # 🟢 FIX 2: If the file is HEVC/x265, we MUST force a transcode to H.264 (libx264).
+    # If we copy HEVC, the web browser will show a black screen and crash!
+    unsupported_web_codecs = {"hevc", "h265", "hvc1", "x265"}
+    if video_codec in unsupported_web_codecs:
+        copy_video = False
+    else:
+        copy_video = quality == "Original" and not force_x264 
+        
     res_scale_map = {"4K":"3840:-2", "1080p":"1920:-2", "720p":"1280:-2", "480p":"854:-2", "360p":"640:-2"}
     scale_filter = res_scale_map.get(quality)
 
