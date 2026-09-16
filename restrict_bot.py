@@ -7904,6 +7904,15 @@ HTML_DASHBOARD = """
                 wakeHUD();
                 if (playerRequiresTranscode && playerTotalDuration > 0 && globalTargetTime < playerTotalDuration - 5) {
                     console.log("[DEBUG] Stream ended prematurely. Reconnecting...");
+                    
+                    // 🟢 FIX: Prevent endless loop if video actually failed!
+                    if (window.endedRetryCount > 3) {
+                        const titleEl = document.getElementById('cinema-title');
+                        if (titleEl) titleEl.innerText = '⚠️ Stream interrupted too many times.';
+                        return;
+                    }
+                    window.endedRetryCount = (window.endedRetryCount || 0) + 1;
+
                     playerTimelineOffset = globalTargetTime || 0;
                     try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
                 }
@@ -7915,12 +7924,11 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('stalled', () => { 
                 triggerStallRecovery(); 
             });
-            let errorRetryCount = 0; // 🟢 FIX 2: Track playback errors
-            
             vidElem.addEventListener('playing', () => { 
-                clearTimeout(stallTimer); // 🟢 Cancel reconnect if data arrives!
+                clearTimeout(stallTimer); 
                 isTranscodeSeeking = false;
-                errorRetryCount = 0; // 🟢 Reset error tracker on successful playback
+                window.errorRetryCount = 0; 
+                window.endedRetryCount = 0; // 🟢 Reset loop tracker on success
                 if (bigPlay) bigPlay.innerHTML = pauseSvg; 
             });
             vidElem.addEventListener('loadedmetadata', () => { 
@@ -9881,15 +9889,17 @@ async def _api_stream_handler(request):
             filename = meta.get("file_name").lower()
 
     # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
+    unsupported_web_codecs = {"hevc", "h265", "hvc1", "x265"}
+    needs_video_transcode = video_codec in unsupported_web_codecs or force_x264 or quality != "Original"
+
     bad_audio = {"dts", "truehd", "ac3", "eac3"}
-    if audio_codec in bad_audio:
+    # 🟢 FIX: If we are transcoding the video for web compatibility, we MUST also force the audio to transcode!
+    # Browsers instantly crash or loop endlessly when fed 5.1/6-channel audio inside a fragmented MP4!
+    if audio_codec in bad_audio or needs_video_transcode:
         copy_audio = False
     else:
-        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'flac'} or (audio_idx is None and quality == 'Original' and not force_transcode)
+        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'flac'} or (audio_idx is None and not force_transcode)
         
-    # 🟢 FIX 2: If the file is HEVC/x265, we MUST force a transcode to H.264 (libx264).
-    # If we copy HEVC, the web browser will show a black screen and crash!
-    unsupported_web_codecs = {"hevc", "h265", "hvc1", "x265"}
     if video_codec in unsupported_web_codecs:
         copy_video = False
     else:
@@ -9937,7 +9947,7 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            cmd += ["-c:a", "aac", "-b:a", "192k"]
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
         cmd += ["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
     else:
         cmd += ["-map", "0:v:0?"]
@@ -9949,7 +9959,6 @@ async def _api_stream_handler(request):
 
         if copy_video and not scale_filter:
             cmd += ["-c:v", "copy"]
-            # 🟢 FIX: Ensure HEVC/VP9 mux correctly into fragmented MP4 container
             if video_codec in {"hevc", "h265", "hvc1"}:
                 cmd += ["-tag:v", "hvc1"]
             elif video_codec in {"vp9", "vp8", "av1"}:
@@ -9964,9 +9973,8 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            cmd += ["-c:a", "aac", "-b:a", "192k"]
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
 
-        # 🟢 FIX: Added '-max_muxing_queue_size 9999' so audio/video stays perfectly glued together even at infinite download speeds
         cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
