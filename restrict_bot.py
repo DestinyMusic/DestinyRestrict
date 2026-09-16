@@ -10013,29 +10013,68 @@ async def _api_stream_handler(request):
     )
     import aiohttp
     
-    # 🟢 iOS FIX: Universal Live Stream Headers
-    # The previous "Fake 206" hack actively broke iOS! Safari parses Fragmented MP4s as Live Streams.
-    # Giving it a fake 2GB size caused Safari to reject the stream as "corrupted".
-    # A clean 200 OK with no Content-Length tells Apple devices to continuously buffer the stream indefinitely.
+    # 🟢 FIX: Separate HTTP Header logic strictly for iOS/Apple devices!
+    user_agent = request.headers.get("User-Agent", "").lower()
+    is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
+
     stream_headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-store",
-        "Accept-Ranges": "none",
-        "Connection": "keep-alive"
     }
 
-    response = web.StreamResponse(status=200, headers=stream_headers)
+    apple_target_length = None
+    if is_apple:
+        stream_headers["Accept-Ranges"] = "bytes"
+        client_range = request.headers.get("Range", "")
+        if client_range:
+            start_byte = 0
+            end_byte = 2147483647 # Fake 2GB Maximum
+            
+            match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
+            if match:
+                if match.group(1): start_byte = int(match.group(1))
+                if match.group(2): end_byte = int(match.group(2))
+                
+            fake_total = 2147483648
+            end_byte = min(end_byte, fake_total - 1)
+            
+            # Mathematical compliance for Safari's strict AVPlayer parser
+            stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
+            
+            apple_target_length = end_byte - start_byte + 1
+            stream_headers["Content-Length"] = str(apple_target_length)
+            status_code = 206
+        else:
+            stream_headers["Content-Length"] = "2147483648"
+            status_code = 200
+    else:
+        # ULTRA-STABLE 200 OK RESPONSE FOR CHROME, ANDROID, WINDOWS
+        stream_headers["Accept-Ranges"] = "none"
+        status_code = 200
+
+    response = web.StreamResponse(status=status_code, headers=stream_headers)
 
     try:
         await response.prepare(request)
+        bytes_sent = 0
         while True:
-            # 🟢 FIX: Lowered to 256KB! 1MB causes FFmpeg to hold frames back until the 1MB buffer fills up.
-            # 256KB allows FFmpeg to stream transcoded audio/video frames to the TV instantly, eliminating the spinner.
             buf = await proc.stdout.read(262144) 
             if not buf:
                 break
+                
+            # 🟢 FIX: If Safari only asked for a specific chunk size (e.g., 2 bytes for a probe),
+            # we MUST forcefully truncate the data and close the stream. 
+            # If we send more data than we promised in the Content-Length, Safari instantly kills playback!
+            if is_apple and apple_target_length is not None:
+                if bytes_sent + len(buf) >= apple_target_length:
+                    buf = buf[:apple_target_length - bytes_sent]
+                    await response.write(buf)
+                    break
+                    
             await response.write(buf)
+            bytes_sent += len(buf)
+            
         await response.write_eof()
     except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
         pass
