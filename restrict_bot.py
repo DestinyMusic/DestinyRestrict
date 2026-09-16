@@ -10013,23 +10013,40 @@ async def _api_stream_handler(request):
     )
     import aiohttp
     
-    # 🟢 iOS SAFARI HACK: Apple AVPlayer demands a 206 Partial Content response for MP4s.
-    # However, since FFmpeg generates a live pipe, we cannot slice byte ranges dynamically.
-    # We MUST ignore Safari's requested range (e.g. 0-1) and forcefully return the full faked 2GB range.
-    # This tricks Safari into accepting the stream continuously without looping FFmpeg or crashing!
-    # 🟢 FIX 2: Replicate engine.py headers. Send a pure 200 OK stream with NO Content-Length.
-    # This forces the browser to treat the FFmpeg pipe as a continuous Live Stream.
-    # It completely prevents Chrome/Safari from disconnecting and looping endlessly!
+    # 🟢 FIX: Separate HTTP Header logic strictly for iOS/Apple devices!
+    # Safari and Apple AVPlayer categorically reject piped MP4 streams if they receive a 200 OK.
+    # They STRICTLY require a 206 Partial Content response with a fake byte range to initialize playback.
+    user_agent = request.headers.get("User-Agent", "").lower()
+    is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
+
     stream_headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
-        "Cache-Control": "no-cache",
-        "Accept-Ranges": "none" 
+        "Cache-Control": "no-store",
     }
 
-    # We ignore the browser's Byte-Range requests entirely. 
-    # Seeking is handled mathematically by FFmpeg via the &start= seconds URL parameter!
-    response = web.StreamResponse(status=200, headers=stream_headers)
+    if is_apple:
+        # FAKE 206 RESPONSE FOR APPLE DEVICES ONLY
+        stream_headers["Access-Control-Expose-Headers"] = "Content-Length, Content-Range, Accept-Ranges"
+        stream_headers["Accept-Ranges"] = "bytes"
+        client_range = request.headers.get("Range", "")
+        if client_range:
+            start_byte = "0"
+            match = re.search(r"bytes=(\d+)-", client_range)
+            if match:
+                start_byte = match.group(1)
+            stream_headers["Content-Range"] = f"bytes {start_byte}-2147483647/2147483648"
+            stream_headers["Content-Length"] = str(2147483648 - int(start_byte))
+            status_code = 206
+        else:
+            stream_headers["Content-Length"] = "2147483648"
+            status_code = 200
+    else:
+        # ULTRA-STABLE 200 OK RESPONSE FOR CHROME, ANDROID, WINDOWS
+        stream_headers["Accept-Ranges"] = "none"
+        status_code = 200
+
+    response = web.StreamResponse(status=status_code, headers=stream_headers)
 
     try:
         await response.prepare(request)
@@ -12210,3 +12227,4 @@ if __name__ == "__main__":
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         pass
+        
