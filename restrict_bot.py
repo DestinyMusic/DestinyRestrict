@@ -10211,7 +10211,6 @@ async def _api_tg_stream_handler(request):
             
         is_metadata_probe = chunk_len < 52428800 # 50 MB
         
-        # 🟢 PER-USER IP LOCK: Prevents sharing interference
         client_ip = request.remote or "unknown_ip"
         lock_key = f"{user_id}_{chat_id}_{msg_id}_{client_ip}"
         
@@ -10536,10 +10535,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     if total_length <= 0:
         return
 
-    test_msg_id = msg_parts[0]["msg_id"]
     working_pool = []
-    
-    # Safely get the user ID
     user_id = 0
     if fallback_client in USER_CLIENTS.values():
         for uid, candidate in USER_CLIENTS.items():
@@ -10547,31 +10543,25 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 user_id = uid
                 break
 
-    # Add all active worker bots to the pool
     user_worker_bots = list(USER_WORKER_BOTS.get(user_id, []))
     for c in user_worker_bots:
         try:
-            if not getattr(c, "is_connected", False):
-                await c.connect()
-            working_pool.append(c)
-        except Exception:
-            pass
+            if getattr(c, "is_connected", False):
+                working_pool.append(c)
+        except Exception: pass
             
-    # Add the user session to the pool as a fallback
     if fallback_client:
         try:
-            if not getattr(fallback_client, "is_connected", False):
-                await fallback_client.connect()
-            working_pool.append(fallback_client)
-        except Exception:
-            pass
+            if getattr(fallback_client, "is_connected", False):
+                working_pool.append(fallback_client)
+        except Exception: pass
 
     if not working_pool:
         working_pool = [app]
 
     bytes_needed = total_length
     current_offset = start_byte
-    bot_index = 0 # Used to rotate bots if one fails
+    bot_index = 0 
 
     for part in msg_parts:
         if bytes_needed <= 0: break
@@ -10582,52 +10572,25 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
             bytes_yielded_this_part = 0
             
             while bytes_yielded_this_part < internal_limit:
-                # 🟢 Automatically rotate to the next bot in the pool if the current one dropped!
                 client = working_pool[bot_index % len(working_pool)]
                 try:
                     if not getattr(client, "is_connected", False):
                         await client.connect()
 
                     current_byte_offset = internal_offset + bytes_yielded_this_part
-                    CHUNK_SIZE = 1048576
-                    chunk_index = current_byte_offset // CHUNK_SIZE
-                    skip_bytes = current_byte_offset % CHUNK_SIZE
-                    
-                    remaining_bytes = internal_limit - bytes_yielded_this_part
-                    total_to_pull = skip_bytes + remaining_bytes
-                    import math
-                    chunks_to_fetch = math.ceil(total_to_pull / CHUNK_SIZE)
-                    
                     msg = await get_client_msg(client, chat_id, part["msg_id"])
                     
-                    async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunks_to_fetch):
-                        if skip_bytes > 0:
-                            if len(chunk) <= skip_bytes:
-                                skip_bytes -= len(chunk)
-                                continue
-                            else:
-                                chunk = chunk[skip_bytes:]
-                                skip_bytes = 0
-                                
+                    # 🟢 THE FIX: Continuous stream. No rapid-fire 1MB chunks. No DDoS bans!
+                    async for chunk in client.stream_media(msg, offset=current_byte_offset, limit=(internal_limit - bytes_yielded_this_part)):
                         if not chunk: continue
-                        
-                        chunk_to_yield = chunk[:internal_limit - bytes_yielded_this_part]
-                        if chunk_to_yield:
-                            yield chunk_to_yield
-                            bytes_yielded_this_part += len(chunk_to_yield)
-                            
+                        yield chunk
+                        bytes_yielded_this_part += len(chunk)
                         await asyncio.sleep(0.001) # Yield to event loop to prevent hanging
                             
-                        if bytes_yielded_this_part >= internal_limit:
-                            break
-                            
-                except (ConnectionResetError, TimeoutError, OSError, aiohttp.client_exceptions.ClientConnectionError) as e:
-                    logger.debug(f"Stream dropped: {e}. Switching bots and resuming...")
-                    bot_index += 1
-                    await asyncio.sleep(1.5)
                 except Exception as e:
-                    if "Connection closed" in str(e) or "Timeout" in str(e) or "reset by peer" in str(e):
-                        logger.debug(f"Stream dropped: {e}. Switching bots and resuming...")
+                    err_str = str(e).lower()
+                    if "connection closed" in err_str or "timeout" in err_str or "reset by peer" in err_str or "flood" in err_str:
+                        logger.debug(f"Stream interrupted. Rotating to next bot...")
                         bot_index += 1
                         await asyncio.sleep(1.5)
                     else:
