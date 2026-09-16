@@ -4669,10 +4669,11 @@ HTML_DASHBOARD = """
             will-change: width, height, transform;
         }
 
-        /* iPadOS WebKit fix: keep opacity at 1 so Safari does not suspend decoding. The opaque WebGL canvas covers it. */
+        /* 🟢 FIX 1: Make the feed 99% transparent so Apple WebKit still decodes it, 
+           but it doesn't bleed out and stretch behind the WebGL canvas on mobile portrait! */
         .hidden-video-feed {
             position: absolute; inset: 0; width: 100%; height: 100%;
-            object-fit: fill; opacity: 1; pointer-events: none; z-index: 1;
+            object-fit: contain; opacity: 0.01; pointer-events: none; z-index: 1;
         }
 
         /* iPad / PWA CSS Fullscreen Fallback */
@@ -7330,33 +7331,40 @@ HTML_DASHBOARD = """
             const canvas = document.getElementById('webgl-canvas');
             
             if (overlay) {
-                overlay.style.bottom = 'auto'; 
-                
                 if (canvas && canvas.style.display !== 'none') {
-                    // Portrait/Letterbox Fix: Calculate position strictly within the active video bounds
+                    // 🟢 FIX 2a: Lock subtitles dynamically to the mathematical BOTTOM edge of the video, NOT the viewport top!
                     const viewportHeight = overlay.parentElement.clientHeight;
-                    const canvasHeight = canvas.clientHeight || viewportHeight;
+                    const canvasHeight = parseFloat(canvas.style.height) || viewportHeight;
                     const topEdge = (viewportHeight - canvasHeight) / 2;
+                    const bottomEdge = (viewportHeight - canvasHeight) / 2;
                     
                     if (overlay.dataset.isTop === 'true') {
                         overlay.style.top = `${Math.max(0, topEdge + (canvasHeight * 0.10))}px`;
+                        overlay.style.bottom = 'auto';
                     } else {
-                        overlay.style.top = `${Math.max(0, topEdge + (canvasHeight * (pos / 100)))}px`; 
+                        overlay.style.top = 'auto';
+                        overlay.style.bottom = `${Math.max(0, bottomEdge + (canvasHeight * ((100 - pos) / 100)))}px`; 
                     }
                 } else {
-                    // Fallback if audio-only or canvas is missing
                     if (overlay.dataset.isTop === 'true') {
                         overlay.style.top = '10%';
+                        overlay.style.bottom = 'auto';
                     } else {
-                        overlay.style.top = `${pos}%`; 
+                        overlay.style.top = 'auto';
+                        overlay.style.bottom = `${100 - pos}%`; 
                     }
                 }
-                
                 overlay.style.alignItems = 'center'; 
             }
 
+            // 🟢 FIX 2b: Dynamically shrink subtitle font size on narrow mobile portrait screens
+            let responsiveSize = size;
+            if (window.innerWidth < 600) {
+                responsiveSize = Math.max(12, size * 0.65); // Scale down 35% on mobile phones
+            }
+
             document.querySelectorAll('#subtitle-overlay .subtitle-text').forEach(text => {
-                text.style.fontSize = `${size}px`;
+                text.style.fontSize = `${responsiveSize}px`;
                 text.style.color = fg;
                 text.style.background = hexToRgba(bg, alpha);
                 text.style.fontFamily = font;
