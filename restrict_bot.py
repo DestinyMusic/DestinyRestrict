@@ -4698,17 +4698,18 @@ HTML_DASHBOARD = """
             transition: opacity 0.25s ease, transform 0.25s ease;
         }
         .subtitle-text {
-            max-width: 92%;
+            max-width: 95%;
             white-space: pre-wrap;
             overflow-wrap: anywhere;
             line-height: 1.35;
-            font-size: 24px;
+            font-size: 20px;
             font-weight: 600;
             color: #ffffff;
             background: rgba(0, 0, 0, 0.70);
             border-radius: 7px;
             padding: 4px 10px;
             text-shadow: 0 2px 4px rgba(0,0,0,0.95);
+            text-align: center; /* 🟢 FIX: This ensures the text itself is perfectly centered when it breaks into 2 lines */
         }
         .cinema-viewport.fullscreen-subtitle .subtitle-overlay { bottom: 13%; }
 
@@ -5249,9 +5250,9 @@ HTML_DASHBOARD = """
                             <option value="14">14 px</option>
                             <option value="16">16 px</option>
                             <option value="18">18 px</option>
-                            <option value="20">20 px</option>
+                            <option value="20" selected>20 px</option> <!-- 🟢 FIX: Moved 'selected' to 20px -->
                             <option value="22">22 px</option>
-                            <option value="26" selected>26 px</option>
+                            <option value="26">26 px</option>
                             <option value="30">30 px</option>
                             <option value="36">36 px</option>
                             <option value="42">42 px</option>
@@ -5282,7 +5283,7 @@ HTML_DASHBOARD = """
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold; margin-top: 10px;">SUBTITLE WIDTH (STRETCH LINES)</label>
                         <div style="display: flex; gap: 8px; margin-bottom: 14px; align-items: center;">
                             <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">NARROW</span>
-                            <input id="subtitle-width-slider" type="range" min="30" max="100" value="92" oninput="applySubtitleStyle()" style="flex: 1; accent-color: var(--accent);">
+                            <input id="subtitle-width-slider" type="range" min="30" max="100" value="95" oninput="applySubtitleStyle()" style="flex: 1; accent-color: var(--accent);"> <!-- 🟢 FIX: Changed default value to 95 -->
                             <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">WIDE</span>
                         </div>
 
@@ -7316,7 +7317,7 @@ HTML_DASHBOARD = """
         }
 
         function applySubtitleStyle() {
-            const size = Number(document.getElementById('subtitle-size-select')?.value || 26);
+            const size = Number(document.getElementById('subtitle-size-select')?.value || 20); // 🟢 FIX: Fallback to 20px
             const fg = document.getElementById('subtitle-color-input')?.value || '#ffffff';
             const bg = document.getElementById('subtitle-bg-input')?.value || '#000000';
             const alpha = Math.max(0, Math.min(100, Number(document.getElementById('subtitle-bg-alpha')?.value || 70))) / 100;
@@ -7325,7 +7326,7 @@ HTML_DASHBOARD = """
             const weight = document.getElementById('subtitle-weight-select')?.value || '600';
             
             const pos = document.getElementById('subtitle-pos-slider')?.value || 88;
-            const stretch = document.getElementById('subtitle-width-slider')?.value || 92;
+            const stretch = document.getElementById('subtitle-width-slider')?.value || 95; // 🟢 FIX: Fallback to 95% width
             
             const overlay = document.getElementById('subtitle-overlay');
             const canvas = document.getElementById('webgl-canvas');
