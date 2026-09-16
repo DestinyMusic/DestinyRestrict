@@ -9148,48 +9148,117 @@ async def _direct_upstream_request(url, request):
     return session, resp, resolved
 
 async def _api_direct_stream_handler(request):
-    """Native direct-link proxy with full HTTP Range support and keep-alive reuse."""
+    """Native direct-link proxy with full HTTP Range support, keep-alive reuse, and STORED ZIP resolution."""
     url = request.query.get("url", "").strip()
-    logger.info(f"🌐 [DIRECT STREAM] Proxying {request.method} Range request for: {url[:100]}...")
+    logger.info(f"🌐 [DIRECT STREAM] Proxying {request.method} request for: {url[:100]}...")
     if not url or not url.lower().startswith(("http://", "https://")):
         return web.Response(status=400, text="Invalid direct media URL")
 
+    resolved = await resolve_direct_link(url)
+    filename = _guess_filename_from_url(resolved, "direct_media").lower()
+    is_zip = filename.endswith(".zip") or ".zip." in filename
+    
+    session = await _get_direct_http_session()
+    virtual_size = -1
+    virtual_data_offset = 0
+    mime_type = None
+
+    # [STORED ZIP RESOLUTION] - Maps HTTP bytes to absolute payload boundaries
+    if is_zip:
+        try:
+            async with session.head(resolved, allow_redirects=True) as h_resp:
+                raw_size = int(h_resp.headers.get("Content-Length", 0))
+            
+            if raw_size > 0:
+                async def zip_read_http(off, length):
+                    headers = {"Range": f"bytes={off}-{off+length-1}", "User-Agent": "Mozilla/5.0"}
+                    async with session.get(resolved, headers=headers) as r:
+                        return await r.read()
+                        
+                entry = await resolve_zip_entry(zip_read_http, raw_size)
+                if entry and entry["method"] == 0:
+                    virtual_size = entry["size"]
+                    virtual_data_offset = entry["data_offset"]
+                    mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
+        except Exception as e:
+            logger.warning(f"Direct ZIP resolution failed: {e}")
+
+    # Construct payload-aligned Range Headers
+    req_headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
+    }
+    
+    client_range = request.headers.get("Range", "")
+    start_byte = 0
+    end_byte = None
+    
+    if client_range:
+        match = re.match(r"bytes=(\d*)-(\d*)", client_range)
+        if match:
+            if match.group(1): start_byte = int(match.group(1))
+            if match.group(2): end_byte = int(match.group(2))
+    
+    if virtual_size > 0:
+        if end_byte is None or end_byte >= virtual_size:
+            end_byte = virtual_size - 1
+        real_start = start_byte + virtual_data_offset
+        real_end = end_byte + virtual_data_offset
+        req_headers["Range"] = f"bytes={real_start}-{real_end}"
+    else:
+        if client_range:
+            req_headers["Range"] = client_range
+
+    # Propagate necessary headers
+    for header in ("If-Range", "If-Modified-Since", "If-None-Match", "Cookie", "Referer"):
+        val = request.headers.get(header)
+        if val: req_headers[header] = val
+
     try:
-        session, remote, resolved = await _direct_upstream_request(url, request)
+        remote = await session.request(
+            method=request.method,
+            url=resolved,
+            headers=req_headers,
+            allow_redirects=True,
+        )
     except Exception as exc:
         return web.Response(status=502, text=f"Direct source connection failed: {exc}")
 
-    copy_headers = (
-        "Content-Type", "Content-Length", "Content-Range", "Accept-Ranges",
-        "Content-Disposition", "ETag", "Last-Modified", "Cache-Control", "Expires",
-    )
-    out_headers = {k: remote.headers[k] for k in copy_headers if remote.headers.get(k) is not None}
-    out_headers.setdefault("Content-Type", "application/octet-stream")
-    out_headers["Access-Control-Allow-Origin"] = "*"
-    out_headers["Access-Control-Expose-Headers"] = (
-        "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, "
-        "ETag, Last-Modified, Cache-Control"
-    )
-    if "Cache-Control" not in out_headers:
-        out_headers["Cache-Control"] = "public, max-age=300"
+    # Stream Headers Formulation
+    out_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, ETag, Last-Modified, Cache-Control",
+        "Cache-Control": "public, max-age=300",
+        "Accept-Ranges": "bytes"
+    }
+    
+    if virtual_size > 0:
+        out_headers["Content-Type"] = mime_type
+        chunk_len = end_byte - start_byte + 1
+        out_headers["Content-Length"] = str(chunk_len)
+        out_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{virtual_size}"
+        out_status = 206 if client_range else 200
+    else:
+        copy_headers = ("Content-Type", "Content-Length", "Content-Range", "Content-Disposition", "ETag", "Last-Modified")
+        for k in copy_headers:
+            if remote.headers.get(k) is not None:
+                out_headers[k] = remote.headers[k]
+        out_headers.setdefault("Content-Type", "application/octet-stream")
+        out_status = remote.status
 
-    # 🟢 FAST-PROBE FIX: Return instantly for HEAD requests to unblock FFprobe
     if request.method == "HEAD":
         remote.release()
-        return web.Response(status=remote.status, headers=out_headers)
+        return web.Response(status=out_status, headers=out_headers)
 
-    response = web.StreamResponse(status=remote.status, headers=out_headers)
+    response = web.StreamResponse(status=out_status, headers=out_headers)
     try:
         await response.prepare(request)
-        # 🟢 FIX: Restored fixed chunking. 'iter_any()' on 10GB files causes 80MB+ memory dumps that lock Python's GIL.
-        # 512KB is the perfect buffer size for sustained 100Mbps+ streaming without micro-freezes.
         async for chunk in remote.content.iter_chunked(524288):
             if chunk:
                 await response.write(chunk)
         await response.write_eof()
         return response
     except (ConnectionResetError, asyncio.CancelledError, aiohttp.ClientConnectionError, aiohttp.client_exceptions.ClientConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-        # Gracefully exit on seek/close rather than raising an uncaught exception
         return response
     except Exception as exc:
         if "Connection closed" not in str(exc):
@@ -9199,11 +9268,8 @@ async def _api_direct_stream_handler(request):
         try:
             remote.release()
         except Exception:
-            try:
-                remote.close()
-            except Exception:
-                pass
-
+            try: remote.close()
+            except: pass
 
 MEDIA_META_CACHE = {}
 MEDIA_META_TTL = 600
@@ -9365,8 +9431,8 @@ async def _probe_tg_client(client, chat_id, msg_id):
 
 
 async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
-    """Return accessible bot clients first, then one user-session fallback."""
-    key = (chat_id, int(msg_id))
+    """Return accessible bot clients first, then one user-session fallback. Strictly scoped to user_id."""
+    key = (user_id, chat_id, int(msg_id))
     cached = TG_ACCESS_CACHE.get(key)
     now = time.time()
     if cached and cached[1] > now:
@@ -9433,8 +9499,8 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
         return [], False
 
 
-async def _invalidate_tg_access(chat_id, msg_id, client=None):
-    key = (chat_id, int(msg_id))
+async def _invalidate_tg_access(user_id, chat_id, msg_id, client=None):
+    key = (user_id, chat_id, int(msg_id))
     cached = TG_ACCESS_CACHE.get(key)
     if not cached:
         return
@@ -10463,8 +10529,8 @@ TG_CHUNK_CACHE = {}
 TG_CHUNK_CACHE_MAX_SIZE = 128
 TG_CHUNK_LOCKS = defaultdict(asyncio.Lock)
 
-async def _get_cached_tg_chunk_pool(working_pool, chat_id, msg_id, chunk_index):
-    cache_key = (chat_id, msg_id, chunk_index)
+async def _get_cached_tg_chunk_pool(user_id, working_pool, chat_id, msg_id, chunk_index):
+    cache_key = (user_id, chat_id, msg_id, chunk_index)
     async with TG_CHUNK_LOCKS[cache_key]:
         if cache_key in TG_CHUNK_CACHE:
             return TG_CHUNK_CACHE[cache_key]
@@ -10603,7 +10669,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 
                 import asyncio
                 # 🟢 Pass the ENTIRE pool into the smart cache so it can rotate bots instantly!
-                chunk_task = asyncio.create_task(_get_cached_tg_chunk_pool(working_pool, chat_id, part["msg_id"], chunk_index))
+                chunk_task = asyncio.create_task(_get_cached_tg_chunk_pool(user_id, working_pool, chat_id, part["msg_id"], chunk_index))
                 chunk_data = await asyncio.shield(chunk_task)
                 
                 if skip_bytes > 0:
