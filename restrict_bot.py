@@ -7529,6 +7529,7 @@ HTML_DASHBOARD = """
                 quality,
                 transcode: playerRequiresTranscode ? '1' : '0'
             });
+            if (window.forceX264Flag) params.set('force_x264', '1'); // 🟢 FIX: Tell Backend to Transcode HEVC
             if (audioIdx !== '') params.set('audio_idx', audioIdx);
             if (audioCodec) params.set('audio_codec', audioCodec);
             if (Number.isFinite(startTime) && startTime > 0) params.set('start', String(startTime));
@@ -7741,6 +7742,8 @@ HTML_DASHBOARD = """
         }
 
         async function loadTheaterMedia() {
+            window.forceX264Flag = false; // 🟢 Reset transcoder flag
+            window.errorRetryCount = 0;   // 🟢 Reset error tracker
             const input = document.getElementById('theater-stream-url');
             const link = input?.value.trim() || '';
             if (!link) return alert('Provide a valid Telegram or HTTP media link!');
@@ -7970,34 +7973,23 @@ HTML_DASHBOARD = """
                 const mediaError = vidElem.error;
                 console.warn('Video element error:', mediaError);
                 
-                // 🟢 FIX 2: Prevent infinite reload loops on unsupported codecs!
-                if (errorRetryCount > 1) {
-                    console.log("[DEBUG] Max error retries reached. Stopping loop.");
+                // 🟢 PREVENT ENDLESS LOOP: Stop trying if it fails twice
+                if (window.errorRetryCount > 1) {
                     const titleEl = document.getElementById('cinema-title');
                     if (titleEl) titleEl.innerText = '⚠️ Playback Error: Browser Unsupported Format.';
                     return;
                 }
-                errorRetryCount++;
+                window.errorRetryCount = (window.errorRetryCount || 0) + 1;
 
                 if (activeMediaLink) {
-                    console.log("[DEBUG] Stream error. Auto-switching mode. Reconnecting from:", globalTargetTime);
+                    console.log("[DEBUG] Browser rejected codec (HEVC). Forcing H.264 Transcode...");
                     playerRequiresTranscode = true;
+                    window.forceX264Flag = true; // 🟢 FIX: Switch from Copy to X264 Transcode
                     playerTimelineOffset = globalTargetTime || 0;
                     
-                    // 🟢 FIX 2: If the browser rejected the "Original" HEVC/MKV copy, force H.264 Transcode!
-                    const qSelect = document.getElementById('pop-quality-select');
-                    if (qSelect && qSelect.value === 'Original') {
-                        for (let opt of qSelect.options) {
-                            if (opt.value !== 'Original') {
-                                qSelect.value = opt.value; // Switches to 1080p or 720p
-                                break;
-                            }
-                        }
-                    }
-
                     setTimeout(async () => {
                         try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
-                    }, 2000);
+                    }, 1500); 
                 }
                 wakeHUD();
             });
@@ -9811,6 +9803,7 @@ async def _api_stream_handler(request):
     audio_codec = request.query.get("audio_codec", "").lower().strip()
     start_time = request.query.get("start", None)
     force_transcode = request.query.get("transcode", "") in ("1", "true")
+    force_x264 = request.query.get("force_x264", "") == "1" # 🟢 NEW FLAG
     if not link:
         return web.Response(status=400, text="No link provided")
 
@@ -9894,7 +9887,8 @@ async def _api_stream_handler(request):
     else:
         copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'flac'} or (audio_idx is None and quality == 'Original' and not force_transcode)
         
-    copy_video = quality == "Original"
+    # 🟢 FIX: If the browser rejected HEVC, force x264 encoding while keeping original resolution
+    copy_video = quality == "Original" and not force_x264 
     res_scale_map = {"4K":"3840:-2", "1080p":"1920:-2", "720p":"1280:-2", "480p":"854:-2", "360p":"640:-2"}
     scale_filter = res_scale_map.get(quality)
 
