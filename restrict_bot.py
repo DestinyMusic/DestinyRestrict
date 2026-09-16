@@ -7544,7 +7544,9 @@ HTML_DASHBOARD = """
 
         function openExternalPlayer(appType) {
             if (!activeMediaLink) return alert("Please load a stream first!");
-            let streamUrl = window.location.origin + (playerDirectCompatible ? buildNativeUrl() : buildStreamUrl());
+            // 🟢 FIX 1: External players MUST ALWAYS use the Native URL. They can natively decode MKVs and HEVC, 
+            // so we should never force them through the browser's transcode pipeline.
+            let streamUrl = window.location.origin + buildNativeUrl();
             
             // 1. Get the actual file name from the UI title
             let title = document.getElementById('cinema-title')?.innerText || "Media Stream";
@@ -7910,9 +7912,12 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('stalled', () => { 
                 triggerStallRecovery(); 
             });
+            let errorRetryCount = 0; // 🟢 FIX 2: Track playback errors
+            
             vidElem.addEventListener('playing', () => { 
                 clearTimeout(stallTimer); // 🟢 Cancel reconnect if data arrives!
                 isTranscodeSeeking = false;
+                errorRetryCount = 0; // 🟢 Reset error tracker on successful playback
                 if (bigPlay) bigPlay.innerHTML = pauseSvg; 
             });
             vidElem.addEventListener('loadedmetadata', () => { 
@@ -7964,13 +7969,35 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('error', async () => {
                 const mediaError = vidElem.error;
                 console.warn('Video element error:', mediaError);
+                
+                // 🟢 FIX 2: Prevent infinite reload loops on unsupported codecs!
+                if (errorRetryCount > 1) {
+                    console.log("[DEBUG] Max error retries reached. Stopping loop.");
+                    const titleEl = document.getElementById('cinema-title');
+                    if (titleEl) titleEl.innerText = '⚠️ Playback Error: Browser Unsupported Format.';
+                    return;
+                }
+                errorRetryCount++;
+
                 if (activeMediaLink) {
-                    console.log("[DEBUG] Stream error. Reconnecting from:", globalTargetTime);
+                    console.log("[DEBUG] Stream error. Auto-switching mode. Reconnecting from:", globalTargetTime);
                     playerRequiresTranscode = true;
                     playerTimelineOffset = globalTargetTime || 0;
+                    
+                    // 🟢 FIX 2: If the browser rejected the "Original" HEVC/MKV copy, force H.264 Transcode!
+                    const qSelect = document.getElementById('pop-quality-select');
+                    if (qSelect && qSelect.value === 'Original') {
+                        for (let opt of qSelect.options) {
+                            if (opt.value !== 'Original') {
+                                qSelect.value = opt.value; // Switches to 1080p or 720p
+                                break;
+                            }
+                        }
+                    }
+
                     setTimeout(async () => {
                         try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
-                    }, 2000); // 🟢 Add a 2s delay so we don't spam the server on hard crashes
+                    }, 2000);
                 }
                 wakeHUD();
             });
