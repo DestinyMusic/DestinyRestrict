@@ -10074,7 +10074,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 yield result
         cursor += len(batch)
 
-
 async def _api_tg_stream_handler(request):
     """High-speed Telegram Range proxy with multi-bot routing, user fallback, split files and ZIP extraction."""
     try:
@@ -10209,14 +10208,13 @@ async def _api_tg_stream_handler(request):
         chunk_len = end_byte - start_byte + 1
         
         # 🟢 SMART SCRUB-KILLER: Only cancel ghost tasks if it's a massive video stream!
-        # Ignores tiny metadata probes so the browser accurately displays the Total Duration.
         if "GLOBAL_STREAM_TASKS" not in globals():
             global GLOBAL_STREAM_TASKS
             GLOBAL_STREAM_TASKS = {}
             
         is_metadata_probe = chunk_len < 52428800 # 50 MB
-        # 🟢 NO-INTERFERENCE FIX: Bound the lock to the specific user's IP Address!
-        # Two users sharing an account or watching on different TVs will never cancel each other.
+        
+        # 🟢 PER-USER IP LOCK: Prevents sharing interference
         client_ip = request.remote or "unknown_ip"
         lock_key = f"{user_id}_{chat_id}_{msg_id}_{client_ip}"
         
@@ -10237,7 +10235,6 @@ async def _api_tg_stream_handler(request):
         }
 
         # 🟢 FAST-PROBE FIX: Instantly return headers for HEAD requests!
-        # This prevents ffprobe from timing out when seeking to the end of MKV files to find tracks/duration.
         if request.method == "HEAD":
             return web.Response(status=206 if range_header else 200, headers=headers)
 
@@ -10245,12 +10242,7 @@ async def _api_tg_stream_handler(request):
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
         adjusted_start = start_byte + virtual_data_offset
-        
-        # 🟢 THE SHIELD: If FFmpeg is just probing small metadata (less than 10MB request),
-        # use only 1 worker to prevent triggering Telegram's DDoS ban-hammer.
-        active_concurrency = 6 if chunk_len > 10485760 else 1
-        
-        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=active_concurrency)
+        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
         
         try:
             await response.prepare(request)
@@ -10258,19 +10250,21 @@ async def _api_tg_stream_handler(request):
                 await response.write(chunk)
             await response.write_eof()
         except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError, BrokenPipeError, ConnectionAbortedError):
-            pass # 🟢 FIX: Silently handle expected browser disconnects
+            pass # 🟢 Normal client disconnect, ignore safely
         except Exception as exc:
             if "Connection closed" not in str(exc):
                 logger.debug(f"Telegram stream disconnect/error: {exc}")
         finally:
-            # 🟢 FIX: Forcefully kill the generator with a 1-second timeout!
-            # If Telegram's server is hanging, this prevents your entire web API from freezing.
             if hasattr(gen, 'aclose'):
                 try: 
-                    import asyncio
+                    # 🟢 Safely timeout generator cleanup without polluting the local variable scope!
                     await asyncio.wait_for(gen.aclose(), timeout=1.0)
                 except Exception:
                     pass
+            
+        if not response.prepared:
+            return web.Response(status=499, text="Client Closed Request")
+        return response
 
     except asyncio.CancelledError:
         raise
@@ -10280,14 +10274,11 @@ async def _api_tg_stream_handler(request):
             return web.Response(status=502, text="Telegram stream failed")
         return response
     finally:
-        # This handler now reuses persistent user clients; no temporary user
-        # connection is created for normal streaming.
         if temp_client is not None:
             try:
                 await temp_client.disconnect()
             except Exception:
                 pass
-
 
 SUBTITLE_CACHE = {}
 SUBTITLE_CACHE_TTL = 3600
