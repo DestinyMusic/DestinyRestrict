@@ -4547,8 +4547,8 @@ HTML_DASHBOARD = """
             transition: background-color 0.5s ease; 
             position: relative; z-index: 0; 
             
-            /* FIX 2: Use a bulletproof RGBA dark tint instead of buggy blend-modes or color-mix */
-            background-image: linear-gradient(rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0.85)), var(--anime-bg);
+            /* FIX 2: Reduced dark tint opacity so the anime images are bright and visible */
+            background-image: linear-gradient(rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.5)), var(--anime-bg);
             background-size: cover;
             background-position: center;
             background-attachment: fixed;
