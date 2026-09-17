@@ -4495,7 +4495,20 @@ HTML_DASHBOARD = """
 
         /* --- 🌑 DARK THEMES --- */
         [data-theme="amoled"] { --bg: #000000; --card: rgba(10,10,10,0.7); --card-border: #1f2937; --text: #f1f5f9; --subtext: #94a3b8; --accent: #38bdf8; --glow: rgba(56, 189, 248, 0.4); --sidebar: rgba(5,5,5,0.9); --anime-bg: none; }
+        
+        /* --- ⚔️ ANIME MEGA THEMES --- */
         [data-theme="anime-magic"] { --bg: #1a0b2e; --card: rgba(26, 11, 46, 0.6); --card-border: rgba(217, 70, 239, 0.4); --text: #fdf4ff; --subtext: #f0abfc; --accent: #e879f9; --glow: rgba(232, 121, 249, 0.6); --sidebar: rgba(26, 11, 46, 0.85); --anime-bg: url('https://images.unsplash.com/photo-1578632767115-351597cf2477?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="one-piece"] { --bg: #0c1524; --card: rgba(12, 21, 36, 0.65); --card-border: rgba(251, 191, 36, 0.5); --text: #ffffff; --subtext: #fde68a; --accent: #fbbf24; --glow: rgba(251, 191, 36, 0.7); --sidebar: rgba(12, 21, 36, 0.85); --anime-bg: url('https://images.unsplash.com/photo-1534447677768-be436bb09401?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="jjk"] { --bg: #09090b; --card: rgba(9, 9, 11, 0.7); --card-border: rgba(139, 92, 246, 0.5); --text: #f8fafc; --subtext: #c4b5fd; --accent: #8b5cf6; --glow: rgba(139, 92, 246, 0.7); --sidebar: rgba(9, 9, 11, 0.9); --anime-bg: url('https://images.unsplash.com/photo-1604871000636-074fa5117945?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="demon-slayer"] { --bg: #0f172a; --card: rgba(15, 23, 42, 0.65); --card-border: rgba(16, 185, 129, 0.5); --text: #f8fafc; --subtext: #a7f3d0; --accent: #10b981; --glow: rgba(16, 185, 129, 0.7); --sidebar: rgba(15, 23, 42, 0.85); --anime-bg: url('https://images.unsplash.com/photo-1528360983277-13d401cdc186?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="aot"] { --bg: #1c1917; --card: rgba(28, 25, 23, 0.7); --card-border: rgba(132, 204, 22, 0.4); --text: #fafaf9; --subtext: #d9f99d; --accent: #84cc16; --glow: rgba(132, 204, 22, 0.6); --sidebar: rgba(28, 25, 23, 0.9); --anime-bg: url('https://images.unsplash.com/photo-1500367215255-0e0b258c4228?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="naruto"] { --bg: #1e1b4b; --card: rgba(30, 27, 75, 0.65); --card-border: rgba(249, 115, 22, 0.5); --text: #fffedd; --subtext: #fdba74; --accent: #f97316; --glow: rgba(249, 115, 22, 0.7); --sidebar: rgba(30, 27, 75, 0.85); --anime-bg: url('https://images.unsplash.com/photo-1513151233558-d860c5398176?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="fma"] { --bg: #1a0f0f; --card: rgba(26, 15, 15, 0.75); --card-border: rgba(220, 38, 38, 0.5); --text: #fef2f2; --subtext: #fca5a5; --accent: #dc2626; --glow: rgba(220, 38, 38, 0.7); --sidebar: rgba(26, 15, 15, 0.9); --anime-bg: url('https://images.unsplash.com/photo-1509983611728-9515430fbc01?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="geass"] { --bg: #150a1e; --card: rgba(21, 10, 30, 0.7); --card-border: rgba(225, 29, 72, 0.5); --text: #fff1f2; --subtext: #fecdd3; --accent: #e11d48; --glow: rgba(225, 29, 72, 0.7); --sidebar: rgba(21, 10, 30, 0.9); --anime-bg: url('https://images.unsplash.com/photo-1611149591322-8353d9e8dfab?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="solo"] { --bg: #020617; --card: rgba(2, 6, 23, 0.65); --card-border: rgba(56, 189, 248, 0.5); --text: #f0f9ff; --subtext: #bae6fd; --accent: #38bdf8; --glow: rgba(56, 189, 248, 0.7); --sidebar: rgba(2, 6, 23, 0.85); --anime-bg: url('https://images.unsplash.com/photo-1550684848-fac1c5b4e853?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="hxh"] { --bg: #064e3b; --card: rgba(6, 78, 59, 0.7); --card-border: rgba(34, 197, 94, 0.5); --text: #f0fdf4; --subtext: #86efac; --accent: #22c55e; --glow: rgba(34, 197, 94, 0.7); --sidebar: rgba(6, 78, 59, 0.9); --anime-bg: url('https://images.unsplash.com/photo-1518182170546-076616fd4aa5?q=80&w=2560&auto=format&fit=crop'); }
+        [data-theme="death-note"] { --bg: #000000; --card: rgba(10, 10, 10, 0.8); --card-border: rgba(153, 27, 27, 0.6); --text: #e5e5e5; --subtext: #a3a3a3; --accent: #dc2626; --glow: rgba(220, 38, 38, 0.8); --sidebar: rgba(5, 5, 5, 0.9); --anime-bg: url('https://images.unsplash.com/photo-1620056157159-c29dd225e3dc?q=80&w=2560&auto=format&fit=crop'); }
+
         [data-theme="graphite"] { --bg: #141416; --card: #1c1c20; --card-border: #2e2e36; --text: #f3f4f6; --subtext: #9ca3af; --accent: #f59e0b; --glow: rgba(245, 158, 11, 0.4); --sidebar: #0e0e10; --anime-bg: none; }
         [data-theme="obsidian"] { --bg: #090e17; --card: #111827; --card-border: #1e293b; --text: #f1f5f9; --subtext: #94a3b8; --accent: #10b981; --glow: rgba(16, 185, 129, 0.4); --sidebar: #070a12; --anime-bg: none; }
         [data-theme="royal"] { --bg: #0b0914; --card: #151124; --card-border: #2d244a; --text: #f5f3ff; --subtext: #a78bfa; --accent: #8b5cf6; --glow: rgba(139, 92, 246, 0.4); --sidebar: #07050d; --anime-bg: none; }
@@ -5047,12 +5060,53 @@ HTML_DASHBOARD = """
 
             <div style="font-size: 11px; color: var(--subtext); margin-bottom: 10px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.5px;">App Theme</div>
             <div class="theme-grid">
-                <!-- ANIME/MODERN THEME -->
+                <!-- ⚔️ ANIME MEGA THEMES -->
+                <div class="theme-pill" style="background: linear-gradient(135deg, #0c1524, #1e3a8a); color: #fff; border-color: #fbbf24;" onclick="setTheme('one-piece', this)">
+                    <div class="dots-group"><span class="dot" style="background:#fbbf24; color:#fbbf24;"></span><span class="dot" style="background:#ef4444; color:#ef4444;"></span></div>
+                    <span class="pill-label">Grand Line</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #09090b, #3b0764); color: #fff; border-color: #8b5cf6;" onclick="setTheme('jjk', this)">
+                    <div class="dots-group"><span class="dot" style="background:#8b5cf6; color:#8b5cf6;"></span><span class="dot" style="background:#0ea5e9; color:#0ea5e9;"></span></div>
+                    <span class="pill-label">Domain Expansion</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #0f172a, #064e3b); color: #fff; border-color: #10b981;" onclick="setTheme('demon-slayer', this)">
+                    <div class="dots-group"><span class="dot" style="background:#10b981; color:#10b981;"></span><span class="dot" style="background:#ef4444; color:#ef4444;"></span></div>
+                    <span class="pill-label">Hinokami</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #1c1917, #451a03); color: #fff; border-color: #84cc16;" onclick="setTheme('aot', this)">
+                    <div class="dots-group"><span class="dot" style="background:#84cc16; color:#84cc16;"></span><span class="dot" style="background:#b45309; color:#b45309;"></span></div>
+                    <span class="pill-label">Survey Corps</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #1e1b4b, #7c2d12); color: #fff; border-color: #f97316;" onclick="setTheme('naruto', this)">
+                    <div class="dots-group"><span class="dot" style="background:#f97316; color:#f97316;"></span><span class="dot" style="background:#3b82f6; color:#3b82f6;"></span></div>
+                    <span class="pill-label">Nine Tails</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #1a0f0f, #7f1d1d); color: #fff; border-color: #dc2626;" onclick="setTheme('fma', this)">
+                    <div class="dots-group"><span class="dot" style="background:#dc2626; color:#dc2626;"></span><span class="dot" style="background:#fbbf24; color:#fbbf24;"></span></div>
+                    <span class="pill-label">Alchemy</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #150a1e, #4c0519); color: #fff; border-color: #e11d48;" onclick="setTheme('geass', this)">
+                    <div class="dots-group"><span class="dot" style="background:#e11d48; color:#e11d48;"></span><span class="dot" style="background:#9333ea; color:#9333ea;"></span></div>
+                    <span class="pill-label">Zero Requiem</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #020617, #172554); color: #fff; border-color: #38bdf8;" onclick="setTheme('solo', this)">
+                    <div class="dots-group"><span class="dot" style="background:#38bdf8; color:#38bdf8;"></span><span class="dot" style="background:#8b5cf6; color:#8b5cf6;"></span></div>
+                    <span class="pill-label">Arise</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #064e3b, #14532d); color: #fff; border-color: #22c55e;" onclick="setTheme('hxh', this)">
+                    <div class="dots-group"><span class="dot" style="background:#22c55e; color:#22c55e;"></span><span class="dot" style="background:#0ea5e9; color:#0ea5e9;"></span></div>
+                    <span class="pill-label">Nen Aura</span>
+                </div>
+                <div class="theme-pill" style="background: linear-gradient(135deg, #000000, #450a0a); color: #fff; border-color: #dc2626;" onclick="setTheme('death-note', this)">
+                    <div class="dots-group"><span class="dot" style="background:#dc2626; color:#dc2626;"></span><span class="dot" style="background:#f3f4f6; color:#f3f4f6;"></span></div>
+                    <span class="pill-label">Shinigami</span>
+                </div>
                 <div class="theme-pill" style="background: linear-gradient(135deg, #1a0b2e, #2d1b4e); color: #fff; border-color: #e879f9;" onclick="setTheme('anime-magic', this)">
                     <div class="dots-group"><span class="dot" style="background:#e879f9; color:#e879f9;"></span><span class="dot" style="background:#c084fc; color:#c084fc;"></span></div>
                     <span class="pill-label">Anime Sky</span>
                 </div>
-                <!-- DARK THEMES -->
+
+                <!-- 🌑 STANDARD DARK THEMES -->
                 <div class="theme-pill active" style="background: #09090b; color: #fff;" onclick="setTheme('amoled', this)">
                     <div class="dots-group"><span class="dot" style="background:#38bdf8; color:#38bdf8;"></span><span class="dot" style="background:#818cf8; color:#818cf8;"></span></div>
                     <span class="pill-label">AMOLED</span><span class="check">✓</span>
