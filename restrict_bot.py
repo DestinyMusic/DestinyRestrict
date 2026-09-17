@@ -10006,16 +10006,40 @@ async def _api_stream_handler(request):
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
 
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL, # 🟢 FIX: Prevents OS pipe buffer deadlock
-    )
     import aiohttp
     
     # 🟢 FIX: Separate HTTP Header logic strictly for iOS/Apple devices!
     user_agent = request.headers.get("User-Agent", "").lower()
     is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
+
+    # --- 🟢 APPLE AVPLAYER CONTINUOUS PIPE CACHE ---
+    # Safari requires sequential byte-range requests. Restarting FFmpeg on every request 
+    # breaks the MP4 atom alignment. We MUST cache the FFmpeg process for Apple devices!
+    if "APPLE_FFMPEG_CACHE" not in globals():
+        global APPLE_FFMPEG_CACHE
+        APPLE_FFMPEG_CACHE = {}
+
+    base_key = f"{user_id}_{actual_url}_{quality}_{audio_idx}"
+    stream_key = f"{base_key}_{start_time}"
+
+    # Clean up orphaned processes for this user
+    for k, (s_key, old_p) in list(APPLE_FFMPEG_CACHE.items()):
+        if k.startswith(f"{user_id}_"):
+            if k != base_key or s_key != stream_key:
+                try: old_p.kill()
+                except: pass
+                del APPLE_FFMPEG_CACHE[k]
+
+    if is_apple:
+        if base_key in APPLE_FFMPEG_CACHE and APPLE_FFMPEG_CACHE[base_key][0] == stream_key and APPLE_FFMPEG_CACHE[base_key][1].returncode is None:
+            proc = APPLE_FFMPEG_CACHE[base_key][1]
+            logger.info(f"🍏 Apple AVPlayer Continuation: Resuming pipe exactly where we left off.")
+        else:
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            APPLE_FFMPEG_CACHE[base_key] = (stream_key, proc)
+    else:
+        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    # -----------------------------------------------
 
     stream_headers = {
         "Content-Type": "video/mp4",
@@ -10023,45 +10047,81 @@ async def _api_stream_handler(request):
         "Cache-Control": "no-store",
     }
 
-    client_range = request.headers.get("Range", "")
-    
-    if is_apple and client_range:
-        # 🟢 iOS strictly demands 206 Partial Content for MP4s. 
-        # We trick it by responding with the full range starting from 0 no matter what it asked for.
-        # This forces AVPlayer to accept our continuous live FFmpeg pipe without shifting/corrupting atoms!
-        status_code = 206
-        stream_headers["Accept-Ranges"] = "none"
-        stream_headers["Content-Length"] = "2147483648"
-        stream_headers["Content-Range"] = "bytes 0-2147483647/2147483648"
-    elif is_apple:
-        status_code = 200
-        stream_headers["Accept-Ranges"] = "none"
-        stream_headers["Content-Length"] = "2147483648"
+    apple_target_length = None
+    if is_apple:
+        stream_headers["Accept-Ranges"] = "bytes"
+        client_range = request.headers.get("Range", "")
+        if client_range:
+            start_byte = 0
+            end_byte = 2147483647 # Fake 2GB Maximum
+            
+            match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
+            if match:
+                if match.group(1): start_byte = int(match.group(1))
+                if match.group(2): end_byte = int(match.group(2))
+                
+            fake_total = 2147483648
+            end_byte = min(end_byte, fake_total - 1)
+            
+            stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
+            
+            apple_target_length = end_byte - start_byte + 1
+            stream_headers["Content-Length"] = str(apple_target_length)
+            status_code = 206
+        else:
+            stream_headers["Content-Length"] = "2147483648"
+            status_code = 200
     else:
-        # Standard browsers (Chrome, Android, Windows) handle progressive 200 OK flawlessly
-        status_code = 200
+        # ULTRA-STABLE 200 OK RESPONSE FOR CHROME, ANDROID, WINDOWS
         stream_headers["Accept-Ranges"] = "none"
+        status_code = 200
 
     response = web.StreamResponse(status=status_code, headers=stream_headers)
 
     try:
         await response.prepare(request)
+        bytes_sent = 0
         while True:
-            buf = await proc.stdout.read(262144) 
+            # 🟢 CRITICAL FIX: Only read EXACTLY the requested bytes from the FFmpeg pipe!
+            # If we read more, we steal bytes from the next Safari request, breaking the video!
+            if is_apple and apple_target_length is not None:
+                read_size = min(262144, apple_target_length - bytes_sent)
+            else:
+                read_size = 262144
+
+            if read_size <= 0:
+                break
+
+            buf = await proc.stdout.read(read_size) 
             if not buf:
                 break
+                    
             await response.write(buf)
+            bytes_sent += len(buf)
+            
+            if is_apple and apple_target_length is not None and bytes_sent >= apple_target_length:
+                break
+            
         await response.write_eof()
-    except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+    except asyncio.CancelledError:
+        # Explicitly killed by User clicking Stop on the frontend
+        try: proc.kill()
+        except: pass
+        if is_apple and base_key in APPLE_FFMPEG_CACHE:
+            del APPLE_FFMPEG_CACHE[base_key]
+        raise
+    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
         pass
     except Exception:
         pass
     finally:
-        try:
-            proc.kill()
-            await proc.wait()
-        except Exception:
-            pass
+        # If it IS apple, we intentionally DO NOT kill the process here so the next byte range request can resume it!
+        if not is_apple:
+            try:
+                proc.kill()
+                await proc.wait()
+            except Exception:
+                pass
     return response
 
 CLIENT_MSG_CACHE = {}
