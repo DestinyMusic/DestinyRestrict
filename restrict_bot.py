@@ -9017,16 +9017,16 @@ async def _api_chats_handler(request):
         return web.json_response({"status": "error", "message": "Not connected to Telegram. Please login."})
 
     uclient = USER_CLIENTS.get(uid)
-    is_temp = False
     
-    # 🟢 DYNAMIC WAKE-UP: Use :memory: to prevent SQLite File Locks that freeze the bot!
+    # 🟢 DYNAMIC WAKE-UP: Keep the main user session alive so we don't lose Access Hashes!
     if not uclient or not uclient.is_connected:
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(f"temp_chats_{uid}_{uuid.uuid4().hex}", in_memory=True, session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
-            await uclient.connect()
-            is_temp = True
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            await uclient.start()
+            USER_CLIENTS[uid] = uclient
         except Exception as e:
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
@@ -9083,10 +9083,6 @@ async def _api_chats_handler(request):
 
     except Exception as e: 
         return web.json_response({"status": "error", "message": str(e)})
-    finally:
-        if is_temp:
-            try: await uclient.disconnect()
-            except: pass
             
     return web.json_response({"status": "success", "chats": chat_list})
 
@@ -9214,28 +9210,15 @@ async def _api_topics_handler(request):
         return web.json_response({"status": "error", "message": "Not connected to Telegram."})
 
     uclient = USER_CLIENTS.get(uid)
-    is_temp = False
 
     if not uclient or not uclient.is_connected:
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            
-            user_workers = 4
-            uclient = Client(
-                name=f"temp_topics_{uid}_{uuid.uuid4().hex}", 
-                in_memory=True,
-                session_string=session_str, 
-                api_id=api_id, 
-                api_hash=api_hash, 
-                no_updates=True, 
-                workers=user_workers,
-                ipv6=False,
-                **get_transmission_kwargs(workers=user_workers)
-            )
-            # Wrap connect in a timeout to prevent indefinite hanging
-            await asyncio.wait_for(uclient.connect(), timeout=10.0)
-            is_temp = True
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            await uclient.start()
+            USER_CLIENTS[uid] = uclient
         except Exception as e:
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
     
@@ -9265,13 +9248,6 @@ async def _api_topics_handler(request):
                 
     except Exception as e:
         logger.warning(f"Topics endpoint error: {e}")
-    finally:
-        if is_temp:
-            try: 
-                # Timeout on disconnect to prevent ghost socket hangs
-                await asyncio.wait_for(uclient.disconnect(), timeout=5.0)
-            except: 
-                pass
 
     return web.json_response({"status": "success", "topics": topics})
 
@@ -9289,22 +9265,28 @@ async def _api_chat_details_handler(request):
         return web.json_response({"status": "error", "message": "Not logged in."})
 
     uclient = USER_CLIENTS.get(uid)
-    is_temp = False
     
     # Wake up routine to prevent locks
     if not uclient or not uclient.is_connected:
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(f"temp_details_{uid}_{uuid.uuid4().hex}", in_memory=True, session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
-            await asyncio.wait_for(uclient.connect(), timeout=10.0)
-            is_temp = True
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            await uclient.start()
+            USER_CLIENTS[uid] = uclient
         except Exception as e:
-            logger.error(f"[CHAT DETAILS] Temp client connection failed: {e}")
+            logger.error(f"[CHAT DETAILS] Client connection failed: {e}")
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     try:
-        chat = await uclient.get_chat(chat_id)
+        try:
+            chat = await uclient.get_chat(chat_id)
+        except PeerIdInvalid:
+            # 🟢 SMART FALLBACK: If Pyrogram forgot the Access Hash, fetch recent dialogs to instantly relearn it!
+            async for _ in uclient.get_dialogs(limit=500): 
+                pass
+            chat = await uclient.get_chat(chat_id)
         
         # Safely fetch total message count
         try:
@@ -9342,10 +9324,6 @@ async def _api_chat_details_handler(request):
         err_trace = traceback.format_exc()
         logger.error(f"[CHAT DETAILS ERROR] Traceback:\n{err_trace}")
         return web.json_response({"status": "error", "message": f"API Error: {str(e)}"})
-    finally:
-        if is_temp:
-            try: await asyncio.wait_for(uclient.disconnect(), timeout=3.0)
-            except: pass
 
 async def _api_mediainfo_web_handler(request):
     data = await request.json()
