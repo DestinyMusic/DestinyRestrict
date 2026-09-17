@@ -2669,9 +2669,8 @@ async def chats_cmd(client: Client, message: Message):
         users.clear(); groups.clear(); channels.clear(); bots.clear()
         
         async def fetch_tg_dialogs():
-            try:
-                # 🟢 FIX: Removed limit=500 to fetch ALL chats.
-                async for d in uclient.get_dialogs():
+            async for d in uclient.get_dialogs():
+                try:
                     chat = getattr(d, "chat", None)
                     if not chat: continue
                     cid = getattr(chat, "id", None)
@@ -2693,13 +2692,12 @@ async def chats_cmd(client: Client, message: Message):
                         bots.append(line)
                     elif "private" in type_str:
                         users.append(line)
-            except Exception:
-                # 🟢 FIX: Catch all Pyrogram parsing bugs silently to keep the loop alive
-                pass
+                except Exception:
+                    pass
 
         try:
-            # 🟢 FIX: Increased timeout to 35s. If it times out, we STILL KEEP whatever chats we loaded!
-            await asyncio.wait_for(fetch_tg_dialogs(), timeout=35.0)
+            # 🟢 FIX: Increased timeout to 120s to ensure ALL chats are loaded!
+            await asyncio.wait_for(fetch_tg_dialogs(), timeout=120.0)
             success = True
             break
         except asyncio.TimeoutError:
@@ -2711,6 +2709,10 @@ async def chats_cmd(client: Client, message: Message):
             logger.warning(f"Dialog fetch attempt {attempt + 1} timed out.")
             await asyncio.sleep(2)
         except Exception as e:
+            # 🟢 CATCH PYROGRAM GENERATOR ERRORS AND KEEP PARTIAL LIST
+            if users or groups or channels or bots:
+                success = True
+                break
             last_err = e
             logger.warning(f"Dialog fetch attempt {attempt + 1} failed: {e}")
             await asyncio.sleep(2)
@@ -6327,8 +6329,8 @@ HTML_DASHBOARD = """
             let htmlBuffer = "";
             filtered.forEach(c => {
                 htmlBuffer += `
-                    <!-- 🟢 FIX: Replaced ondblclick with onclick for mobile touch screens, and added stopPropagation to the Copy button! -->
-                    <div class="task-row" style="margin-bottom: 8px; cursor: pointer; user-select: none; touch-action: manipulation;" onclick="openChatDetails('${c.id}')" title="Tap for detailed info">
+                    <!-- 🟢 FIX: Replaced onclick with ondblclick to prevent accidental modal popups during scrolling! -->
+                    <div class="task-row" style="margin-bottom: 8px; cursor: pointer; user-select: none; touch-action: manipulation;" ondblclick="openChatDetails('${c.id}')" title="Double tap for detailed info">
                         <div>
                             <div style="font-weight: 700; color: var(--text); font-size: 13px;">${c.name}</div>
                             <div style="font-size: 11px; color: var(--accent); margin-top: 2px;">ID: <code>${c.id}</code></div>
@@ -9020,9 +9022,8 @@ async def _api_chats_handler(request):
     chat_list = []
     try:
         async def fetch_web_dialogs():
-            try:
-                # 🟢 FIX: Removed limit=500 to fetch ALL chats.
-                async for d in uclient.get_dialogs():
+            async for d in uclient.get_dialogs():
+                try:
                     chat = getattr(d, "chat", None)
                     if not chat: continue
                     cid = getattr(chat, "id", None)
@@ -9037,8 +9038,8 @@ async def _api_chats_handler(request):
                     is_forum = getattr(chat, "is_forum", False)
                     # Append directly to the outer list so data is saved even if the loop times out!
                     chat_list.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
         max_retries = 2
         success = False
@@ -9047,8 +9048,8 @@ async def _api_chats_handler(request):
         for attempt in range(max_retries):
             chat_list.clear() # Clear before each attempt
             try:
-                # 🟢 FIX: Increased timeout to massive 45s to allow thousands of chats to fully download!
-                await asyncio.wait_for(fetch_web_dialogs(), timeout=45.0)
+                # 🟢 FIX: Increased timeout to massive 120s to allow thousands of chats to fully download!
+                await asyncio.wait_for(fetch_web_dialogs(), timeout=120.0)
                 success = True
                 break
             except asyncio.TimeoutError:
@@ -9057,6 +9058,13 @@ async def _api_chats_handler(request):
                     success = True
                     break
                 last_err = "Telegram API timeout."
+                await asyncio.sleep(1.5)
+            except Exception as e:
+                # 🟢 CATCH PYROGRAM GENERATOR ERRORS AND KEEP PARTIAL LIST
+                if chat_list:
+                    success = True
+                    break
+                last_err = str(e)
                 await asyncio.sleep(1.5)
 
         if not success:
