@@ -9033,8 +9033,9 @@ async def _api_chats_handler(request):
     chat_list = []
     try:
         async def fetch_web_dialogs():
-            async for d in uclient.get_dialogs():
-                try:
+            try:
+                # 🟢 FIX: Removed limit=500 so it fetches ALL chats natively.
+                async for d in uclient.get_dialogs():
                     chat = getattr(d, "chat", None)
                     if not chat: continue
                     cid = getattr(chat, "id", None)
@@ -9047,10 +9048,12 @@ async def _api_chats_handler(request):
                     
                     cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
                     is_forum = getattr(chat, "is_forum", False)
+                    
                     # Append directly to the outer list so data is saved even if the loop times out!
                     chat_list.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
-                except Exception:
-                    pass
+            except AttributeError as e:
+                if "'NoneType' object has no attribute 'id'" not in str(e):
+                    raise e
 
         max_retries = 2
         success = False
@@ -9059,20 +9062,19 @@ async def _api_chats_handler(request):
         for attempt in range(max_retries):
             chat_list.clear() # Clear before each attempt
             try:
-                # 🟢 FIX: Increased timeout to a massive 300s (5 minutes) for huge accounts!
-                await asyncio.wait_for(fetch_web_dialogs(), timeout=300.0)
+                # 🟢 FIX: Increased timeout to 45s for massive accounts
+                await asyncio.wait_for(fetch_web_dialogs(), timeout=45.0)
                 success = True
                 break
             except asyncio.TimeoutError:
-                # 🟢 SMART FALLBACK: If we fetched at least some chats before timing out, consider it a success!
-                if chat_list:
+                # 🟢 SMART FALLBACK: If it times out but we got data, return what we have!
+                if len(chat_list) > 0:
                     success = True
                     break
                 last_err = "Telegram API timeout."
                 await asyncio.sleep(1.5)
             except Exception as e:
-                # 🟢 CATCH PYROGRAM GENERATOR ERRORS AND KEEP PARTIAL LIST
-                if chat_list:
+                if len(chat_list) > 0:
                     success = True
                     break
                 last_err = str(e)
@@ -9211,6 +9213,7 @@ async def _api_topics_handler(request):
 
     uclient = USER_CLIENTS.get(uid)
 
+    # 🟢 DYNAMIC WAKE-UP
     if not uclient or not uclient.is_connected:
         try:
             api_id = await db.get_api_id(uid) or API_ID
@@ -9236,11 +9239,11 @@ async def _api_topics_handler(request):
             return t_list
             
         # Retry loop for topics fetch
-        max_retries = 3
+        max_retries = 2
         for attempt in range(max_retries):
             try:
-                topics = await asyncio.wait_for(fetch_tg_topics(), timeout=10.0)
-                break # Success
+                topics = await asyncio.wait_for(fetch_tg_topics(), timeout=15.0)
+                break 
             except asyncio.TimeoutError:
                 await asyncio.sleep(1)
             except Exception:
@@ -9280,19 +9283,27 @@ async def _api_chat_details_handler(request):
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     try:
+        chat = None
         try:
             chat = await uclient.get_chat(chat_id)
-        except PeerIdInvalid:
-            # 🟢 SMART FALLBACK: If Pyrogram forgot the Access Hash, fetch recent dialogs to instantly relearn it!
-            async for _ in uclient.get_dialogs(limit=500): 
-                pass
-            chat = await uclient.get_chat(chat_id)
+        except Exception as e:
+            if "PEER_ID_INVALID" in str(e) or "ID not found" in str(e) or "KeyError" in repr(e):
+                # 🟢 DEEP SCAN FALLBACK: If Telegram forgot the hash, we manually search your dialogs.
+                found = False
+                async for d in uclient.get_dialogs(limit=5000): 
+                    if getattr(d.chat, "id", None) == chat_id:
+                        chat = d.chat
+                        found = True
+                        break
+                if not found:
+                    return web.json_response({"status": "error", "message": "Telegram forgot the Access Hash for this chat. Send a quick message to it in Telegram, then refresh!"})
+            else:
+                raise e
         
         # Safely fetch total message count
         try:
             total_msgs = await uclient.get_chat_history_count(chat_id)
-        except Exception as e:
-            logger.warning(f"[CHAT DETAILS] Could not fetch history count: {e}")
+        except Exception:
             total_msgs = "Unknown"
 
         # Safely fetch Forum Topics if applicable
@@ -9306,14 +9317,14 @@ async def _api_chat_details_handler(request):
                         "title": t.title,
                         "top_msg": getattr(t, "top_message", "?")
                     })
-            except Exception as e:
-                logger.warning(f"[CHAT DETAILS] Could not fetch topics: {e}")
+            except Exception:
+                pass
 
         return web.json_response({
             "status": "success",
             "id": str(chat.id),
             "title": chat.title or chat.first_name or "Unknown",
-            "type": str(getattr(chat, "type", "Unknown")),
+            "type": str(getattr(chat, "type", "Unknown")).replace("ChatType.", "").upper(),
             "members": getattr(chat, "members_count", 0),
             "total_messages": total_msgs,
             "description": getattr(chat, "description", getattr(chat, "bio", "")),
@@ -9321,6 +9332,7 @@ async def _api_chat_details_handler(request):
             "topics": topics
         })
     except Exception as e:
+        import traceback
         err_trace = traceback.format_exc()
         logger.error(f"[CHAT DETAILS ERROR] Traceback:\n{err_trace}")
         return web.json_response({"status": "error", "message": f"API Error: {str(e)}"})
