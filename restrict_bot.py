@@ -6361,11 +6361,20 @@ HTML_DASHBOARD = """
             document.getElementById('cd-topics-container').style.display = 'none';
             document.getElementById('cd-title').innerText = "Analyzing Chat...";
 
+            console.log(`[DEBUG UI] Requesting details for ChatID: ${chatId}...`);
+
             try {
                 const res = await fetch(`/api/chat_details?user_id=${currentUser}&chat_id=${chatId}`);
-                const data = await res.json();
+                console.log(`[DEBUG UI] HTTP Status Code: ${res.status}`);
                 
+                // Read as raw text first so we can see what the server actually sent!
+                const textRaw = await res.text();
+                console.log(`[DEBUG UI] Raw Backend Response:`, textRaw);
+                
+                const data = JSON.parse(textRaw);
+
                 if (data.status === 'success') {
+                    console.log(`[DEBUG UI] Data parsed successfully. Rendering UI...`);
                     document.getElementById('cd-loading').style.display = 'none';
                     document.getElementById('cd-content').style.display = 'block';
                     
@@ -6400,12 +6409,16 @@ HTML_DASHBOARD = """
                     }
                 } else {
                     document.getElementById('cd-loading').innerText = "❌ " + data.message;
+                    console.error("[DEBUG UI] Backend returned error:", data.message);
+                    alert("⚠️ Backend Error:\n" + data.message); // Force popup so you see it on phone!
                 }
             } catch (err) {
-                document.getElementById('cd-loading').innerText = "❌ Network Error.";
+                document.getElementById('cd-loading').innerText = "❌ Network Error or Invalid JSON.";
+                console.error("[DEBUG UI] Fetch failed or JSON parse error:", err);
+                alert("⚠️ Critical Fetch Error:\n" + err.message);
             }
         }
-
+                    
         async function fetchChatsList() {
             await loadWebChats();
         }
@@ -9265,14 +9278,20 @@ async def _api_topics_handler(request):
     return web.json_response({"status": "success", "topics": topics})
 
 # 🟢 NEW: Deep Chat Details & MetaData Fetcher
+import traceback
+
 async def _api_chat_details_handler(request):
     uid = int(request.query.get("user_id", 0))
     chat_id_str = request.query.get("chat_id", "")
+    
+    logger.info(f"[DEBUG CD] Request received -> User: {uid}, Target Chat: {chat_id_str}")
+
     try: chat_id = int(chat_id_str)
     except: chat_id = chat_id_str
 
     session_str = await db.get_session(uid)
     if not session_str:
+        logger.error("[DEBUG CD] User session string missing in database.")
         return web.json_response({"status": "error", "message": "Not logged in."})
 
     uclient = USER_CLIENTS.get(uid)
@@ -9280,27 +9299,36 @@ async def _api_chat_details_handler(request):
     
     # Wake up routine to prevent locks
     if not uclient or not uclient.is_connected:
+        logger.info("[DEBUG CD] Main client inactive. Booting temporary memory client...")
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"temp_details_{uid}_{uuid.uuid4().hex}", in_memory=True, session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
             await asyncio.wait_for(uclient.connect(), timeout=10.0)
             is_temp = True
+            logger.info("[DEBUG CD] Temporary client connected successfully.")
         except Exception as e:
+            logger.error(f"[DEBUG CD] Temporary client failed to connect: {e}")
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     try:
+        logger.info(f"[DEBUG CD] Calling uclient.get_chat({chat_id})...")
         chat = await uclient.get_chat(chat_id)
+        logger.info(f"[DEBUG CD] get_chat() success! Found: {chat.title or chat.first_name}")
         
         # Safely fetch total message count
         try:
+            logger.info(f"[DEBUG CD] Fetching message history count...")
             total_msgs = await uclient.get_chat_history_count(chat_id)
-        except Exception:
+            logger.info(f"[DEBUG CD] Total messages: {total_msgs}")
+        except Exception as e:
+            logger.warning(f"[DEBUG CD] get_chat_history_count failed: {e}")
             total_msgs = "Unknown"
 
         # Safely fetch Forum Topics if applicable
         topics = []
         if getattr(chat, "is_forum", False):
+            logger.info("[DEBUG CD] Chat is a forum! Fetching topics...")
             try:
                 # Limit to 100 to prevent timeout on massive groups
                 async for t in uclient.get_forum_topics(chat_id, limit=100):
@@ -9309,9 +9337,11 @@ async def _api_chat_details_handler(request):
                         "title": t.title,
                         "top_msg": getattr(t, "top_message", "?")
                     })
+                logger.info(f"[DEBUG CD] Extracted {len(topics)} topics successfully.")
             except Exception as e:
-                pass # Ignore Pyrogram pagination bugs
+                logger.warning(f"[DEBUG CD] get_forum_topics failed: {e}")
 
+        logger.info("[DEBUG CD] Sending successful JSON response to Web UI.")
         return web.json_response({
             "status": "success",
             "id": str(chat.id),
@@ -9324,11 +9354,14 @@ async def _api_chat_details_handler(request):
             "topics": topics
         })
     except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)})
+        err_trace = traceback.format_exc()
+        logger.error(f"[DEBUG CD] EXCEPTION in chat details fetcher:\n{err_trace}")
+        return web.json_response({"status": "error", "message": f"API Error: {str(e)}"})
     finally:
         if is_temp:
+            logger.info("[DEBUG CD] Cleaning up temporary client...")
             try: await asyncio.wait_for(uclient.disconnect(), timeout=3.0)
-            except: pass
+            except Exception as e: logger.warning(f"[DEBUG CD] Temp disconnect error: {e}")
 
 async def _api_mediainfo_web_handler(request):
     data = await request.json()
