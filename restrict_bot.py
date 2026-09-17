@@ -8464,7 +8464,8 @@ HTML_DASHBOARD = """
             });
             vidElem.addEventListener('waiting', () => { 
                 if (bigPlay) bigPlay.innerHTML = '⏳'; 
-                triggerStallRecovery(); // 🟢 Start the countdown if video starves
+                if (extAudio && extAudio.src) extAudio.pause(); // 🟢 FIX: Pause audio if video is buffering!
+                triggerStallRecovery(); 
             });
             vidElem.addEventListener('stalled', () => { 
                 triggerStallRecovery(); 
@@ -8473,8 +8474,16 @@ HTML_DASHBOARD = """
                 clearTimeout(stallTimer); 
                 isTranscodeSeeking = false;
                 window.errorRetryCount = 0; 
-                window.endedRetryCount = 0; // 🟢 Reset loop tracker on success
+                window.endedRetryCount = 0; 
                 if (bigPlay) bigPlay.innerHTML = pauseSvg; 
+
+                // 🟢 FIX: Hard sync external audio when video resumes playing
+                if (extAudio && extAudio.src) {
+                    if (Math.abs(extAudio.currentTime - vidElem.currentTime) > 0.1) {
+                        extAudio.currentTime = vidElem.currentTime;
+                    }
+                    extAudio.play().catch(e => console.warn(e));
+                }
             });
             vidElem.addEventListener('loadedmetadata', () => { 
                 clearTimeout(stallTimer);
@@ -8489,6 +8498,14 @@ HTML_DASHBOARD = """
                 clearTimeout(stallTimer); // 🟢 Clear stall timer because frames are flowing!
                 
                 updateBufferBar(); // 🟢 Trigger buffer calculation
+
+                // 🟢 FIX: Continuous drift correction for External Audio
+                if (extAudio && extAudio.src && !vidElem.paused && !vidElem.seeking) {
+                    const drift = Math.abs(extAudio.currentTime - vidElem.currentTime);
+                    if (drift > 0.25) {
+                        extAudio.currentTime = vidElem.currentTime;
+                    }
+                }
                 
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
@@ -10696,10 +10713,9 @@ async def _api_stream_handler(request):
         "-rw_timeout", "120000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5",
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
-        "-seekable", "1", # 🟢 FIX: Allow FFmpeg to use HTTP Range requests for instant seeking!
+        "-seekable", "1", 
         "-probesize", "5M", "-analyzeduration", "5M", 
-        "-fflags", "+nobuffer+flush_packets", 
-        "-async", "1"
+        "-fflags", "+nobuffer+flush_packets+genpts" # 🟢 FIX: +genpts ensures synced timestamps, removed deprecated -async 1 which causes audio speeding
     ]
 
     # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
@@ -10757,7 +10773,7 @@ async def _api_stream_handler(request):
         else:
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
 
-        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        cmd += ["-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
