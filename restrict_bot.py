@@ -2705,16 +2705,22 @@ async def chats_cmd(client: Client, message: Message):
                     if chat_id > 0:
                         u = resolved_users.get(chat_id)
                         if u:
-                            title = u.first_name or "Unknown User"
+                            title = getattr(u, "first_name", None)
+                            if not title:
+                                title = "Unknown User"
+                            if getattr(u, "last_name", None):
+                                title += f" {u.last_name}"
                             category = "bot" if getattr(u, "bot", False) else "private"
                     else:
                         c = resolved_chats.get(abs(chat_id)) or resolved_chats.get(getattr(peer, "channel_id", 0)) or resolved_chats.get(getattr(peer, "chat_id", 0))
                         if c:
-                            title = getattr(c, "title", "Unknown Group")
+                            title = getattr(c, "title", None)
+                            if not title:
+                                title = "Unknown Group"
                             category = "channel" if getattr(c, "broadcast", False) else "group"
 
                     line = f"• <b>{html.escape(title)}</b> │ <code>{chat_id}</code>"
-                    
+
                     if "group" in category or "supergroup" in category: groups.append(line)
                     elif "channel" in category: channels.append(line)
                     elif "bot" in category: bots.append(line)
@@ -9054,26 +9060,90 @@ async def _api_chats_handler(request):
     dialog_collection = []
 
     try:
-        async def populate_web_dialogs():
-            try:
-                async for dialog_obj in uclient.get_dialogs(limit=2500):
-                    chat = getattr(dialog_obj, "chat", None)
-                    if not chat: continue
-                    chat_id = getattr(chat, "id", None)
-                    if not chat_id: continue
+        async def execute_raw_pagination(target_folder_id):
+            offset_date = 0
+            offset_id = 0
+            offset_peer = InputPeerEmpty()
 
-                    display_name = getattr(chat, "title", getattr(chat, "first_name", f"Chat {chat_id}"))
-                    c_type = getattr(chat, "type", None)
-                    category_label = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
+            while True:
+                try:
+                    response = await uclient.invoke(
+                        GetDialogs(
+                            offset_date=offset_date,
+                            offset_id=offset_id,
+                            offset_peer=offset_peer,
+                            limit=100,
+                            hash=0,
+                            folder_id=target_folder_id
+                        ),
+                        sleep_threshold=60
+                    )
                     
-                    dialog_collection.append({
-                        "id": str(chat_id), 
-                        "name": f"[{category_label}] {display_name}", 
-                        "is_forum": getattr(chat, "is_forum", False)
-                    })
-            except Exception as e:
-                if "'NoneType'" not in str(e):
-                    logger.warning(f"Web Dialog Pagination Interrupted: {e}")
+                    if not getattr(response, "dialogs", None):
+                        break
+
+                    resolved_users = {u.id: u for u in getattr(response, "users", [])}
+                    resolved_chats = {c.id: c for c in getattr(response, "chats", [])}
+
+                    for dialog in response.dialogs:
+                        peer = dialog.peer
+                        raw_chat_id = getattr(peer, "channel_id", getattr(peer, "chat_id", getattr(peer, "user_id", None)))
+                        if not raw_chat_id: continue
+
+                        if hasattr(peer, "channel_id"):
+                            chat_id = int(f"-100{raw_chat_id}")
+                        elif hasattr(peer, "chat_id"):
+                            chat_id = int(f"-{raw_chat_id}")
+                        else:
+                            chat_id = raw_chat_id
+                        
+                        title = "Unknown Object"
+                        category_label = "Unknown"
+                        is_forum = False
+                        
+                        if chat_id > 0:
+                            u = resolved_users.get(chat_id)
+                            if u:
+                                title = getattr(u, "first_name", None)
+                                if not title:
+                                    title = "Unknown User"
+                                if getattr(u, "last_name", None):
+                                    title += f" {u.last_name}"
+                                category_label = "🤖 Bot" if getattr(u, "bot", False) else "👤 User"
+                        else:
+                            c = resolved_chats.get(abs(chat_id)) or resolved_chats.get(getattr(peer, "channel_id", 0)) or resolved_chats.get(getattr(peer, "chat_id", 0))
+                            if c:
+                                title = getattr(c, "title", None)
+                                if not title:
+                                    title = "Unknown Group"
+                                category_label = "📢 Channel" if getattr(c, "broadcast", False) else "👥 Group"
+                                is_forum = getattr(c, "forum", False)
+
+                        dialog_collection.append({
+                            "id": str(chat_id), 
+                            "name": f"[{category_label}] {title}", 
+                            "is_forum": is_forum
+                        })
+
+                    last_message = response.messages[-1] if response.messages else None
+                    if not last_message: break
+                    
+                    offset_id = getattr(last_message, "id", 0)
+                    offset_date = getattr(last_message, "date", 0)
+                    
+                    last_peer = response.dialogs[-1].peer
+                    peer_id_res = getattr(last_peer, "channel_id", getattr(last_peer, "chat_id", getattr(last_peer, "user_id", 0)))
+                    offset_peer = await uclient.resolve_peer(peer_id_res)
+
+                except FloodWait as e:
+                    await asyncio.sleep(e.value + 1)
+                except Exception as e:
+                    logger.warning(f"Raw dialog pagination error: {e}")
+                    break
+
+        async def populate_web_dialogs():
+            await execute_raw_pagination(0) # Standard Chats
+            await execute_raw_pagination(1) # Archived Chats
 
         try:
             await asyncio.wait_for(populate_web_dialogs(), timeout=60.0)
