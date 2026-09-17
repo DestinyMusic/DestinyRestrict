@@ -9984,8 +9984,7 @@ async def _api_stream_handler(request):
         cmd += ["-sn"]
 
         if copy_video and not scale_filter:
-            # CRITICAL SAFARI FIX: Force 90kHz timescale to keep audio/video perfectly synced
-            cmd += ["-c:v", "copy", "-video_track_timescale", "90000"]
+            cmd += ["-c:v", "copy"]
             if video_codec in {"hevc", "h265", "hvc1"}:
                 cmd += ["-tag:v", "hvc1"]
             elif video_codec in {"vp9", "vp8", "av1"}:
@@ -10002,7 +10001,6 @@ async def _api_stream_handler(request):
         else:
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
 
-        # CRITICAL: Do NOT use -frag_duration with -c:v copy. It corrupts moof atoms and makes Safari drop frames!
         cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
@@ -10046,16 +10044,7 @@ async def _api_stream_handler(request):
 
     buf_obj = TRANSCODE_BUFFERS.get(stream_key)
 
-    # FIX 1 & 2: Only restart if missing/crashed, and ALWAYS set offset to 0
-    need_new_buffer = False
-    if not buf_obj:
-        need_new_buffer = True
-    elif buf_obj['proc'].returncode is not None and buf_obj['proc'].returncode != 0:
-        need_new_buffer = True
-    elif not os.path.exists(buf_obj['file']):
-        need_new_buffer = True
-
-    if need_new_buffer:
+    if not buf_obj or buf_obj['proc'].returncode is not None:
         # Start new FFmpeg process in the background
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         
@@ -10063,8 +10052,7 @@ async def _api_stream_handler(request):
         os.makedirs(os.path.dirname(tmp_file), exist_ok=True)
         with open(tmp_file, "wb") as f: pass # Create empty file
 
-        # CRITICAL: Offset must be 0. FFmpeg always creates a fresh MP4 starting at byte 0.
-        buf_obj = {"proc": proc, "file": tmp_file, "size": 0, "eof": False, "offset": 0}
+        buf_obj = {"proc": proc, "file": tmp_file, "size": 0, "eof": False, "offset": start_byte}
         TRANSCODE_BUFFERS[stream_key] = buf_obj
 
         async def _writer(obj):
@@ -10096,25 +10084,19 @@ async def _api_stream_handler(request):
         "Accept-Ranges": "bytes",
     }
 
-    # CRITICAL SAFARI FIX: Stop faking the size once FFmpeg finishes, or Safari will buffer forever!
-    is_live = not buf_obj['eof']
-    total_size = 2147483648 if is_live else buf_obj['size']
-    end_byte = total_size - 1
+    # Apple requires a fake total size for live transcodes so it knows it can seek
+    fake_total = 2147483648
+    end_byte = fake_total - 1
 
     if client_range:
         match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
         if match and match.group(2):
-            end_byte = min(int(match.group(2)), total_size - 1)
-            
-        # Reject requests that overshoot the finished file to break the retry loop
-        if start_byte >= total_size:
-            return web.Response(status=416, headers={"Content-Range": f"bytes */{total_size}"})
-
-        stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{total_size}"
+            end_byte = min(int(match.group(2)), fake_total - 1)
+        stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
         stream_headers["Content-Length"] = str(end_byte - start_byte + 1)
         status_code = 206
     else:
-        stream_headers["Content-Length"] = str(total_size)
+        stream_headers["Content-Length"] = str(fake_total)
         status_code = 200
 
     logger.info(f"🐛 [DEBUG] OUTGOING -> Status: {status_code} | Range: {stream_headers.get('Content-Range')}")
@@ -10140,17 +10122,15 @@ async def _api_stream_handler(request):
             f.seek(seek_pos)
             
             while bytes_sent < target_length:
-                # CRITICAL FIX 3: Strict HTTP Range compliance. Clamp read size so we never over-send bytes.
-                read_size = min(262144, target_length - bytes_sent)
-                chunk = f.read(read_size)
+                chunk = f.read(262144)
                 
                 if not chunk:
                     if buf_obj['eof']:
                         logger.info(f"🐛 [DEBUG] FFmpeg EOF Reached.")
                         break
                         
-                    # Increased tolerance for hard scrubs so it doesn't instantly snap the connection
-                    if f.tell() > buf_obj['size'] + 15000000:
+                    # If Safari scrubs too far ahead into the un-downloaded future, force a reload
+                    if f.tell() > buf_obj['size'] + 5000000:
                         logger.warning(f"🐛 [DEBUG] Hard scrub detected! Client asked for byte {f.tell()} but buffer is at {buf_obj['size']}.")
                         break
                         
@@ -10830,7 +10810,7 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     raise TimeoutError("Exceeded max retries for chunk")
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
-    """Ultra-Stable Continuous Stream Generator with TRUE Parallel Pre-Fetching."""
+    """Ultra-Stable Continuous Stream Generator with Auto-Recovery and Bot Rotation."""
     if total_length <= 0: return
 
     working_pool = []
@@ -10856,46 +10836,33 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
 
     bytes_needed = total_length
     current_offset = start_byte
-    
-    CHUNK_SIZE = 1048576
-    prefetch_tasks = {}
-    
-    import asyncio
-    def schedule_chunk(idx, m_id):
-        if idx not in prefetch_tasks:
-            prefetch_tasks[idx] = asyncio.create_task(
-                _get_cached_tg_chunk_pool(user_id, working_pool, chat_id, m_id, idx)
-            )
 
     for part in msg_parts:
         if bytes_needed <= 0: break
         if part["start"] <= current_offset < part["end"]:
             internal_offset = current_offset - part["start"]
             internal_limit = min(bytes_needed, part["size"] - internal_offset)
-            bytes_yielded = 0
+            bytes_yielded_this_part = 0
             
-            while bytes_yielded < internal_limit:
-                curr_byte = internal_offset + bytes_yielded
-                chunk_idx = curr_byte // CHUNK_SIZE
-                skip = curr_byte % CHUNK_SIZE
-                remain = internal_limit - bytes_yielded
+            while bytes_yielded_this_part < internal_limit:
+                current_byte_offset = internal_offset + bytes_yielded_this_part
+                CHUNK_SIZE = 1048576
+                chunk_index = current_byte_offset // CHUNK_SIZE
+                skip_bytes = current_byte_offset % CHUNK_SIZE
+                remaining_bytes = internal_limit - bytes_yielded_this_part
                 
-                # 🟢 THE REAL FIX: Read-ahead 4MB concurrently!
-                # This utilizes 4 separate worker bots simultaneously, crushing buffering completely.
-                for offset_idx in range(4):
-                    schedule_chunk(chunk_idx + offset_idx, part["msg_id"])
-                    
-                # Await the target chunk (it may already be downloaded by a worker bot!)
-                chunk_data = await asyncio.shield(prefetch_tasks[chunk_idx])
-                del prefetch_tasks[chunk_idx] # Cleanup RAM to prevent memory leaks
+                import asyncio
+                # 🟢 Pass the ENTIRE pool into the smart cache so it can rotate bots instantly!
+                chunk_task = asyncio.create_task(_get_cached_tg_chunk_pool(user_id, working_pool, chat_id, part["msg_id"], chunk_index))
+                chunk_data = await asyncio.shield(chunk_task)
                 
-                if skip > 0: 
-                    chunk_data = chunk_data[skip:]
+                if skip_bytes > 0:
+                    chunk_data = chunk_data[skip_bytes:]
                     
-                chunk_to_yield = chunk_data[:remain]
+                chunk_to_yield = chunk_data[:remaining_bytes]
                 if chunk_to_yield:
                     yield chunk_to_yield
-                    bytes_yielded += len(chunk_to_yield)
+                    bytes_yielded_this_part += len(chunk_to_yield)
                     
                 await asyncio.sleep(0.001) 
                         
