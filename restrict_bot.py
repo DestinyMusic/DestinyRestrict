@@ -10002,8 +10002,8 @@ async def _api_stream_handler(request):
         else:
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
 
-        # CRITICAL SAFARI FIX: Add frag_duration to strictly interleave A/V frames every 5 seconds
-        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-frag_duration", "5000000", "-f", "mp4", "pipe:1"]
+        # CRITICAL: Do NOT use -frag_duration with -c:v copy. It corrupts moof atoms and makes Safari drop frames!
+        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
@@ -10830,7 +10830,7 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     raise TimeoutError("Exceeded max retries for chunk")
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
-    """Ultra-Stable Continuous Stream Generator with Auto-Recovery and Bot Rotation."""
+    """Ultra-Stable Continuous Stream Generator with TRUE Parallel Pre-Fetching."""
     if total_length <= 0: return
 
     working_pool = []
@@ -10856,33 +10856,46 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
 
     bytes_needed = total_length
     current_offset = start_byte
+    
+    CHUNK_SIZE = 1048576
+    prefetch_tasks = {}
+    
+    import asyncio
+    def schedule_chunk(idx, m_id):
+        if idx not in prefetch_tasks:
+            prefetch_tasks[idx] = asyncio.create_task(
+                _get_cached_tg_chunk_pool(user_id, working_pool, chat_id, m_id, idx)
+            )
 
     for part in msg_parts:
         if bytes_needed <= 0: break
         if part["start"] <= current_offset < part["end"]:
             internal_offset = current_offset - part["start"]
             internal_limit = min(bytes_needed, part["size"] - internal_offset)
-            bytes_yielded_this_part = 0
+            bytes_yielded = 0
             
-            while bytes_yielded_this_part < internal_limit:
-                current_byte_offset = internal_offset + bytes_yielded_this_part
-                CHUNK_SIZE = 1048576
-                chunk_index = current_byte_offset // CHUNK_SIZE
-                skip_bytes = current_byte_offset % CHUNK_SIZE
-                remaining_bytes = internal_limit - bytes_yielded_this_part
+            while bytes_yielded < internal_limit:
+                curr_byte = internal_offset + bytes_yielded
+                chunk_idx = curr_byte // CHUNK_SIZE
+                skip = curr_byte % CHUNK_SIZE
+                remain = internal_limit - bytes_yielded
                 
-                import asyncio
-                # 🟢 Pass the ENTIRE pool into the smart cache so it can rotate bots instantly!
-                chunk_task = asyncio.create_task(_get_cached_tg_chunk_pool(user_id, working_pool, chat_id, part["msg_id"], chunk_index))
-                chunk_data = await asyncio.shield(chunk_task)
-                
-                if skip_bytes > 0:
-                    chunk_data = chunk_data[skip_bytes:]
+                # 🟢 THE REAL FIX: Read-ahead 4MB concurrently!
+                # This utilizes 4 separate worker bots simultaneously, crushing buffering completely.
+                for offset_idx in range(4):
+                    schedule_chunk(chunk_idx + offset_idx, part["msg_id"])
                     
-                chunk_to_yield = chunk_data[:remaining_bytes]
+                # Await the target chunk (it may already be downloaded by a worker bot!)
+                chunk_data = await asyncio.shield(prefetch_tasks[chunk_idx])
+                del prefetch_tasks[chunk_idx] # Cleanup RAM to prevent memory leaks
+                
+                if skip > 0: 
+                    chunk_data = chunk_data[skip:]
+                    
+                chunk_to_yield = chunk_data[:remain]
                 if chunk_to_yield:
                     yield chunk_to_yield
-                    bytes_yielded_this_part += len(chunk_to_yield)
+                    bytes_yielded += len(chunk_to_yield)
                     
                 await asyncio.sleep(0.001) 
                         
