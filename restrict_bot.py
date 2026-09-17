@@ -10023,69 +10023,34 @@ async def _api_stream_handler(request):
         "Cache-Control": "no-store",
     }
 
-    apple_target_length = None
-    start_byte = 0
-    if is_apple:
-        stream_headers["Accept-Ranges"] = "bytes"
-        client_range = request.headers.get("Range", "")
-        if client_range:
-            end_byte = 2147483647 # Fake 2GB Maximum
-            
-            match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
-            if match:
-                if match.group(1): start_byte = int(match.group(1))
-                if match.group(2): end_byte = int(match.group(2))
-                
-            fake_total = 2147483648
-            end_byte = min(end_byte, fake_total - 1)
-            
-            # Mathematical compliance for Safari's strict AVPlayer parser
-            stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
-            
-            apple_target_length = end_byte - start_byte + 1
-            stream_headers["Content-Length"] = str(apple_target_length)
-            status_code = 206
-        else:
-            stream_headers["Content-Length"] = "2147483648"
-            status_code = 200
-    else:
-        # ULTRA-STABLE 200 OK RESPONSE FOR CHROME, ANDROID, WINDOWS
+    client_range = request.headers.get("Range", "")
+    
+    if is_apple and client_range:
+        # 🟢 iOS strictly demands 206 Partial Content for MP4s. 
+        # We trick it by responding with the full range starting from 0 no matter what it asked for.
+        # This forces AVPlayer to accept our continuous live FFmpeg pipe without shifting/corrupting atoms!
+        status_code = 206
         stream_headers["Accept-Ranges"] = "none"
+        stream_headers["Content-Length"] = "2147483648"
+        stream_headers["Content-Range"] = "bytes 0-2147483647/2147483648"
+    elif is_apple:
         status_code = 200
+        stream_headers["Accept-Ranges"] = "none"
+        stream_headers["Content-Length"] = "2147483648"
+    else:
+        # Standard browsers (Chrome, Android, Windows) handle progressive 200 OK flawlessly
+        status_code = 200
+        stream_headers["Accept-Ranges"] = "none"
 
     response = web.StreamResponse(status=status_code, headers=stream_headers)
 
     try:
         await response.prepare(request)
-        bytes_sent = 0
-        bytes_to_skip = start_byte if is_apple else 0 # 🟢 FIX: Skip FFmpeg's initial output to align Apple Range requests!
-        
         while True:
             buf = await proc.stdout.read(262144) 
             if not buf:
                 break
-                
-            # 🟢 FIX: Slice away the duplicated headers if iOS asks for a continuation range
-            if bytes_to_skip > 0:
-                if len(buf) <= bytes_to_skip:
-                    bytes_to_skip -= len(buf)
-                    continue
-                else:
-                    buf = buf[bytes_to_skip:]
-                    bytes_to_skip = 0
-
-            # 🟢 FIX: If Safari only asked for a specific chunk size (e.g., 2 bytes for a probe),
-            # we MUST forcefully truncate the data and close the stream. 
-            # If we send more data than we promised in the Content-Length, Safari instantly kills playback!
-            if is_apple and apple_target_length is not None:
-                if bytes_sent + len(buf) >= apple_target_length:
-                    buf = buf[:apple_target_length - bytes_sent]
-                    await response.write(buf)
-                    break
-                    
             await response.write(buf)
-            bytes_sent += len(buf)
-            
         await response.write_eof()
     except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
         pass
@@ -10098,7 +10063,6 @@ async def _api_stream_handler(request):
         except Exception:
             pass
     return response
-
 
 CLIENT_MSG_CACHE = {}
 CLIENT_MSG_CACHE_MAX = 2048
