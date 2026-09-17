@@ -4868,17 +4868,17 @@ HTML_DASHBOARD = """
         }
 
         .cinema-scrubber-bar {
-            position: relative; width: 100%; height: 6px; background: rgba(255,255,255,0.25);
+            position: relative; width: 100%; height: 6px; background: rgba(255,255,255,0.15);
             border-radius: 999px; cursor: pointer; transition: height 0.15s ease;
-            overflow: hidden; /* Contains the buffer cleanly */
+            /* Removed overflow:hidden so the glowing playback dot doesn't get clipped! */
         }
         .cinema-scrubber-bar:hover { height: 10px; }
         .scrubber-buffer {
             position: absolute; left: 0; top: 0; height: 100%; 
-            background: rgba(34, 197, 94, 0.6); /* 🟢 Green Loaded Indicator */
-            border-radius: 999px; width: 0%; pointer-events: none; transition: width 0.2s linear;
+            background: rgba(255, 255, 255, 0.4); /* ⚪ Translucent white loaded buffer */
+            border-radius: 999px; width: 0%; pointer-events: none; transition: width 0.2s linear; z-index: 1;
         }
-        .scrubber-fill { height: 100%; background: var(--accent); border-radius: 999px; width: 0%; position: absolute; left: 0; top: 0; pointer-events: none; }
+        .scrubber-fill { height: 100%; background: var(--accent); border-radius: 999px; width: 0%; position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; }
         .scrubber-fill::after {
             content: ''; position: absolute; right: -6px; top: 50%; transform: translateY(-50%);
             width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px var(--accent); pointer-events: auto;
@@ -5050,6 +5050,7 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('downloads', 'Downloads')">📥 Downloads</div>
             <div class="menu-item" onclick="switchView('watchers', 'Watchers')">📡 Watchers</div>
             <div class="menu-item" onclick="switchView('chats', 'Chats & IDs')">💬 Chats & IDs</div>
+            <div class="menu-item" onclick="switchView('network', 'Live Network')">🌍 Live Network</div>
             <div class="menu-item" onclick="switchView('speedtest', 'Speedtest')">🚀 Speedtest</div>
             <div class="menu-item" onclick="switchView('sos', 'System SOS')">🖥 System SOS</div>
             <div class="menu-item" onclick="switchView('logs', 'Logs')">📋 System Logs</div>
@@ -5528,8 +5529,8 @@ HTML_DASHBOARD = """
                 </div>
                 
                 <div id="web-chats-warning" class="card" style="display:none; border-color: var(--danger); margin-bottom: 20px;">
-                    <strong style="color: var(--danger);">⚠️ Telegram Session Not Connected</strong>
-                    <p style="font-size: 12px; color: #94a3b8; margin: 6px 0 0 0;">Please connect your Telegram account in the <b>Settings</b> tab or run <code>/login</code> in the bot to view your dialog list.</p>
+                    <strong id="web-chats-warning-title" style="color: var(--danger);">⚠️ Telegram Session Not Connected</strong>
+                    <p id="web-chats-warning-text" style="font-size: 12px; color: #94a3b8; margin: 6px 0 0 0;">Please connect your Telegram account in the <b>Settings</b> tab or run <code>/login</code> in the bot to view your dialog list.</p>
                 </div>
 
                 <div id="web-chats-content">
@@ -5552,6 +5553,50 @@ HTML_DASHBOARD = """
             </div>
 
             <!-- SPEEDTEST VIEW -->
+            <div id="view-network" class="view-section">
+                <div class="section-title">
+                    <span>Live Network & Activity</span>
+                    <button class="primary-btn" style="width: auto; padding: 8px 14px; font-size: 11px;" onclick="fetchNetworkStats()">🔄 Refresh</button>
+                </div>
+                
+                <div class="card" style="margin-bottom: 20px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="margin: 0; font-size: 16px; color: #fff;">👥 User Activity</h3>
+                        <span id="net-active-count" style="font-size: 12px; color: var(--accent); font-weight: 800;">0 ONLINE</span>
+                    </div>
+                    <div style="font-size: 12px; color: var(--subtext); margin-bottom: 15px;">Who's watching, where from, and on what</div>
+                    <div id="network-active-list">
+                        <div style="color: #64748b; font-size: 13px;">No active streams right now.</div>
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <h3 style="margin: 0; font-size: 16px; color: #fff;">🔴 Live Network Statistics</h3>
+                    </div>
+                    <div style="font-size: 12px; color: var(--subtext); margin-bottom: 15px;">Current & Recent Sessions</div>
+                    
+                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;">
+                        <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); padding: 15px; border-radius: 14px; text-align: center;">
+                            <div style="font-size: 11px; color: var(--subtext); font-weight: 800; letter-spacing: 1px; text-transform: uppercase;">Live Now</div>
+                            <div id="net-stat-live" style="font-size: 28px; font-weight: 900; color: #fff; margin-top: 5px;">0</div>
+                        </div>
+                        <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); padding: 15px; border-radius: 14px; text-align: center;">
+                            <div style="font-size: 11px; color: var(--subtext); font-weight: 800; letter-spacing: 1px; text-transform: uppercase;">Recent 24h</div>
+                            <div id="net-stat-recent" style="font-size: 28px; font-weight: 900; color: #fff; margin-top: 5px;">0</div>
+                        </div>
+                    </div>
+                    
+                    <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #fff;">Worker Bots Active</h3>
+                    <div id="net-workers-count" style="font-size: 13px; color: #10b981; margin-bottom: 20px;">0 bots handling parallel chunks</div>
+
+                    <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #fff;">Recent Streams</h3>
+                    <div id="network-recent-list" style="max-height: 300px; overflow-y: auto; padding-right: 5px; scrollbar-width: thin;">
+                        <div style="color: #64748b; font-size: 13px;">No recent streams.</div>
+                    </div>
+                </div>
+            </div>
+
             <div id="view-speedtest" class="view-section">
                 <div class="section-title">
                     <span>Network Speed Diagnostic</span>
@@ -6023,9 +6068,61 @@ HTML_DASHBOARD = """
             toggleSidebar();
 
             if (viewId === 'chats') loadWebChats();
+            if (viewId === 'network') fetchNetworkStats();
             if (viewId === 'sos') loadSosStats();
             if (viewId === 'settings') loadWorkerTokens();
 
+        }
+        
+        async function fetchNetworkStats() {
+            if (!currentUser) return;
+            try {
+                const res = await fetch(`/api/network?user_id=${currentUser}`);
+                const data = await res.json();
+                if (data.status === 'success') {
+                    document.getElementById('net-active-count').innerText = `${data.active.length} ONLINE`;
+                    document.getElementById('net-stat-live').innerText = data.active.length;
+                    document.getElementById('net-stat-recent').innerText = data.recent.length;
+                    document.getElementById('net-workers-count').innerText = `${data.worker_bots_count} worker bots handling parallel chunks`;
+                    
+                    const activeList = document.getElementById('network-active-list');
+                    if (data.active.length === 0) {
+                        activeList.innerHTML = '<div style="color: #64748b; font-size: 13px;">No active streams right now.</div>';
+                    } else {
+                        activeList.innerHTML = data.active.map(s => `
+                            <div class="task-row" style="margin-bottom: 8px;">
+                                <div style="flex:1;">
+                                    <div style="display:flex; justify-content: space-between; align-items:center;">
+                                        <div style="font-weight: 700; color: #fff; font-size: 13px; word-break: break-all;">${s.filename}</div>
+                                        <div style="background: rgba(34, 197, 94, 0.2); color: #22c55e; padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 800;">ACTIVE</div>
+                                    </div>
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 6px; font-size: 11px; color: var(--subtext);">
+                                        <div>⏱ Started: ${new Date(s.start_time * 1000).toLocaleTimeString()}</div>
+                                        <div>📍 ${s.country} (${s.ip})</div>
+                                        <div>🌐 ${s.device}</div>
+                                        <div>👤 User: ${s.user_id}</div>
+                                    </div>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+
+                    const recentList = document.getElementById('network-recent-list');
+                    if (data.recent.length === 0) {
+                        recentList.innerHTML = '<div style="color: #64748b; font-size: 13px;">No recent streams.</div>';
+                    } else {
+                        recentList.innerHTML = data.recent.map(s => `
+                            <div style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05);">
+                                <div style="font-weight: 700; color: #cbd5e1; font-size: 12px; word-break: break-all;">${s.filename}</div>
+                                <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 10px; color: #64748b;">
+                                    <span>${s.device} • ${s.country}</span>
+                                    <span>Ended: ${new Date(s.end_time * 1000).toLocaleTimeString()}</span>
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                }
+            } catch(e) {}
         }
 
         async function runWebSpeedtest() {
@@ -6158,8 +6255,9 @@ HTML_DASHBOARD = """
                     renderFilteredChats();
                 } else {
                     warnBox.style.display = 'block';
-                    // Show the actual Python error message so we know why it failed
-                    container.innerHTML = `<div style="color: var(--subtext); padding: 10px;">${data.message}</div>`;
+                    document.getElementById('web-chats-warning-title').innerText = '⚠️ Telegram Dialog Fetch Error';
+                    document.getElementById('web-chats-warning-text').innerText = data.message;
+                    container.innerHTML = `<div style="color: var(--subtext); padding: 10px;">Please click refresh to try again. If the issue persists, your session might be expired.</div>`;
                 }
             } catch(e) {
                 warnBox.style.display = 'block';
@@ -6327,6 +6425,7 @@ HTML_DASHBOARD = """
                 }
 
                 if (document.getElementById('view-logs').classList.contains('active')) fetchLogs();
+                if (document.getElementById('view-network').classList.contains('active')) fetchNetworkStats();
                 
                 const dlList = document.getElementById('downloads-list');
                 let newDlHtml = data.tasks.length ? '' : '<div style="color: #64748b;">No active downloads.</div>';
@@ -8098,20 +8197,29 @@ HTML_DASHBOARD = """
                 if (!video || !bufferBar) return;
                 
                 let dur = video.duration || 0;
-                if (playerRequiresTranscode && playerTotalDuration > 0) dur = playerTotalDuration;
-                else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) dur = playerTotalDuration;
+                if (typeof playerRequiresTranscode !== 'undefined' && playerRequiresTranscode && typeof playerTotalDuration !== 'undefined' && playerTotalDuration > 0) dur = playerTotalDuration;
+                else if (typeof playerTotalDuration !== 'undefined' && playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) dur = playerTotalDuration;
                 
                 if (dur > 0 && video.buffered.length > 0) {
                     let maxBuffered = 0;
                     const curTime = video.currentTime;
+                    
+                    // Safely find the buffered range that encompasses the current playback time
                     for (let i = 0; i < video.buffered.length; i++) {
                         if (video.buffered.start(i) <= curTime && video.buffered.end(i) >= curTime) {
                             maxBuffered = video.buffered.end(i);
                             break;
                         }
                     }
-                    if (maxBuffered === 0) maxBuffered = video.buffered.end(video.buffered.length - 1);
-                    if (playerRequiresTranscode) maxBuffered += playerTimelineOffset;
+                    
+                    // Fallback to absolute furthest chunk loaded if no exact range matched
+                    if (maxBuffered === 0) {
+                        maxBuffered = video.buffered.end(video.buffered.length - 1);
+                    }
+                    
+                    if (typeof playerRequiresTranscode !== 'undefined' && playerRequiresTranscode && typeof playerTimelineOffset !== 'undefined') {
+                        maxBuffered += playerTimelineOffset;
+                    }
                     
                     const pct = Math.min(100, (maxBuffered / dur) * 100);
                     bufferBar.style.width = `${pct}%`;
@@ -8143,7 +8251,6 @@ HTML_DASHBOARD = """
                 let idx = levels.indexOf(currentBrightLevel);
                 currentBrightLevel = levels[(idx + 1) % levels.length];
                 
-                // Directly hook into the pre-existing Advanced Filters mechanism!
                 const slider = document.getElementById('filter-bright');
                 if (slider) slider.value = currentBrightLevel;
                 applyVideoFilters();
@@ -8154,10 +8261,15 @@ HTML_DASHBOARD = """
                 const video = document.getElementById('hidden-video');
                 if (!video) return;
                 try {
+                    // Standard API for Chrome, Edge, Firefox, Android
                     if (document.pictureInPictureElement) {
                         await document.exitPictureInPicture();
                     } else if (document.pictureInPictureEnabled) {
                         await video.requestPictureInPicture();
+                    } 
+                    // Apple iOS Safari proprietary API bypass
+                    else if (video.webkitSupportsPresentationMode && typeof video.webkitSetPresentationMode === "function") {
+                        video.webkitSetPresentationMode(video.webkitPresentationMode === "picture-in-picture" ? "inline" : "picture-in-picture");
                     } else {
                         alert("Picture-in-Picture is not supported by your device/browser.");
                     }
@@ -8821,8 +8933,11 @@ async def _api_chats_handler(request):
                     is_forum = getattr(chat, "is_forum", False)
                     chats.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
             except AttributeError as e:
-                if "'NoneType' object has no attribute 'id'" not in str(e):
-                    raise e
+                # 🟢 FIX: Catch ALL attribute errors (monoforum, NoneType, etc.) to bypass Pyrogram's internal parsing bugs
+                pass
+            except Exception as e:
+                # Safely return whatever chats were parsed before the crash instead of failing
+                pass
             return chats
 
         max_retries = 3
@@ -9480,6 +9595,40 @@ async def _direct_upstream_request(url, request):
         
     return session, resp, resolved
 
+# --- GLOBAL NETWORK TRACKER ---
+GLOBAL_NETWORK_STATS = {"active": {}, "recent": []}
+
+def _track_stream(req, fname, uid):
+    sid = uuid.uuid4().hex
+    ip = req.headers.get("X-Forwarded-For", req.remote).split(",")[0].strip()
+    ua = req.headers.get("User-Agent", "")
+    br = "App"
+    if "VLC" in ua: br = "VLC"
+    elif "mpv" in ua: br = "MPV"
+    elif "Chrome" in ua: br = "Chrome"
+    elif "Safari" in ua and "Chrome" not in ua: br = "Safari"
+    elif "Firefox" in ua: br = "Firefox"
+    osn = "Device"
+    if "Windows" in ua: osn = "Windows"
+    elif "Mac OS" in ua: osn = "macOS"
+    elif "Android" in ua: osn = "Android"
+    elif "iPhone" in ua or "iPad" in ua: osn = "iOS"
+    elif "Linux" in ua: osn = "Linux"
+    GLOBAL_NETWORK_STATS["active"][sid] = {
+        "ip": ip, "country": req.headers.get("CF-IPCountry", "Unknown"), 
+        "device": f"{br} • {osn}", "filename": fname, 
+        "start_time": time.time(), "user_id": uid
+    }
+    return sid
+
+def _untrack_stream(sid):
+    if sid in GLOBAL_NETWORK_STATS["active"]:
+        entry = GLOBAL_NETWORK_STATS["active"].pop(sid)
+        entry["end_time"] = time.time()
+        GLOBAL_NETWORK_STATS["recent"].insert(0, entry)
+        if len(GLOBAL_NETWORK_STATS["recent"]) > 50: 
+            GLOBAL_NETWORK_STATS["recent"].pop()
+
 async def _api_direct_stream_handler(request):
     """Native direct-link proxy with full HTTP Range support, keep-alive reuse, and STORED ZIP resolution."""
     url = request.query.get("url", "").strip()
@@ -9584,6 +9733,7 @@ async def _api_direct_stream_handler(request):
         return web.Response(status=out_status, headers=out_headers)
 
     response = web.StreamResponse(status=out_status, headers=out_headers)
+    sid = _track_stream(request, filename, "Direct")
     try:
         await response.prepare(request)
         async for chunk in remote.content.iter_chunked(524288):
@@ -9598,6 +9748,7 @@ async def _api_direct_stream_handler(request):
             logger.debug(f"Direct stream disconnect/error: {exc}")
         return response
     finally:
+        _untrack_stream(sid)
         try:
             remote.release()
         except Exception:
@@ -10315,7 +10466,7 @@ async def _api_stream_handler(request):
         status_code = 200
 
     response = web.StreamResponse(status=status_code, headers=stream_headers)
-
+    sid = _track_stream(request, filename, user_id)
     try:
         await response.prepare(request)
         bytes_sent = 0
@@ -10342,13 +10493,13 @@ async def _api_stream_handler(request):
     except Exception:
         pass
     finally:
+        _untrack_stream(sid)
         try:
             proc.kill()
             await proc.wait()
         except Exception:
             pass
     return response
-
 
 CLIENT_MSG_CACHE = {}
 CLIENT_MSG_CACHE_MAX = 2048
@@ -10685,6 +10836,7 @@ async def _api_tg_stream_handler(request):
         adjusted_start = start_byte + virtual_data_offset
         gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
         
+        sid = _track_stream(request, filename, user_id)
         try:
             await response.prepare(request)
             async for chunk in gen:
@@ -10696,6 +10848,7 @@ async def _api_tg_stream_handler(request):
             if "Connection closed" not in str(exc) and "BrokenPipeError" not in str(exc):
                 logger.debug(f"Telegram stream disconnect/error: {exc}")
         finally:
+            _untrack_stream(sid)
             if hasattr(gen, 'aclose'):
                 try: 
                     await asyncio.wait_for(gen.aclose(), timeout=1.0)
@@ -11126,6 +11279,16 @@ async def _api_save_worker_tokens(request):
     
     return web.json_response({"status": "success", "message": f"Saved {len(tokens)} worker token(s) for your account. Pool reloading."})
 
+async def _api_network_stats(request):
+    try: uid = int(request.query.get("user_id", 0))
+    except: uid = 0
+    return web.json_response({
+        "status": "success",
+        "active": list(GLOBAL_NETWORK_STATS["active"].values()),
+        "recent": GLOBAL_NETWORK_STATS["recent"],
+        "worker_bots_count": len(USER_WORKER_BOTS.get(uid, []))
+    })
+
 # --- NEW: NATIVE IMAGE PROXY TO BYPASS HUGGINGFACE CSP ---
 async def _api_bg_proxy(request):
     url = request.query.get("url", "")
@@ -11143,6 +11306,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
     app_web = web.Application()
+    app_web.router.add_get("/api/network", _api_network_stats)
     app_web.router.add_get("/api/bg", _api_bg_proxy) # <-- ADD THIS LINE
     app_web.router.add_get("/manifest.json", _manifest_handler)
     app_web.router.add_get("/sw.js", _sw_handler)
