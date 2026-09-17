@@ -2723,7 +2723,7 @@ async def chats_cmd(client: Client, message: Message):
                             category = "channel" if getattr(c, "broadcast", False) else "group"
 
                     line = f"• <b>{html.escape(title)}</b> │ <code>{chat_id}</code>"
-
+                    
                     if "group" in category or "supergroup" in category: groups.append(line)
                     elif "channel" in category: channels.append(line)
                     elif "bot" in category: bots.append(line)
@@ -2740,24 +2740,36 @@ async def chats_cmd(client: Client, message: Message):
                     if getattr(msg, "id", 0) == offset_id:
                         offset_date = getattr(msg, "date", 0)
                         break
-                
+                if offset_date == 0 and response.messages:
+                    offset_date = getattr(response.messages[-1], "date", 0)
+
                 last_peer = last_dialog.peer
+                raw_last_id = getattr(last_peer, "channel_id", getattr(last_peer, "chat_id", getattr(last_peer, "user_id", 0)))
+                
                 if hasattr(last_peer, "channel_id"):
-                    c = resolved_chats.get(last_peer.channel_id)
-                    offset_peer = raw_types.InputPeerChannel(channel_id=last_peer.channel_id, access_hash=getattr(c, "access_hash", 0)) if c else raw_types.InputPeerEmpty()
+                    last_peer_id = int(f"-100{raw_last_id}")
                 elif hasattr(last_peer, "chat_id"):
-                    offset_peer = raw_types.InputPeerChat(chat_id=last_peer.chat_id)
-                elif hasattr(last_peer, "user_id"):
-                    u = resolved_users.get(last_peer.user_id)
-                    offset_peer = raw_types.InputPeerUser(user_id=last_peer.user_id, access_hash=getattr(u, "access_hash", 0)) if u else raw_types.InputPeerEmpty()
+                    last_peer_id = int(f"-{raw_last_id}")
                 else:
-                    offset_peer = raw_types.InputPeerEmpty()
+                    last_peer_id = raw_last_id
+
+                try:
+                    offset_peer = await uclient.resolve_peer(last_peer_id)
+                except Exception:
+                    if hasattr(last_peer, "channel_id"):
+                        c = resolved_chats.get(raw_last_id)
+                        offset_peer = raw_types.InputPeerChannel(channel_id=raw_last_id, access_hash=getattr(c, "access_hash", 0)) if c else raw_types.InputPeerEmpty()
+                    elif hasattr(last_peer, "chat_id"):
+                        offset_peer = raw_types.InputPeerChat(chat_id=raw_last_id)
+                    else:
+                        u = resolved_users.get(raw_last_id)
+                        offset_peer = raw_types.InputPeerUser(user_id=raw_last_id, access_hash=getattr(u, "access_hash", 0)) if u else raw_types.InputPeerEmpty()
 
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
             except Exception as e:
                 logger.warning(f"Raw dialog pagination error: {e}")
-                break 
+                break
 
     try:
         await execute_raw_pagination(0) # Standard Chats
@@ -9157,18 +9169,30 @@ async def _api_chats_handler(request):
                         if getattr(msg, "id", 0) == offset_id:
                             offset_date = getattr(msg, "date", 0)
                             break
-                    
+                    if offset_date == 0 and response.messages:
+                        offset_date = getattr(response.messages[-1], "date", 0)
+
                     last_peer = last_dialog.peer
+                    raw_last_id = getattr(last_peer, "channel_id", getattr(last_peer, "chat_id", getattr(last_peer, "user_id", 0)))
+                    
                     if hasattr(last_peer, "channel_id"):
-                        c = resolved_chats.get(last_peer.channel_id)
-                        offset_peer = raw_types.InputPeerChannel(channel_id=last_peer.channel_id, access_hash=getattr(c, "access_hash", 0)) if c else raw_types.InputPeerEmpty()
+                        last_peer_id = int(f"-100{raw_last_id}")
                     elif hasattr(last_peer, "chat_id"):
-                        offset_peer = raw_types.InputPeerChat(chat_id=last_peer.chat_id)
-                    elif hasattr(last_peer, "user_id"):
-                        u = resolved_users.get(last_peer.user_id)
-                        offset_peer = raw_types.InputPeerUser(user_id=last_peer.user_id, access_hash=getattr(u, "access_hash", 0)) if u else raw_types.InputPeerEmpty()
+                        last_peer_id = int(f"-{raw_last_id}")
                     else:
-                        offset_peer = raw_types.InputPeerEmpty()
+                        last_peer_id = raw_last_id
+
+                    try:
+                        offset_peer = await uclient.resolve_peer(last_peer_id)
+                    except Exception:
+                        if hasattr(last_peer, "channel_id"):
+                            c = resolved_chats.get(raw_last_id)
+                            offset_peer = raw_types.InputPeerChannel(channel_id=raw_last_id, access_hash=getattr(c, "access_hash", 0)) if c else raw_types.InputPeerEmpty()
+                        elif hasattr(last_peer, "chat_id"):
+                            offset_peer = raw_types.InputPeerChat(chat_id=raw_last_id)
+                        else:
+                            u = resolved_users.get(raw_last_id)
+                            offset_peer = raw_types.InputPeerUser(user_id=raw_last_id, access_hash=getattr(u, "access_hash", 0)) if u else raw_types.InputPeerEmpty()
 
                 except FloodWait as e:
                     await asyncio.sleep(e.value + 1)
@@ -9181,9 +9205,9 @@ async def _api_chats_handler(request):
             await execute_raw_pagination(1) # Archived Chats
 
         try:
-            await asyncio.wait_for(populate_web_dialogs(), timeout=60.0)
+            await asyncio.wait_for(populate_web_dialogs(), timeout=300.0)
         except asyncio.TimeoutError:
-            logger.warning("Web dialog fetch reached the 60s timeout ceiling. Returning the partial payload.")
+            logger.warning("Web dialog fetch reached the 300s timeout ceiling. Returning the partial payload.")
             
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)})
