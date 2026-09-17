@@ -2663,9 +2663,12 @@ async def chats_cmd(client: Client, message: Message):
     users, groups, channels, bots = [], [], [], []
 
     async def execute_raw_pagination(target_folder_id):
+        import pyrogram.raw.types as raw_types
+        from pyrogram.raw.functions.messages import GetDialogs
+        
         offset_date = 0
         offset_id = 0
-        offset_peer = InputPeerEmpty()
+        offset_peer = raw_types.InputPeerEmpty()
 
         while True:
             try:
@@ -2726,19 +2729,34 @@ async def chats_cmd(client: Client, message: Message):
                     elif "bot" in category: bots.append(line)
                     elif "private" in category: users.append(line)
 
-                last_message = response.messages[-1] if response.messages else None
-                if not last_message: break
+                if len(response.dialogs) < 100:
+                    break
+                    
+                last_dialog = response.dialogs[-1]
+                offset_id = getattr(last_dialog, "top_message", 0)
                 
-                offset_id = getattr(last_message, "id", 0)
-                offset_date = getattr(last_message, "date", 0)
+                offset_date = 0
+                for msg in response.messages:
+                    if getattr(msg, "id", 0) == offset_id:
+                        offset_date = getattr(msg, "date", 0)
+                        break
                 
-                last_peer = response.dialogs[-1].peer
-                peer_id_res = getattr(last_peer, "channel_id", getattr(last_peer, "chat_id", getattr(last_peer, "user_id", 0)))
-                offset_peer = await uclient.resolve_peer(peer_id_res)
+                last_peer = last_dialog.peer
+                if hasattr(last_peer, "channel_id"):
+                    c = resolved_chats.get(last_peer.channel_id)
+                    offset_peer = raw_types.InputPeerChannel(channel_id=last_peer.channel_id, access_hash=getattr(c, "access_hash", 0)) if c else raw_types.InputPeerEmpty()
+                elif hasattr(last_peer, "chat_id"):
+                    offset_peer = raw_types.InputPeerChat(chat_id=last_peer.chat_id)
+                elif hasattr(last_peer, "user_id"):
+                    u = resolved_users.get(last_peer.user_id)
+                    offset_peer = raw_types.InputPeerUser(user_id=last_peer.user_id, access_hash=getattr(u, "access_hash", 0)) if u else raw_types.InputPeerEmpty()
+                else:
+                    offset_peer = raw_types.InputPeerEmpty()
 
             except FloodWait as e:
                 await asyncio.sleep(e.value + 1)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"Raw dialog pagination error: {e}")
                 break 
 
     try:
@@ -9061,9 +9079,12 @@ async def _api_chats_handler(request):
 
     try:
         async def execute_raw_pagination(target_folder_id):
+            import pyrogram.raw.types as raw_types
+            from pyrogram.raw.functions.messages import GetDialogs
+            
             offset_date = 0
             offset_id = 0
-            offset_peer = InputPeerEmpty()
+            offset_peer = raw_types.InputPeerEmpty()
 
             while True:
                 try:
@@ -9125,15 +9146,29 @@ async def _api_chats_handler(request):
                             "is_forum": is_forum
                         })
 
-                    last_message = response.messages[-1] if response.messages else None
-                    if not last_message: break
+                    if len(response.dialogs) < 100:
+                        break
+                        
+                    last_dialog = response.dialogs[-1]
+                    offset_id = getattr(last_dialog, "top_message", 0)
                     
-                    offset_id = getattr(last_message, "id", 0)
-                    offset_date = getattr(last_message, "date", 0)
+                    offset_date = 0
+                    for msg in response.messages:
+                        if getattr(msg, "id", 0) == offset_id:
+                            offset_date = getattr(msg, "date", 0)
+                            break
                     
-                    last_peer = response.dialogs[-1].peer
-                    peer_id_res = getattr(last_peer, "channel_id", getattr(last_peer, "chat_id", getattr(last_peer, "user_id", 0)))
-                    offset_peer = await uclient.resolve_peer(peer_id_res)
+                    last_peer = last_dialog.peer
+                    if hasattr(last_peer, "channel_id"):
+                        c = resolved_chats.get(last_peer.channel_id)
+                        offset_peer = raw_types.InputPeerChannel(channel_id=last_peer.channel_id, access_hash=getattr(c, "access_hash", 0)) if c else raw_types.InputPeerEmpty()
+                    elif hasattr(last_peer, "chat_id"):
+                        offset_peer = raw_types.InputPeerChat(chat_id=last_peer.chat_id)
+                    elif hasattr(last_peer, "user_id"):
+                        u = resolved_users.get(last_peer.user_id)
+                        offset_peer = raw_types.InputPeerUser(user_id=last_peer.user_id, access_hash=getattr(u, "access_hash", 0)) if u else raw_types.InputPeerEmpty()
+                    else:
+                        offset_peer = raw_types.InputPeerEmpty()
 
                 except FloodWait as e:
                     await asyncio.sleep(e.value + 1)
