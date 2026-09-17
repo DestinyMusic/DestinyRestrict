@@ -4644,7 +4644,7 @@ HTML_DASHBOARD = """
         }
         
         /* D-Pad / TV Focus outlines */
-        *:focus { outline: 3px solid var(--accent); outline-offset: 4px; }
+        *:focus { outline: none; } /* 🟢 FIX: Removes the ugly blue tap box on mobile */
         .card-stat { font-size: clamp(24px, 2.5vw, 36px); font-weight: 900; color: var(--text); margin-top: 8px; }
         .card-label { font-size: clamp(11px, 1vw, 14px); color: var(--accent); text-transform: uppercase; font-weight: 800; letter-spacing: 1.5px; }
 
@@ -4878,11 +4878,8 @@ HTML_DASHBOARD = """
             background: rgba(255, 255, 255, 0.4); /* ⚪ Translucent white loaded buffer */
             border-radius: 999px; width: 0%; pointer-events: none; transition: width 0.2s linear; z-index: 1;
         }
-        .scrubber-fill { height: 100%; background: var(--accent); border-radius: 999px; width: 0%; position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; }
-        .scrubber-fill::after {
-            content: ''; position: absolute; right: -6px; top: 50%; transform: translateY(-50%);
-            width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px var(--accent); pointer-events: auto;
-        }
+        .scrubber-fill { height: 100%; background: #ffffff; border-radius: 999px; width: 0%; position: absolute; left: 0; top: 0; pointer-events: none; z-index: 2; }
+        /* 🟢 FIX: Removed the ::after completely to kill the ball. Made the bar pure white! */
 
         .cinema-controls-row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
         .ctrl-group { display: flex; align-items: center; gap: 12px; }
@@ -8254,6 +8251,24 @@ HTML_DASHBOARD = """
                 const slider = document.getElementById('filter-bright');
                 if (slider) slider.value = currentBrightLevel;
                 applyVideoFilters();
+                
+                // 🟢 FIX: Dynamically update the SVG icon based on brightness level
+                const btn = document.getElementById('hud-brightness-btn');
+                if (btn) {
+                    if (currentBrightLevel === 100) {
+                        // Full Sun (All Rays)
+                        btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41.39.39 1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41.39.39 1.03.39 1.41 0l1.06-1.06z"/></svg>';
+                    } else if (currentBrightLevel === 75) {
+                        // Medium Sun (Cross Rays only)
+                        btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1z"/></svg>';
+                    } else if (currentBrightLevel === 50) {
+                        // Low Sun (No Rays, Core Only)
+                        btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="12" r="5"/></svg>';
+                    } else {
+                        // Lowest / Night (Moon Icon)
+                        btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M9.37 5.51A7.35 7.35 0 009.1 7.5c0 4.08 3.32 7.4 7.4 7.4.68 0 1.35-.09 1.99-.27A7.014 7.014 0 0112 19c-3.86 0-7-3.14-7-7 0-2.93 1.81-5.45 4.37-6.49z"/></svg>';
+                    }
+                }
                 wakeHUD();
             }
 
