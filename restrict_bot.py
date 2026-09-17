@@ -9300,7 +9300,7 @@ async def _api_chat_details_handler(request):
         # Safely fetch total message count
         try:
             total_msgs = await asyncio.wait_for(uclient.get_chat_history_count(chat_id), timeout=6.0)
-        except Exception as e:
+        except Exception:
             total_msgs = "Unknown"
 
         # Safely fetch Forum Topics if applicable
@@ -9311,30 +9311,25 @@ async def _api_chat_details_handler(request):
                     topology_list = []
                     async for t in uclient.get_forum_topics(chat_id, limit=100):
                         top_msg_data = getattr(t, "top_message", "?")
-                        top_msg_val = str(top_msg_data.id) if hasattr(top_msg_data, "id") else str(top_msg_data)
-                        topology_list.append({"id": t.id, "title": t.title, "top_msg": top_msg_val})
+                        if hasattr(top_msg_data, "id"):
+                            top_msg_val = str(top_msg_data.id)
+                        else:
+                            top_msg_val = str(top_msg_data)
+                        topology_list.append({
+                            "id": t.id,
+                            "title": t.title,
+                            "top_msg": top_msg_val
+                        })
                     return topology_list
                     
                 topics = await asyncio.wait_for(fetch_forum_topology(), timeout=10.0)
-                    # 🟢 FIX: Prevent Pyrogram Message object serialization crash
-                    top_message_data = getattr(t, "top_message", "?")
-                    if hasattr(top_message_data, "id"):
-                        top_msg_val = str(top_message_data.id)
-                    else:
-                        top_msg_val = str(top_message_data)
-                        
-                    topics.append({
-                        "id": t.id,
-                        "title": t.title,
-                        "top_msg": top_msg_val
-                    })
             except Exception as e:
                 logger.warning(f"[CHAT DETAILS] Could not fetch topics: {e}")
 
         return web.json_response({
             "status": "success",
             "id": str(chat.id),
-            "title": chat.title or chat.first_name or "Unknown",
+            "title": chat.title or getattr(chat, "first_name", "Unknown"),
             "type": str(getattr(chat, "type", "Unknown")).replace("ChatType.", "").upper(),
             "members": getattr(chat, "members_count", 0),
             "total_messages": total_msgs,
