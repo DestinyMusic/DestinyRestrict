@@ -8397,6 +8397,22 @@ HTML_DASHBOARD = """
         if (vidElem) {
             const extAudio = document.getElementById('ext-audio-player');
 
+            // 🟢 FIX: Hide the main WebGL Canvas when PiP is active to prevent "Double Video"
+            vidElem.addEventListener('enterpictureinpicture', () => {
+                const canvas = document.getElementById('webgl-canvas');
+                if (canvas) canvas.style.visibility = 'hidden'; 
+            });
+            vidElem.addEventListener('leavepictureinpicture', () => {
+                const canvas = document.getElementById('webgl-canvas');
+                if (canvas) canvas.style.visibility = 'visible'; 
+            });
+            vidElem.addEventListener('webkitpresentationmodechanged', () => {
+                const canvas = document.getElementById('webgl-canvas');
+                if (canvas) {
+                    canvas.style.visibility = vidElem.webkitPresentationMode === "picture-in-picture" ? 'hidden' : 'visible';
+                }
+            });
+
             vidElem.addEventListener('play', () => {
                 if (hudPlay) hudPlay.innerHTML = smallPauseSvg;
                 if (bigPlay) bigPlay.innerHTML = pauseSvg;
@@ -8460,7 +8476,6 @@ HTML_DASHBOARD = """
                 window.endedRetryCount = 0; // 🟢 Reset loop tracker on success
                 if (bigPlay) bigPlay.innerHTML = pauseSvg; 
             });
-            
             vidElem.addEventListener('loadedmetadata', () => { 
                 clearTimeout(stallTimer);
                 updateViewportBox(); resizePlayerSurface(); applyPlaybackSpeed(); 
