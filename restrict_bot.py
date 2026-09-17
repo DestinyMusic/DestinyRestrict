@@ -5527,8 +5527,12 @@ HTML_DASHBOARD = """
                                 <button class="cinema-btn" id="hud-rotate-btn" onclick="toggleOrientation()" title="Rotate Screen">
                                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16.48 2.52c3.27 1.55 5.61 4.72 5.97 8.48h1.5C23.44 4.84 18.29 0 12 0l-.66.03 3.81 3.81 1.33-1.32zm-6.25-.77c-.59-.59-1.54-.59-2.12 0L1.75 8.11c-.59.59-.59 1.54 0 2.12l12.02 12.02c.59.59 1.54.59 2.12 0l6.36-6.36c.59-.59.59-1.54 0-2.12L10.23 1.75zm4.6 19.44L2.81 9.17l6.36-6.36 12.02 12.02-6.36 6.36zm-7.3-3.05v-1.42c-3.27-1.55-5.61-4.72-5.97-8.48h-1.5C.56 19.16 5.71 24 12 24l.66-.03-3.81-3.81-1.32 1.32z"/></svg>
                                 </button>
-                                <!-- Settings & 3D -->
-                                <button class="cinema-btn" id="hud-settings-btn" onclick="toggleSettingsPopup()" title="Tracks, Settings & 3D">
+                                <!-- 3D Matrix -->
+                                <button class="cinema-btn" id="hud-3d-btn" onclick="toggleMatrixPopup()" title="3D Matrix">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12h20"/><path d="M12 2v20"/><path d="M4.93 4.93l14.14 14.14"/><path d="M4.93 19.07L19.07 4.93"/></svg>
+                                </button>
+                                <!-- Settings & Tracks -->
+                                <button class="cinema-btn" id="hud-settings-btn" onclick="toggleSettingsPopup()" title="Tracks & Settings">
                                     <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
                                 </button>
                                 <!-- Fullscreen -->
@@ -8464,10 +8468,11 @@ HTML_DASHBOARD = """
             });
             vidElem.addEventListener('waiting', () => { 
                 if (bigPlay) bigPlay.innerHTML = '⏳'; 
-                if (extAudio && extAudio.src) extAudio.pause(); // 🟢 FIX: Pause audio if video is buffering!
+                if (extAudio && extAudio.src) extAudio.pause(); 
                 triggerStallRecovery(); 
             });
             vidElem.addEventListener('stalled', () => { 
+                if (extAudio && extAudio.src) extAudio.pause(); // 🟢 FIX: Pause audio on stall
                 triggerStallRecovery(); 
             });
             vidElem.addEventListener('playing', () => { 
@@ -8477,7 +8482,7 @@ HTML_DASHBOARD = """
                 window.endedRetryCount = 0; 
                 if (bigPlay) bigPlay.innerHTML = pauseSvg; 
 
-                // 🟢 FIX: Hard sync external audio when video resumes playing
+                // 🟢 FAST SYNC: Hard sync external audio when video resumes playing
                 if (extAudio && extAudio.src) {
                     if (Math.abs(extAudio.currentTime - vidElem.currentTime) > 0.1) {
                         extAudio.currentTime = vidElem.currentTime;
@@ -8495,14 +8500,14 @@ HTML_DASHBOARD = """
             vidElem.addEventListener('progress', updateBufferBar);
 
             vidElem.addEventListener('timeupdate', () => {
-                clearTimeout(stallTimer); // 🟢 Clear stall timer because frames are flowing!
+                clearTimeout(stallTimer); 
                 
-                updateBufferBar(); // 🟢 Trigger buffer calculation
+                updateBufferBar(); 
 
-                // 🟢 FIX: Continuous drift correction for External Audio
+                // 🟢 FAST SYNC: Continuous drift correction for External Audio tracks
                 if (extAudio && extAudio.src && !vidElem.paused && !vidElem.seeking) {
                     const drift = Math.abs(extAudio.currentTime - vidElem.currentTime);
-                    if (drift > 0.25) {
+                    if (drift > 0.15) { // 🟢 Snaps back instantly if drifting beyond 150ms
                         extAudio.currentTime = vidElem.currentTime;
                     }
                 }
@@ -10715,7 +10720,7 @@ async def _api_stream_handler(request):
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
         "-seekable", "1", 
         "-probesize", "5M", "-analyzeduration", "5M", 
-        "-fflags", "+nobuffer+flush_packets+genpts" # 🟢 FIX: +genpts ensures synced timestamps, removed deprecated -async 1 which causes audio speeding
+        "-fflags", "+nobuffer+flush_packets+genpts" # 🟢 FIX: +genpts ensures synced timestamps, removed deprecated -async 1
     ]
 
     # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
