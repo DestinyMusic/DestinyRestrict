@@ -9984,7 +9984,9 @@ async def _api_stream_handler(request):
         cmd += ["-sn"]
 
         if copy_video and not scale_filter:
-            cmd += ["-c:v", "copy"]
+            # CRITICAL SAFARI FIX: Force 90kHz timescale. Prevents Apple AVPlayer from 
+            # dropping audio/video sync or stuttering when copying MKV streams into MP4!
+            cmd += ["-c:v", "copy", "-video_track_timescale", "90000"]
             if video_codec in {"hevc", "h265", "hvc1"}:
                 cmd += ["-tag:v", "hvc1"]
             elif video_codec in {"vp9", "vp8", "av1"}:
@@ -10095,18 +10097,25 @@ async def _api_stream_handler(request):
     }
 
     # Apple requires a fake total size for live transcodes so it knows it can seek
-    fake_total = 2147483648
-    end_byte = fake_total - 1
+    is_live = not buf_obj['eof']
+    total_size = 2147483648 if is_live else buf_obj['size']
+    end_byte = total_size - 1
 
     if client_range:
         match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
         if match and match.group(2):
-            end_byte = min(int(match.group(2)), fake_total - 1)
-        stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
+            end_byte = min(int(match.group(2)), total_size - 1)
+            
+        # CRITICAL SAFARI FIX: If Safari asks for bytes beyond the actual finished file,
+        # we must reject it with 416 Range Not Satisfiable to break the infinite retry loop!
+        if start_byte >= total_size:
+            return web.Response(status=416, headers={"Content-Range": f"bytes */{total_size}"})
+
+        stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{total_size}"
         stream_headers["Content-Length"] = str(end_byte - start_byte + 1)
         status_code = 206
     else:
-        stream_headers["Content-Length"] = str(fake_total)
+        stream_headers["Content-Length"] = str(total_size)
         status_code = 200
 
     logger.info(f"🐛 [DEBUG] OUTGOING -> Status: {status_code} | Range: {stream_headers.get('Content-Range')}")
