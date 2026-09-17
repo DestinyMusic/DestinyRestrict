@@ -9356,29 +9356,23 @@ async def _api_topics_handler(request):
     topics = []
     try:
         async def fetch_tg_topics():
-            t_list = []
             try:
-                async for topic in uclient.get_forum_topics(chat_id):
-                    t_list.append({"id": topic.id, "title": topic.title})
-            except AttributeError as e:
+                async for topic in uclient.get_forum_topics(chat_id, limit=300):
+                    topics.append({"id": topic.id, "title": topic.title})
+            except Exception as e:
                 # Graceful handling of Pyrogram pagination bug
-                if "'NoneType' object has no attribute" not in str(e):
-                    raise e
-            return t_list
+                if "'NoneType'" not in str(e):
+                    logger.warning(f"Topic pagination interrupted: {e}")
             
-        # Retry loop for topics fetch
-        max_retries = 2
-        for attempt in range(max_retries):
-            try:
-                topics = await asyncio.wait_for(fetch_tg_topics(), timeout=15.0)
-                break 
-            except asyncio.TimeoutError:
-                await asyncio.sleep(1)
-            except Exception:
-                await asyncio.sleep(1)
+        try:
+            await asyncio.wait_for(fetch_tg_topics(), timeout=25.0)
+        except asyncio.TimeoutError:
+            logger.warning(f"Topics endpoint timed out. Returning {len(topics)} topics found so far.")
+        except Exception as e:
+            logger.warning(f"Topics endpoint exception: {repr(e)}")
                 
     except Exception as e:
-        logger.warning(f"Topics endpoint error: {e}")
+        logger.warning(f"Topics endpoint error: {repr(e)}")
 
     return web.json_response({"status": "success", "topics": topics})
 
@@ -9435,25 +9429,29 @@ async def _api_chat_details_handler(request):
         # Safely fetch Forum Topics if applicable
         topics = []
         if getattr(chat, "is_forum", False):
-            try:
-                async def fetch_forum_topology():
-                    topology_list = []
-                    async for t in uclient.get_forum_topics(chat_id, limit=100):
+            async def fetch_forum_topology():
+                try:
+                    async for t in uclient.get_forum_topics(chat_id, limit=300):
                         top_msg_data = getattr(t, "top_message", "?")
                         if hasattr(top_msg_data, "id"):
                             top_msg_val = str(top_msg_data.id)
                         else:
                             top_msg_val = str(top_msg_data)
-                        topology_list.append({
+                        topics.append({
                             "id": t.id,
                             "title": t.title,
                             "top_msg": top_msg_val
                         })
-                    return topology_list
-                    
-                topics = await asyncio.wait_for(fetch_forum_topology(), timeout=10.0)
+                except Exception as inner_e:
+                    if "'NoneType'" not in str(inner_e):
+                        logger.warning(f"[CHAT DETAILS] Topic pagination interrupted: {inner_e}")
+                        
+            try:
+                await asyncio.wait_for(fetch_forum_topology(), timeout=25.0)
+            except asyncio.TimeoutError:
+                logger.warning(f"[CHAT DETAILS] Topic fetch timed out. Returning {len(topics)} topics found so far.")
             except Exception as e:
-                logger.warning(f"[CHAT DETAILS] Could not fetch topics: {e}")
+                logger.warning(f"[CHAT DETAILS] Could not fetch topics: {repr(e)}")
 
         return web.json_response({
             "status": "success",
