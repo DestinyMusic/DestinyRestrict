@@ -10044,7 +10044,16 @@ async def _api_stream_handler(request):
 
     buf_obj = TRANSCODE_BUFFERS.get(stream_key)
 
-    if not buf_obj or buf_obj['proc'].returncode is not None:
+    # FIX 1 & 2: Only restart if missing/crashed, and ALWAYS set offset to 0
+    need_new_buffer = False
+    if not buf_obj:
+        need_new_buffer = True
+    elif buf_obj['proc'].returncode is not None and buf_obj['proc'].returncode != 0:
+        need_new_buffer = True
+    elif not os.path.exists(buf_obj['file']):
+        need_new_buffer = True
+
+    if need_new_buffer:
         # Start new FFmpeg process in the background
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         
@@ -10052,7 +10061,8 @@ async def _api_stream_handler(request):
         os.makedirs(os.path.dirname(tmp_file), exist_ok=True)
         with open(tmp_file, "wb") as f: pass # Create empty file
 
-        buf_obj = {"proc": proc, "file": tmp_file, "size": 0, "eof": False, "offset": start_byte}
+        # CRITICAL: Offset must be 0. FFmpeg always creates a fresh MP4 starting at byte 0.
+        buf_obj = {"proc": proc, "file": tmp_file, "size": 0, "eof": False, "offset": 0}
         TRANSCODE_BUFFERS[stream_key] = buf_obj
 
         async def _writer(obj):
@@ -10061,6 +10071,7 @@ async def _api_stream_handler(request):
                     while True:
                         chunk = await obj['proc'].stdout.read(524288)
                         if not chunk: 
+                            obj['eof'] = True
                             break
                         f.write(chunk)
                         f.flush()
@@ -10107,26 +10118,36 @@ async def _api_stream_handler(request):
         await response.prepare(request)
         target_length = end_byte - start_byte + 1
 
+        # Wait up to 10 seconds for the buffer to get its first bytes from FFmpeg
+        for _ in range(50):
+            if buf_obj['size'] > 0 or buf_obj['eof']:
+                break
+            await asyncio.sleep(0.2)
+
         with open(buf_obj['file'], "rb") as f:
             # Map Safari's absolute byte request to our local file offset
             seek_pos = start_byte - buf_obj['offset']
             if seek_pos < 0: seek_pos = 0
             
-            # Wait until FFmpeg has actually written up to our seek position
-            while buf_obj['size'] < seek_pos and not buf_obj['eof']:
-                await asyncio.sleep(0.5)
-                
             f.seek(seek_pos)
             
             while bytes_sent < target_length:
-                chunk = f.read(262144)
+                # CRITICAL FIX 3: Strict HTTP Range compliance. Clamp read size so we never over-send bytes.
+                read_size = min(262144, target_length - bytes_sent)
+                chunk = f.read(read_size)
                 
                 if not chunk:
                     if buf_obj['eof']:
                         logger.info(f"🐛 [DEBUG] FFmpeg EOF Reached.")
                         break
-                    # Wait dynamically for FFmpeg to write more frames
-                    await asyncio.sleep(0.1)
+                        
+                    # Increased tolerance for hard scrubs so it doesn't instantly snap the connection
+                    if f.tell() > buf_obj['size'] + 15000000:
+                        logger.warning(f"🐛 [DEBUG] Hard scrub detected! Client asked for byte {f.tell()} but buffer is at {buf_obj['size']}.")
+                        break
+                        
+                    # Otherwise, wait dynamically for FFmpeg to write more frames
+                    await asyncio.sleep(0.2)
                     continue
                     
                 await response.write(chunk)
@@ -10136,11 +10157,10 @@ async def _api_stream_handler(request):
     except asyncio.CancelledError:
         logger.warning(f"🐛 [DEBUG] Connection CANCELLED after {bytes_sent} bytes.")
         raise
-    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
+    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError) as e:
         logger.warning(f"🐛 [DEBUG] Connection RESET by Browser after {bytes_sent} bytes.")
     except Exception as e:
         logger.error(f"🐛 [DEBUG] Unhandled Exception: {e}")
-        
     return response
 
 CLIENT_MSG_CACHE = {}
