@@ -10008,7 +10008,6 @@ async def _api_stream_handler(request):
 
     import aiohttp
     
-    # 🟢 FIX: Separate HTTP Header logic strictly for iOS/Apple devices!
     user_agent = request.headers.get("User-Agent", "").lower()
     is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
 
@@ -10019,9 +10018,10 @@ async def _api_stream_handler(request):
         if match and match.group(1):
             start_byte = int(match.group(1))
 
+    # --- 🟢 DEBUG LOGGING: What did the browser ask for? ---
+    logger.info(f"🐛 [DEBUG AVPLAYER] INCOMING -> Method: {request.method} | Range: '{client_range}' | IS_APPLE: {is_apple}")
+
     # --- 🟢 APPLE AVPLAYER CONTINUOUS PIPE CACHE ---
-    # Safari makes sequential byte-range requests (0-1, then 2-...). 
-    # Restarting FFmpeg breaks MP4 atoms. We MUST cache and resume the pipe!
     if "APPLE_FFMPEG_CACHE" not in globals():
         global APPLE_FFMPEG_CACHE
         APPLE_FFMPEG_CACHE = {}
@@ -10029,7 +10029,6 @@ async def _api_stream_handler(request):
     base_key = f"{user_id}_{actual_url}_{quality}_{audio_idx}"
     stream_key = f"{base_key}_{start_time}"
 
-    # Clean up orphaned processes for this user
     for k, (s_key, old_p) in list(APPLE_FFMPEG_CACHE.items()):
         if k.startswith(f"{user_id}_"):
             if k != base_key or s_key != stream_key:
@@ -10038,21 +10037,18 @@ async def _api_stream_handler(request):
                 del APPLE_FFMPEG_CACHE[k]
 
     if is_apple:
-        # ONLY resume if Safari asks for a CONTINUATION (start_byte > 0).
-        # If start_byte == 0, Safari dropped the stream and wants the moov atoms again!
         if start_byte > 0 and base_key in APPLE_FFMPEG_CACHE and APPLE_FFMPEG_CACHE[base_key][0] == stream_key and APPLE_FFMPEG_CACHE[base_key][1].returncode is None:
             proc = APPLE_FFMPEG_CACHE[base_key][1]
-            logger.info(f"🍏 Apple AVPlayer Continuation: Resuming pipe at offset {start_byte}.")
+            logger.info(f"🍏 [DEBUG AVPLAYER] Cache HIT: Resuming pipe at offset {start_byte}.")
         else:
             if base_key in APPLE_FFMPEG_CACHE:
                 try: APPLE_FFMPEG_CACHE[base_key][1].kill()
                 except: pass
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             APPLE_FFMPEG_CACHE[base_key] = (stream_key, proc)
-            logger.info(f"🍏 Apple AVPlayer: Started NEW pipe for offset {start_byte}.")
+            logger.info(f"🍏 [DEBUG AVPLAYER] Cache MISS: Started NEW pipe for offset {start_byte}.")
     else:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-    # -----------------------------------------------
 
     stream_headers = {
         "Content-Type": "video/mp4",
@@ -10064,14 +10060,13 @@ async def _api_stream_handler(request):
     if is_apple:
         stream_headers["Accept-Ranges"] = "bytes"
         if client_range:
-            end_byte = 2147483647 # Fake 2GB Maximum
+            end_byte = 2147483647 
             match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
             if match and match.group(2):
                 end_byte = int(match.group(2))
                 
             end_byte = min(end_byte, 2147483647)
             
-            # 🟢 CRITICAL: We MUST echo the exact start_byte Safari asked for!
             stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/2147483648"
             
             apple_target_length = end_byte - start_byte + 1
@@ -10081,49 +10076,52 @@ async def _api_stream_handler(request):
             stream_headers["Content-Length"] = "2147483648"
             status_code = 200
     else:
-        # Standard browsers (Chrome, Android, Windows)
         stream_headers["Accept-Ranges"] = "none"
         status_code = 200
 
+    # --- 🟢 DEBUG LOGGING: What are we sending back? ---
+    logger.info(f"🐛 [DEBUG AVPLAYER] OUTGOING -> Status: {status_code} | Length: {stream_headers.get('Content-Length')} | Range: {stream_headers.get('Content-Range', 'None')}")
+
     response = web.StreamResponse(status=status_code, headers=stream_headers)
 
+    bytes_sent = 0
     try:
         await response.prepare(request)
-        bytes_sent = 0
         while True:
-            # 🟢 CRITICAL: Only read EXACTLY the requested bytes from the FFmpeg pipe!
             if is_apple and apple_target_length is not None:
                 read_size = min(262144, apple_target_length - bytes_sent)
             else:
                 read_size = 262144
 
             if read_size <= 0:
+                logger.info(f"🐛 [DEBUG AVPLAYER] Finished targeted chunk. Sent exactly {bytes_sent} bytes.")
                 break
 
             buf = await proc.stdout.read(read_size) 
             if not buf:
+                logger.info(f"🐛 [DEBUG AVPLAYER] FFmpeg EOF (Pipe empty). Bytes sent: {bytes_sent}")
                 break
                     
             await response.write(buf)
             bytes_sent += len(buf)
             
             if is_apple and apple_target_length is not None and bytes_sent >= apple_target_length:
+                logger.info(f"🐛 [DEBUG AVPLAYER] Reached Safari's requested target. Bytes sent: {bytes_sent}")
                 break
             
         await response.write_eof()
     except asyncio.CancelledError:
-        # User clicked Stop on the frontend
+        logger.warning(f"🐛 [DEBUG AVPLAYER] Connection CANCELLED (User Stop or Safari abort) after {bytes_sent} bytes.")
         try: proc.kill()
         except: pass
         if is_apple and base_key in APPLE_FFMPEG_CACHE:
             del APPLE_FFMPEG_CACHE[base_key]
         raise
-    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
-        pass
-    except Exception:
-        pass
+    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError) as e:
+        logger.warning(f"🐛 [DEBUG AVPLAYER] Connection RESET by Safari (Expected if scrubbing) after {bytes_sent} bytes: {e}")
+    except Exception as e:
+        logger.error(f"🐛 [DEBUG AVPLAYER] Unhandled Exception after {bytes_sent} bytes: {e}")
     finally:
-        # 🟢 If Apple, DO NOT KILL FFmpeg so the next sequential request can resume it!
         if not is_apple:
             try:
                 proc.kill()
