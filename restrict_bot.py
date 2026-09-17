@@ -10061,7 +10061,6 @@ async def _api_stream_handler(request):
                     while True:
                         chunk = await obj['proc'].stdout.read(524288)
                         if not chunk: 
-                            obj['eof'] = True
                             break
                         f.write(chunk)
                         f.flush()
@@ -10108,17 +10107,15 @@ async def _api_stream_handler(request):
         await response.prepare(request)
         target_length = end_byte - start_byte + 1
 
-        # Wait up to 10 seconds for the buffer to get its first bytes from FFmpeg
-        for _ in range(50):
-            if buf_obj['size'] > 0 or buf_obj['eof']:
-                break
-            await asyncio.sleep(0.2)
-
         with open(buf_obj['file'], "rb") as f:
             # Map Safari's absolute byte request to our local file offset
             seek_pos = start_byte - buf_obj['offset']
             if seek_pos < 0: seek_pos = 0
             
+            # Wait until FFmpeg has actually written up to our seek position
+            while buf_obj['size'] < seek_pos and not buf_obj['eof']:
+                await asyncio.sleep(0.5)
+                
             f.seek(seek_pos)
             
             while bytes_sent < target_length:
@@ -10128,14 +10125,8 @@ async def _api_stream_handler(request):
                     if buf_obj['eof']:
                         logger.info(f"🐛 [DEBUG] FFmpeg EOF Reached.")
                         break
-                        
-                    # If Safari scrubs too far ahead into the un-downloaded future, force a reload
-                    if f.tell() > buf_obj['size'] + 5000000:
-                        logger.warning(f"🐛 [DEBUG] Hard scrub detected! Client asked for byte {f.tell()} but buffer is at {buf_obj['size']}.")
-                        break
-                        
-                    # Otherwise, wait dynamically for FFmpeg to write more frames
-                    await asyncio.sleep(0.2)
+                    # Wait dynamically for FFmpeg to write more frames
+                    await asyncio.sleep(0.1)
                     continue
                     
                 await response.write(chunk)
@@ -10145,10 +10136,11 @@ async def _api_stream_handler(request):
     except asyncio.CancelledError:
         logger.warning(f"🐛 [DEBUG] Connection CANCELLED after {bytes_sent} bytes.")
         raise
-    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError) as e:
+    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError):
         logger.warning(f"🐛 [DEBUG] Connection RESET by Browser after {bytes_sent} bytes.")
     except Exception as e:
         logger.error(f"🐛 [DEBUG] Unhandled Exception: {e}")
+        
     return response
 
 CLIENT_MSG_CACHE = {}
