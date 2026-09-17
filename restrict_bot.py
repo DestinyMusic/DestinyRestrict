@@ -6329,13 +6329,15 @@ HTML_DASHBOARD = """
             let htmlBuffer = "";
             filtered.forEach(c => {
                 htmlBuffer += `
-                    <!-- 🟢 FIX: Replaced onclick with ondblclick to prevent accidental modal popups during scrolling! -->
-                    <div class="task-row" style="margin-bottom: 8px; cursor: pointer; user-select: none; touch-action: manipulation;" ondblclick="openChatDetails('${c.id}')" title="Double tap for detailed info">
-                        <div>
-                            <div style="font-weight: 700; color: var(--text); font-size: 13px;">${c.name}</div>
-                            <div style="font-size: 11px; color: var(--accent); margin-top: 2px;">ID: <code>${c.id}</code></div>
+                    <div class="task-row" style="margin-bottom: 8px; user-select: none; touch-action: manipulation;">
+                        <div style="flex: 1; overflow: hidden;">
+                            <div style="font-weight: 700; color: var(--text); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">${c.name}</div>
+                            <div style="font-size: 11px; color: var(--accent); margin-top: 4px;">ID: <code>${c.id}</code></div>
                         </div>
-                        <button class="task-kill" style="color: var(--accent); border-color: var(--card-border); background: var(--bg); position: relative; z-index: 10;" onclick="event.stopPropagation(); copyChatId('${c.id}')">📋 COPY</button>
+                        <div style="display: flex; gap: 6px; flex-shrink: 0;">
+                            <button class="task-kill" style="color: #38bdf8; border-color: rgba(56, 189, 248, 0.3); background: rgba(56, 189, 248, 0.1); padding: 8px 12px;" onclick="openChatDetails('${c.id}')">ℹ️ INFO</button>
+                            <button class="task-kill" style="color: var(--accent); border-color: var(--card-border); background: var(--bg); padding: 8px 12px;" onclick="copyChatId('${c.id}')">📋 COPY</button>
+                        </div>
                     </div>
                 `;
             });
@@ -6356,25 +6358,24 @@ HTML_DASHBOARD = """
             modal.classList.add('show');
             
             document.getElementById('cd-loading').style.display = 'block';
+            document.getElementById('cd-loading').innerText = "⏳ Deep Scanning Telegram Servers...";
             document.getElementById('cd-content').style.display = 'none';
             document.getElementById('cd-desc-container').style.display = 'none';
             document.getElementById('cd-topics-container').style.display = 'none';
             document.getElementById('cd-title').innerText = "Analyzing Chat...";
 
-            console.log(`[DEBUG UI] Requesting details for ChatID: ${chatId}...`);
-
             try {
                 const res = await fetch(`/api/chat_details?user_id=${currentUser}&chat_id=${chatId}`);
-                console.log(`[DEBUG UI] HTTP Status Code: ${res.status}`);
-                
-                // Read as raw text first so we can see what the server actually sent!
                 const textRaw = await res.text();
-                console.log(`[DEBUG UI] Raw Backend Response:`, textRaw);
                 
-                const data = JSON.parse(textRaw);
+                let data;
+                try {
+                    data = JSON.parse(textRaw);
+                } catch(e) {
+                    throw new Error("Invalid Server Response: " + textRaw.substring(0, 80));
+                }
 
                 if (data.status === 'success') {
-                    console.log(`[DEBUG UI] Data parsed successfully. Rendering UI...`);
                     document.getElementById('cd-loading').style.display = 'none';
                     document.getElementById('cd-content').style.display = 'block';
                     
@@ -6409,16 +6410,13 @@ HTML_DASHBOARD = """
                     }
                 } else {
                     document.getElementById('cd-loading').innerText = "❌ " + data.message;
-                    console.error("[DEBUG UI] Backend returned error:", data.message);
-                    alert("⚠️ Backend Error:\n" + data.message); // Force popup so you see it on phone!
+                    alert("⚠️ Backend Error:\\n" + data.message);
                 }
             } catch (err) {
                 document.getElementById('cd-loading').innerText = "❌ Network Error or Invalid JSON.";
-                console.error("[DEBUG UI] Fetch failed or JSON parse error:", err);
-                alert("⚠️ Critical Fetch Error:\n" + err.message);
+                alert("⚠️ Fetch Error:\\n" + err.message);
             }
         }
-                    
         async function fetchChatsList() {
             await loadWebChats();
         }
@@ -9061,8 +9059,8 @@ async def _api_chats_handler(request):
         for attempt in range(max_retries):
             chat_list.clear() # Clear before each attempt
             try:
-                # 🟢 FIX: Increased timeout to massive 120s to allow thousands of chats to fully download!
-                await asyncio.wait_for(fetch_web_dialogs(), timeout=120.0)
+                # 🟢 FIX: Increased timeout to a massive 300s (5 minutes) for huge accounts!
+                await asyncio.wait_for(fetch_web_dialogs(), timeout=300.0)
                 success = True
                 break
             except asyncio.TimeoutError:
@@ -9283,15 +9281,11 @@ import traceback
 async def _api_chat_details_handler(request):
     uid = int(request.query.get("user_id", 0))
     chat_id_str = request.query.get("chat_id", "")
-    
-    logger.info(f"[DEBUG CD] Request received -> User: {uid}, Target Chat: {chat_id_str}")
-
     try: chat_id = int(chat_id_str)
     except: chat_id = chat_id_str
 
     session_str = await db.get_session(uid)
     if not session_str:
-        logger.error("[DEBUG CD] User session string missing in database.")
         return web.json_response({"status": "error", "message": "Not logged in."})
 
     uclient = USER_CLIENTS.get(uid)
@@ -9299,36 +9293,29 @@ async def _api_chat_details_handler(request):
     
     # Wake up routine to prevent locks
     if not uclient or not uclient.is_connected:
-        logger.info("[DEBUG CD] Main client inactive. Booting temporary memory client...")
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"temp_details_{uid}_{uuid.uuid4().hex}", in_memory=True, session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
             await asyncio.wait_for(uclient.connect(), timeout=10.0)
             is_temp = True
-            logger.info("[DEBUG CD] Temporary client connected successfully.")
         except Exception as e:
-            logger.error(f"[DEBUG CD] Temporary client failed to connect: {e}")
+            logger.error(f"[CHAT DETAILS] Temp client connection failed: {e}")
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     try:
-        logger.info(f"[DEBUG CD] Calling uclient.get_chat({chat_id})...")
         chat = await uclient.get_chat(chat_id)
-        logger.info(f"[DEBUG CD] get_chat() success! Found: {chat.title or chat.first_name}")
         
         # Safely fetch total message count
         try:
-            logger.info(f"[DEBUG CD] Fetching message history count...")
             total_msgs = await uclient.get_chat_history_count(chat_id)
-            logger.info(f"[DEBUG CD] Total messages: {total_msgs}")
         except Exception as e:
-            logger.warning(f"[DEBUG CD] get_chat_history_count failed: {e}")
+            logger.warning(f"[CHAT DETAILS] Could not fetch history count: {e}")
             total_msgs = "Unknown"
 
         # Safely fetch Forum Topics if applicable
         topics = []
         if getattr(chat, "is_forum", False):
-            logger.info("[DEBUG CD] Chat is a forum! Fetching topics...")
             try:
                 # Limit to 100 to prevent timeout on massive groups
                 async for t in uclient.get_forum_topics(chat_id, limit=100):
@@ -9337,11 +9324,9 @@ async def _api_chat_details_handler(request):
                         "title": t.title,
                         "top_msg": getattr(t, "top_message", "?")
                     })
-                logger.info(f"[DEBUG CD] Extracted {len(topics)} topics successfully.")
             except Exception as e:
-                logger.warning(f"[DEBUG CD] get_forum_topics failed: {e}")
+                logger.warning(f"[CHAT DETAILS] Could not fetch topics: {e}")
 
-        logger.info("[DEBUG CD] Sending successful JSON response to Web UI.")
         return web.json_response({
             "status": "success",
             "id": str(chat.id),
@@ -9355,13 +9340,12 @@ async def _api_chat_details_handler(request):
         })
     except Exception as e:
         err_trace = traceback.format_exc()
-        logger.error(f"[DEBUG CD] EXCEPTION in chat details fetcher:\n{err_trace}")
+        logger.error(f"[CHAT DETAILS ERROR] Traceback:\n{err_trace}")
         return web.json_response({"status": "error", "message": f"API Error: {str(e)}"})
     finally:
         if is_temp:
-            logger.info("[DEBUG CD] Cleaning up temporary client...")
             try: await asyncio.wait_for(uclient.disconnect(), timeout=3.0)
-            except Exception as e: logger.warning(f"[DEBUG CD] Temp disconnect error: {e}")
+            except: pass
 
 async def _api_mediainfo_web_handler(request):
     data = await request.json()
