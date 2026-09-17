@@ -4870,15 +4870,21 @@ HTML_DASHBOARD = """
         .cinema-scrubber-bar {
             position: relative; width: 100%; height: 6px; background: rgba(255,255,255,0.25);
             border-radius: 999px; cursor: pointer; transition: height 0.15s ease;
+            overflow: hidden; /* Contains the buffer cleanly */
         }
         .cinema-scrubber-bar:hover { height: 10px; }
-        .scrubber-fill { height: 100%; background: var(--accent); border-radius: 999px; width: 0%; position: relative; }
+        .scrubber-buffer {
+            position: absolute; left: 0; top: 0; height: 100%; 
+            background: rgba(34, 197, 94, 0.6); /* 🟢 Green Loaded Indicator */
+            border-radius: 999px; width: 0%; pointer-events: none; transition: width 0.2s linear;
+        }
+        .scrubber-fill { height: 100%; background: var(--accent); border-radius: 999px; width: 0%; position: absolute; left: 0; top: 0; pointer-events: none; }
         .scrubber-fill::after {
             content: ''; position: absolute; right: -6px; top: 50%; transform: translateY(-50%);
-            width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px var(--accent);
+            width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 0 10px var(--accent); pointer-events: auto;
         }
 
-        .cinema-controls-row { display: flex; justify-content: space-between; align-items: center; }
+        .cinema-controls-row { display: flex; justify-content: space-between; align-items: center; margin-top: 12px; }
         .ctrl-group { display: flex; align-items: center; gap: 12px; }
         .cinema-btn { background: none; border: none; color: #fff; cursor: pointer; font-size: 20px; display: flex; align-items: center; justify-content: center; transition: transform 0.2s, color 0.2s; padding: 0; }
         .cinema-btn:hover { color: var(--accent); transform: scale(1.2); }
@@ -5421,6 +5427,7 @@ HTML_DASHBOARD = """
                     <!-- HUD Overlay -->
                     <div class="cinema-hud" id="cinema-hud">
                         <div class="cinema-scrubber-bar" id="cinema-scrubber" onclick="seekPlayback(event)">
+                            <div class="scrubber-buffer" id="scrubber-buffer"></div>
                             <div class="scrubber-fill" id="scrubber-fill"></div>
                         </div>
                         <div class="cinema-controls-row">
@@ -5430,11 +5437,31 @@ HTML_DASHBOARD = """
                                 </button>
                                 <span class="time-badge" id="hud-time">00:00 / 00:00</span>
                             </div>
-                            <div class="ctrl-group">
-                                <button class="cinema-btn" id="hud-rotate-btn" onclick="toggleOrientation()" title="Rotate Screen">🔄</button>
-                                <button class="cinema-btn" id="hud-3d-btn" onclick="toggleMatrixPopup()" title="3D Matrix">👓</button>
-                                <button class="cinema-btn" id="hud-settings-btn" onclick="toggleSettingsPopup()" title="Tracks, subtitles & aspect">⚙️</button>
-                                <button class="cinema-btn" id="hud-fullscreen-btn" onclick="toggleFullScreen()" title="Fullscreen">⛶</button>
+                            <div class="ctrl-group" style="gap: 16px;">
+                                <!-- Mute / Sound -->
+                                <button class="cinema-btn" id="hud-mute-btn" onclick="toggleMute()" title="Mute/Unmute">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>
+                                </button>
+                                <!-- Picture-in-Picture -->
+                                <button class="cinema-btn" id="hud-pip-btn" onclick="togglePiP()" title="Picture in Picture">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M19 7h-8v6h8V7zm2-4H3c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h18c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16.01H3V4.98h18v14.03z"/></svg>
+                                </button>
+                                <!-- Brightness Cycler -->
+                                <button class="cinema-btn" id="hud-brightness-btn" onclick="cycleBrightness()" title="Brightness">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41.39.39 1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41.39.39 1.03.39 1.41 0l1.06-1.06z"/></svg>
+                                </button>
+                                <!-- Rotate -->
+                                <button class="cinema-btn" id="hud-rotate-btn" onclick="toggleOrientation()" title="Rotate Screen">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16.48 2.52c3.27 1.55 5.61 4.72 5.97 8.48h1.5C23.44 4.84 18.29 0 12 0l-.66.03 3.81 3.81 1.33-1.32zm-6.25-.77c-.59-.59-1.54-.59-2.12 0L1.75 8.11c-.59.59-.59 1.54 0 2.12l12.02 12.02c.59.59 1.54.59 2.12 0l6.36-6.36c.59-.59.59-1.54 0-2.12L10.23 1.75zm4.6 19.44L2.81 9.17l6.36-6.36 12.02 12.02-6.36 6.36zm-7.3-3.05v-1.42c-3.27-1.55-5.61-4.72-5.97-8.48h-1.5C.56 19.16 5.71 24 12 24l.66-.03-3.81-3.81-1.32 1.32z"/></svg>
+                                </button>
+                                <!-- Settings & 3D -->
+                                <button class="cinema-btn" id="hud-settings-btn" onclick="toggleSettingsPopup()" title="Tracks, Settings & 3D">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M19.43 12.98c.04-.32.07-.64.07-.98s-.03-.66-.07-.98l2.11-1.65c.19-.15.24-.42.12-.64l-2-3.46c-.12-.22-.39-.3-.61-.22l-2.49 1c-.52-.4-1.08-.73-1.69-.98l-.38-2.65C14.46 2.18 14.25 2 14 2h-4c-.25 0-.46.18-.49.42l-.38 2.65c-.61.25-1.17.59-1.69.98l-2.49-1c-.23-.09-.49 0-.61.22l-2 3.46c-.13.22-.07.49.12.64l2.11 1.65c-.04.32-.07.65-.07.98s.03.66.07.98l-2.11 1.65c-.19.15-.24.42-.12.64l2 3.46c.12.22.39.3.61.22l2.49-1c.52.4 1.08.73 1.69.98l.38 2.65c.03.24.24.42.49.42h4c.25 0 .46-.18.49-.42l.38-2.65c.61-.25 1.17-.59 1.69-.98l2.49 1c.23.09.49 0 .61-.22l2-3.46c.12-.22.07-.49-.12-.64l-2.11-1.65zM12 15.5c-1.93 0-3.5-1.57-3.5-3.5s1.57-3.5 3.5-3.5 3.5 1.57 3.5 3.5-1.57 3.5-3.5 3.5z"/></svg>
+                                </button>
+                                <!-- Fullscreen -->
+                                <button class="cinema-btn" id="hud-fullscreen-btn" onclick="toggleFullScreen()" title="Fullscreen">
+                                    <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z"/></svg>
+                                </button>
                             </div>
                         </div>
                     </div>
@@ -8064,10 +8091,90 @@ HTML_DASHBOARD = """
                 clearTimeout(stallTimer);
                 updateViewportBox(); resizePlayerSurface(); applyPlaybackSpeed(); 
             });
+            // 🟢 Add new control functions anywhere above the event listeners
+            function updateBufferBar() {
+                const video = document.getElementById('hidden-video');
+                const bufferBar = document.getElementById('scrubber-buffer');
+                if (!video || !bufferBar) return;
+                
+                let dur = video.duration || 0;
+                if (playerRequiresTranscode && playerTotalDuration > 0) dur = playerTotalDuration;
+                else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) dur = playerTotalDuration;
+                
+                if (dur > 0 && video.buffered.length > 0) {
+                    let maxBuffered = 0;
+                    const curTime = video.currentTime;
+                    for (let i = 0; i < video.buffered.length; i++) {
+                        if (video.buffered.start(i) <= curTime && video.buffered.end(i) >= curTime) {
+                            maxBuffered = video.buffered.end(i);
+                            break;
+                        }
+                    }
+                    if (maxBuffered === 0) maxBuffered = video.buffered.end(video.buffered.length - 1);
+                    if (playerRequiresTranscode) maxBuffered += playerTimelineOffset;
+                    
+                    const pct = Math.min(100, (maxBuffered / dur) * 100);
+                    bufferBar.style.width = `${pct}%`;
+                }
+            }
+
+            function toggleMute() {
+                const video = document.getElementById('hidden-video');
+                const extAudio = document.getElementById('ext-audio-player');
+                if (!video) return;
+                
+                video.muted = !video.muted;
+                if (extAudio) extAudio.muted = video.muted;
+                
+                const muteBtn = document.getElementById('hud-mute-btn');
+                if (muteBtn) {
+                    if (video.muted) {
+                        muteBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M16.5 12c0-1.77-1.02-3.29-2.5-4.03v2.21l2.45 2.45c.03-.2.05-.41.05-.63zm2.5 0c0 .94-.2 1.82-.54 2.64l1.51 1.51C20.63 14.91 21 13.5 21 12c0-4.28-2.99-7.86-7-8.77v2.06c2.89.86 5 3.54 5 6.71zM4.27 3L3 4.27 7.73 9H3v6h4l5 5v-6.73l4.25 4.25c-.67.52-1.42.93-2.25 1.18v2.06c1.38-.31 2.63-.95 3.69-1.81L19.73 21 21 19.73l-9-9L4.27 3zM12 4L9.91 6.09 12 8.18V4z"/></svg>';
+                    } else {
+                        muteBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/></svg>';
+                    }
+                }
+                wakeHUD();
+            }
+
+            let currentBrightLevel = 100;
+            function cycleBrightness() {
+                const levels = [100, 75, 50, 25];
+                let idx = levels.indexOf(currentBrightLevel);
+                currentBrightLevel = levels[(idx + 1) % levels.length];
+                
+                // Directly hook into the pre-existing Advanced Filters mechanism!
+                const slider = document.getElementById('filter-bright');
+                if (slider) slider.value = currentBrightLevel;
+                applyVideoFilters();
+                wakeHUD();
+            }
+
+            async function togglePiP() {
+                const video = document.getElementById('hidden-video');
+                if (!video) return;
+                try {
+                    if (document.pictureInPictureElement) {
+                        await document.exitPictureInPicture();
+                    } else if (document.pictureInPictureEnabled) {
+                        await video.requestPictureInPicture();
+                    } else {
+                        alert("Picture-in-Picture is not supported by your device/browser.");
+                    }
+                } catch (err) { console.error("PiP error:", err); }
+                wakeHUD();
+            }
+
             vidElem.addEventListener('loadeddata', () => { renderCurrentSubtitle(); applyPlaybackSpeed(); });
             vidElem.addEventListener('seeked', () => renderCurrentSubtitle());
+            
+            // 🟢 Attach buffer event
+            vidElem.addEventListener('progress', updateBufferBar);
+
             vidElem.addEventListener('timeupdate', () => {
                 clearTimeout(stallTimer); // 🟢 Clear stall timer because frames are flowing!
+                
+                updateBufferBar(); // 🟢 Trigger buffer calculation
                 
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
