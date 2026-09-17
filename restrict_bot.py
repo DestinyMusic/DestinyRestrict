@@ -10012,9 +10012,16 @@ async def _api_stream_handler(request):
     user_agent = request.headers.get("User-Agent", "").lower()
     is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
 
+    client_range = request.headers.get("Range", "")
+    start_byte = 0
+    if client_range:
+        match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
+        if match and match.group(1):
+            start_byte = int(match.group(1))
+
     # --- 🟢 APPLE AVPLAYER CONTINUOUS PIPE CACHE ---
-    # Safari requires sequential byte-range requests. Restarting FFmpeg on every request 
-    # breaks the MP4 atom alignment. We MUST cache the FFmpeg process for Apple devices!
+    # Safari makes sequential byte-range requests (0-1, then 2-...). 
+    # Restarting FFmpeg breaks MP4 atoms. We MUST cache and resume the pipe!
     if "APPLE_FFMPEG_CACHE" not in globals():
         global APPLE_FFMPEG_CACHE
         APPLE_FFMPEG_CACHE = {}
@@ -10031,12 +10038,18 @@ async def _api_stream_handler(request):
                 del APPLE_FFMPEG_CACHE[k]
 
     if is_apple:
-        if base_key in APPLE_FFMPEG_CACHE and APPLE_FFMPEG_CACHE[base_key][0] == stream_key and APPLE_FFMPEG_CACHE[base_key][1].returncode is None:
+        # ONLY resume if Safari asks for a CONTINUATION (start_byte > 0).
+        # If start_byte == 0, Safari dropped the stream and wants the moov atoms again!
+        if start_byte > 0 and base_key in APPLE_FFMPEG_CACHE and APPLE_FFMPEG_CACHE[base_key][0] == stream_key and APPLE_FFMPEG_CACHE[base_key][1].returncode is None:
             proc = APPLE_FFMPEG_CACHE[base_key][1]
-            logger.info(f"🍏 Apple AVPlayer Continuation: Resuming pipe exactly where we left off.")
+            logger.info(f"🍏 Apple AVPlayer Continuation: Resuming pipe at offset {start_byte}.")
         else:
+            if base_key in APPLE_FFMPEG_CACHE:
+                try: APPLE_FFMPEG_CACHE[base_key][1].kill()
+                except: pass
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             APPLE_FFMPEG_CACHE[base_key] = (stream_key, proc)
+            logger.info(f"🍏 Apple AVPlayer: Started NEW pipe for offset {start_byte}.")
     else:
         proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
     # -----------------------------------------------
@@ -10050,20 +10063,16 @@ async def _api_stream_handler(request):
     apple_target_length = None
     if is_apple:
         stream_headers["Accept-Ranges"] = "bytes"
-        client_range = request.headers.get("Range", "")
         if client_range:
-            start_byte = 0
             end_byte = 2147483647 # Fake 2GB Maximum
-            
             match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
-            if match:
-                if match.group(1): start_byte = int(match.group(1))
-                if match.group(2): end_byte = int(match.group(2))
+            if match and match.group(2):
+                end_byte = int(match.group(2))
                 
-            fake_total = 2147483648
-            end_byte = min(end_byte, fake_total - 1)
+            end_byte = min(end_byte, 2147483647)
             
-            stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
+            # 🟢 CRITICAL: We MUST echo the exact start_byte Safari asked for!
+            stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/2147483648"
             
             apple_target_length = end_byte - start_byte + 1
             stream_headers["Content-Length"] = str(apple_target_length)
@@ -10072,7 +10081,7 @@ async def _api_stream_handler(request):
             stream_headers["Content-Length"] = "2147483648"
             status_code = 200
     else:
-        # ULTRA-STABLE 200 OK RESPONSE FOR CHROME, ANDROID, WINDOWS
+        # Standard browsers (Chrome, Android, Windows)
         stream_headers["Accept-Ranges"] = "none"
         status_code = 200
 
@@ -10082,8 +10091,7 @@ async def _api_stream_handler(request):
         await response.prepare(request)
         bytes_sent = 0
         while True:
-            # 🟢 CRITICAL FIX: Only read EXACTLY the requested bytes from the FFmpeg pipe!
-            # If we read more, we steal bytes from the next Safari request, breaking the video!
+            # 🟢 CRITICAL: Only read EXACTLY the requested bytes from the FFmpeg pipe!
             if is_apple and apple_target_length is not None:
                 read_size = min(262144, apple_target_length - bytes_sent)
             else:
@@ -10104,7 +10112,7 @@ async def _api_stream_handler(request):
             
         await response.write_eof()
     except asyncio.CancelledError:
-        # Explicitly killed by User clicking Stop on the frontend
+        # User clicked Stop on the frontend
         try: proc.kill()
         except: pass
         if is_apple and base_key in APPLE_FFMPEG_CACHE:
@@ -10115,7 +10123,7 @@ async def _api_stream_handler(request):
     except Exception:
         pass
     finally:
-        # If it IS apple, we intentionally DO NOT kill the process here so the next byte range request can resume it!
+        # 🟢 If Apple, DO NOT KILL FFmpeg so the next sequential request can resume it!
         if not is_apple:
             try:
                 proc.kill()
