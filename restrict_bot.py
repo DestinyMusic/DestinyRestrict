@@ -33,6 +33,8 @@ from collections import defaultdict, OrderedDict
 import motor.motor_asyncio
 
 from pyrogram import Client, filters, enums, idle
+from pyrogram.raw.functions.messages import GetDialogs
+from pyrogram.raw.types import InputPeerEmpty
 
 # --- UNIVERSAL FORK & PYROMOD SUBSCRIPTABLE PATCH ---
 # This bridges the gap between Pyromod's dictionary expectations 
@@ -2659,66 +2661,85 @@ async def chats_cmd(client: Client, message: Message):
         status = await message.reply("🔄 <b>Fetching your chats... Please wait</b>", parse_mode=enums.ParseMode.HTML)
 
     users, groups, channels, bots = [], [], [], []
-    
-    # 🟢 RETRY LOOP: Handles transient network drops, socket timeouts, and pagination bugs
-    max_retries = 3
-    success = False
-    last_err = None
 
-    for attempt in range(max_retries):
-        users.clear(); groups.clear(); channels.clear(); bots.clear()
-        
-        async def fetch_tg_dialogs():
-            async for d in uclient.get_dialogs():
-                try:
-                    chat = getattr(d, "chat", None)
-                    if not chat: continue
-                    cid = getattr(chat, "id", None)
-                    if not cid: continue
+    async def execute_raw_pagination(target_folder_id):
+        offset_date = 0
+        offset_id = 0
+        offset_peer = InputPeerEmpty()
 
-                    title = getattr(chat, "title", None)
-                    first_name = getattr(chat, "first_name", None)
-                    name = html.escape(title or first_name or f"Chat {cid}")
-                    line = f"• <b>{name}</b> │ <code>{cid}</code>"
+        while True:
+            try:
+                response = await uclient.invoke(
+                    GetDialogs(
+                        offset_date=offset_date,
+                        offset_id=offset_id,
+                        offset_peer=offset_peer,
+                        limit=100,
+                        hash=0,
+                        folder_id=target_folder_id
+                    ),
+                    sleep_threshold=60
+                )
+                
+                if not getattr(response, "dialogs", None):
+                    break
+
+                resolved_users = {u.id: u for u in getattr(response, "users", [])}
+                resolved_chats = {c.id: c for c in getattr(response, "chats", [])}
+
+                for dialog in response.dialogs:
+                    peer = dialog.peer
+                    raw_chat_id = getattr(peer, "channel_id", getattr(peer, "chat_id", getattr(peer, "user_id", None)))
+                    if not raw_chat_id: continue
+
+                    if hasattr(peer, "channel_id"):
+                        chat_id = int(f"-100{raw_chat_id}")
+                    elif hasattr(peer, "chat_id"):
+                        chat_id = int(f"-{raw_chat_id}")
+                    else:
+                        chat_id = raw_chat_id
                     
-                    c_type = getattr(chat, "type", None)
-                    type_str = str(c_type).lower() if c_type else ""
+                    title = "Unknown Object"
+                    category = ""
                     
-                    if "group" in type_str or "supergroup" in type_str:
-                        groups.append(line)
-                    elif "channel" in type_str:
-                        channels.append(line)
-                    elif "bot" in type_str:
-                        bots.append(line)
-                    elif "private" in type_str:
-                        users.append(line)
-                except Exception:
-                    pass
+                    if chat_id > 0:
+                        u = resolved_users.get(chat_id)
+                        if u:
+                            title = u.first_name or "Unknown User"
+                            category = "bot" if getattr(u, "bot", False) else "private"
+                    else:
+                        c = resolved_chats.get(abs(chat_id)) or resolved_chats.get(getattr(peer, "channel_id", 0)) or resolved_chats.get(getattr(peer, "chat_id", 0))
+                        if c:
+                            title = getattr(c, "title", "Unknown Group")
+                            category = "channel" if getattr(c, "broadcast", False) else "group"
 
-        try:
-            # 🟢 FIX: Increased timeout to 120s to ensure ALL chats are loaded!
-            await asyncio.wait_for(fetch_tg_dialogs(), timeout=120.0)
-            success = True
-            break
-        except asyncio.TimeoutError:
-            # 🟢 SMART FALLBACK: If we fetched at least some chats before timing out, consider it a success!
-            if users or groups or channels or bots:
-                success = True
-                break
-            last_err = "Timeout - Telegram took too long to respond."
-            logger.warning(f"Dialog fetch attempt {attempt + 1} timed out.")
-            await asyncio.sleep(2)
-        except Exception as e:
-            # 🟢 CATCH PYROGRAM GENERATOR ERRORS AND KEEP PARTIAL LIST
-            if users or groups or channels or bots:
-                success = True
-                break
-            last_err = e
-            logger.warning(f"Dialog fetch attempt {attempt + 1} failed: {e}")
-            await asyncio.sleep(2)
+                    line = f"• <b>{html.escape(title)}</b> │ <code>{chat_id}</code>"
+                    
+                    if "group" in category or "supergroup" in category: groups.append(line)
+                    elif "channel" in category: channels.append(line)
+                    elif "bot" in category: bots.append(line)
+                    elif "private" in category: users.append(line)
 
-    if not success:
-        return await status.edit(f"❌ <b>Error reading dialogs after {max_retries} retries:</b> <code>{last_err}</code>", parse_mode=enums.ParseMode.HTML)
+                last_message = response.messages[-1] if response.messages else None
+                if not last_message: break
+                
+                offset_id = getattr(last_message, "id", 0)
+                offset_date = getattr(last_message, "date", 0)
+                
+                last_peer = response.dialogs[-1].peer
+                peer_id_res = getattr(last_peer, "channel_id", getattr(last_peer, "chat_id", getattr(last_peer, "user_id", 0)))
+                offset_peer = await uclient.resolve_peer(peer_id_res)
+
+            except FloodWait as e:
+                await asyncio.sleep(e.value + 1)
+            except Exception:
+                break 
+
+    try:
+        await execute_raw_pagination(0) # Standard Chats
+        await execute_raw_pagination(1) # Archived Chats
+    except Exception as e:
+        return await status.edit(f"❌ <b>Error reading dialogs:</b> <code>{e}</code>", parse_mode=enums.ParseMode.HTML)
 
     await status.delete()
 
@@ -9030,63 +9051,41 @@ async def _api_chats_handler(request):
         except Exception as e:
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
-    chat_list = []
+    dialog_collection = []
+
     try:
-        async def fetch_web_dialogs():
+        async def populate_web_dialogs():
             try:
-                # 🟢 FIX: Removed limit=500 so it fetches ALL chats natively.
-                async for d in uclient.get_dialogs():
-                    chat = getattr(d, "chat", None)
+                async for dialog_obj in uclient.get_dialogs(limit=2500):
+                    chat = getattr(dialog_obj, "chat", None)
                     if not chat: continue
-                    cid = getattr(chat, "id", None)
-                    if not cid: continue
+                    chat_id = getattr(chat, "id", None)
+                    if not chat_id: continue
 
-                    title = getattr(chat, "title", None)
-                    first_name = getattr(chat, "first_name", None)
-                    name = title or first_name or f"Chat {cid}"
+                    display_name = getattr(chat, "title", getattr(chat, "first_name", f"Chat {chat_id}"))
                     c_type = getattr(chat, "type", None)
+                    category_label = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
                     
-                    cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
-                    is_forum = getattr(chat, "is_forum", False)
-                    
-                    # 🟢 FIX: Append directly to the outer list so data is saved even if it times out!
-                    chat_list.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
-            except AttributeError as e:
-                if "'NoneType' object has no attribute 'id'" not in str(e):
-                    raise e
-
-        max_retries = 2
-        success = False
-        last_err = None
-
-        for attempt in range(max_retries):
-            chat_list.clear() # Clear before each attempt
-            try:
-                # 🟢 FIX: Increased timeout to 45s for massive accounts
-                await asyncio.wait_for(fetch_web_dialogs(), timeout=45.0)
-                success = True
-                break
-            except asyncio.TimeoutError:
-                # 🟢 SMART FALLBACK: If it times out but we got data, return what we have!
-                if len(chat_list) > 0:
-                    success = True
-                    break
-                last_err = "Telegram API timeout."
-                await asyncio.sleep(1.5)
+                    dialog_collection.append({
+                        "id": str(chat_id), 
+                        "name": f"[{category_label}] {display_name}", 
+                        "is_forum": getattr(chat, "is_forum", False)
+                    })
             except Exception as e:
-                if len(chat_list) > 0:
-                    success = True
-                    break
-                last_err = str(e)
-                await asyncio.sleep(1.5)
+                if "'NoneType'" not in str(e):
+                    logger.warning(f"Web Dialog Pagination Interrupted: {e}")
 
-        if not success:
-            return web.json_response({"status": "error", "message": f"Failed after {max_retries} retries. Last error: {last_err}"})
-
-    except Exception as e: 
-        return web.json_response({"status": "error", "message": str(e)})
+        try:
+            await asyncio.wait_for(populate_web_dialogs(), timeout=60.0)
+        except asyncio.TimeoutError:
+            logger.warning("Web dialog fetch reached the 60s timeout ceiling. Returning the partial payload.")
             
-    return web.json_response({"status": "success", "chats": chat_list})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
+
+    # Deduplicate arrays safely before returning to web UI
+    sanitized_collection = {c['id']: c for c in dialog_collection}.values()
+    return web.json_response({"status": "success", "chats": list(sanitized_collection)})
 
 async def _api_speedtest_handler(request):
     try:
@@ -9259,9 +9258,15 @@ import traceback
 
 async def _api_chat_details_handler(request):
     uid = int(request.query.get("user_id", 0))
-    chat_id_str = request.query.get("chat_id", "")
-    try: chat_id = int(chat_id_str)
-    except: chat_id = chat_id_str
+    raw_chat_string = request.query.get("chat_id", "").strip()
+    
+    if not raw_chat_string:
+        return web.json_response({"status": "error", "message": "Missing required chat_id parameter."})
+        
+    try: 
+        chat_id = int(raw_chat_string)
+    except ValueError: 
+        chat_id = raw_chat_string if raw_chat_string.startswith("@") else f"@{raw_chat_string}"
 
     session_str = await db.get_session(uid)
     if not session_str:
@@ -9284,26 +9289,33 @@ async def _api_chat_details_handler(request):
 
     try:
         try:
-            chat = await uclient.get_chat(chat_id)
+            chat = await asyncio.wait_for(uclient.get_chat(chat_id), timeout=12.0)
         except PeerIdInvalid:
-            # 🟢 SMART FALLBACK: If Pyrogram forgot the Access Hash, fetch recent dialogs to instantly relearn it!
-            async for _ in uclient.get_dialogs(limit=500): 
-                pass
-            chat = await uclient.get_chat(chat_id)
+            try:
+                resolved_peer = await asyncio.wait_for(uclient.resolve_peer(chat_id), timeout=8.0)
+                chat = await asyncio.wait_for(uclient.get_chat(resolved_peer), timeout=12.0)
+            except Exception as inner_e:
+                raise Exception(f"Fatal resolution failure. ({inner_e})")
         
         # Safely fetch total message count
         try:
-            total_msgs = await uclient.get_chat_history_count(chat_id)
+            total_msgs = await asyncio.wait_for(uclient.get_chat_history_count(chat_id), timeout=6.0)
         except Exception as e:
-            logger.warning(f"[CHAT DETAILS] Could not fetch history count: {e}")
             total_msgs = "Unknown"
 
         # Safely fetch Forum Topics if applicable
         topics = []
         if getattr(chat, "is_forum", False):
             try:
-                # Limit to 100 to prevent timeout on massive groups
-                async for t in uclient.get_forum_topics(chat_id, limit=100):
+                async def fetch_forum_topology():
+                    topology_list = []
+                    async for t in uclient.get_forum_topics(chat_id, limit=100):
+                        top_msg_data = getattr(t, "top_message", "?")
+                        top_msg_val = str(top_msg_data.id) if hasattr(top_msg_data, "id") else str(top_msg_data)
+                        topology_list.append({"id": t.id, "title": t.title, "top_msg": top_msg_val})
+                    return topology_list
+                    
+                topics = await asyncio.wait_for(fetch_forum_topology(), timeout=10.0)
                     # 🟢 FIX: Prevent Pyrogram Message object serialization crash
                     top_message_data = getattr(t, "top_message", "?")
                     if hasattr(top_message_data, "id"):
