@@ -2670,8 +2670,8 @@ async def chats_cmd(client: Client, message: Message):
         
         async def fetch_tg_dialogs():
             try:
-                # Limit 500 speeds up retrieval and prevents memory exhaustion
-                async for d in uclient.get_dialogs(limit=500):
+                # 🟢 FIX: Removed limit=500 to fetch ALL chats.
+                async for d in uclient.get_dialogs():
                     chat = getattr(d, "chat", None)
                     if not chat: continue
                     cid = getattr(chat, "id", None)
@@ -2693,17 +2693,20 @@ async def chats_cmd(client: Client, message: Message):
                         bots.append(line)
                     elif "private" in type_str:
                         users.append(line)
-            except AttributeError as e:
-                # Catch pagination bug safely inside the fetcher so we don't lose the arrays
-                if "'NoneType' object has no attribute 'id'" not in str(e):
-                    raise e
+            except Exception:
+                # 🟢 FIX: Catch all Pyrogram parsing bugs silently to keep the loop alive
+                pass
 
         try:
-            # Use wait_for to prevent indefinite socket hangs
-            await asyncio.wait_for(fetch_tg_dialogs(), timeout=20.0)
+            # 🟢 FIX: Increased timeout to 35s. If it times out, we STILL KEEP whatever chats we loaded!
+            await asyncio.wait_for(fetch_tg_dialogs(), timeout=35.0)
             success = True
             break
         except asyncio.TimeoutError:
+            # 🟢 SMART FALLBACK: If we fetched at least some chats before timing out, consider it a success!
+            if users or groups or channels or bots:
+                success = True
+                break
             last_err = "Timeout - Telegram took too long to respond."
             logger.warning(f"Dialog fetch attempt {attempt + 1} timed out.")
             await asyncio.sleep(2)
@@ -4761,7 +4764,7 @@ HTML_DASHBOARD = """
 
         /* Custom subtitle layer: fully independent of the hidden <video>. */
         .subtitle-overlay {
-            position: absolute; left: 5%; right: 5%; bottom: 10%;
+            position: absolute; left: 1%; right: 1%; bottom: 10%; /* 🟢 FIX: Widened boundaries */
             display: flex; justify-content: center; align-items: flex-end;
             z-index: 28; pointer-events: none;
             text-align: center;
@@ -5812,6 +5815,33 @@ HTML_DASHBOARD = """
                         <button type="button" class="btn-cancel" style="margin-top: 12px; width: 100%;" onclick="closeTopicSelector()">Cancel</button>
                     </div>
                 </div>
+                
+                <!-- 🟢 NEW: Liquid Glass Chat Details Modal -->
+                <div class="modal" id="chatDetailsModal" style="z-index: 330;">
+                    <div class="modal-content" style="max-width: 480px; padding: 25px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                            <h3 style="margin: 0; color: #fff; font-size: 16px; text-transform: uppercase; letter-spacing: 1px;" id="cd-title">Chat Details</h3>
+                            <button type="button" onclick="closeChatDetails()" style="background: rgba(239,68,68,0.15); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: bold; cursor: pointer; transition: 0.2s;">Close ✕</button>
+                        </div>
+                        <div id="cd-loading" style="color: var(--accent); font-weight: bold; text-align: center; padding: 20px;">⏳ Deep Scanning Telegram Servers...</div>
+                        <div id="cd-content" style="display: none;">
+                            <div style="background: rgba(0,0,0,0.3); border: 1px solid color-mix(in srgb, var(--card-border) 50%, transparent); border-radius: 16px; padding: 16px; margin-bottom: 15px; box-shadow: inset 0 0 15px rgba(0,0,0,0.5);">
+                                <div style="font-size: 12px; color: var(--subtext); margin-bottom: 8px; display: flex; justify-content: space-between;"><span>ID:</span> <code id="cd-id" style="color: var(--accent); font-weight: 800;"></code></div>
+                                <div style="font-size: 12px; color: var(--subtext); margin-bottom: 8px; display: flex; justify-content: space-between;"><span>Type:</span> <strong id="cd-type" style="color: #fff;"></strong></div>
+                                <div style="font-size: 12px; color: var(--subtext); margin-bottom: 8px; display: flex; justify-content: space-between;"><span>Members:</span> <strong id="cd-members" style="color: #10b981;"></strong></div>
+                                <div style="font-size: 12px; color: var(--subtext); display: flex; justify-content: space-between;"><span>Total Messages:</span> <strong id="cd-msgs" style="color: #38bdf8;"></strong></div>
+                            </div>
+                            <div id="cd-desc-container" style="background: rgba(0,0,0,0.3); border: 1px solid color-mix(in srgb, var(--card-border) 50%, transparent); border-radius: 14px; padding: 15px; margin-bottom: 15px; font-size: 12px; color: #cbd5e1; max-height: 100px; overflow-y: auto; white-space: pre-wrap; display: none;"></div>
+                            
+                            <div id="cd-topics-container" style="display: none; margin-top: 20px;">
+                                <h4 style="margin: 0 0 12px 0; color: #fff; font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid var(--card-border); padding-bottom: 6px;">📂 Active Forum Topics</h4>
+                                <div id="cd-topics-list" style="max-height: 220px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; padding-right: 5px;"></div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- 🟢 END OF NEW MODAL -->
+
                 <div class="input-group" id="delay-group">
                     <label>Forward Delay (Seconds)</label>
                     <input type="number" id="t-delay" value="3" min="3">
@@ -6297,7 +6327,8 @@ HTML_DASHBOARD = """
             let htmlBuffer = "";
             filtered.forEach(c => {
                 htmlBuffer += `
-                    <div class="task-row" style="margin-bottom: 8px;">
+                    <!-- 🟢 FIX: Added ondblclick, user-select: none, and touch-action to make it mobile app friendly! -->
+                    <div class="task-row" style="margin-bottom: 8px; cursor: pointer; user-select: none; touch-action: manipulation;" ondblclick="openChatDetails('${c.id}')" title="Double tap for detailed info">
                         <div>
                             <div style="font-weight: 700; color: var(--text); font-size: 13px;">${c.name}</div>
                             <div style="font-size: 11px; color: var(--accent); margin-top: 2px;">ID: <code>${c.id}</code></div>
@@ -6314,6 +6345,63 @@ HTML_DASHBOARD = """
         function copyChatId(id) {
             navigator.clipboard.writeText(id);
             alert("Copied ID: " + id);
+        }
+
+        // 🟢 NEW: Chat Details Logic
+        function closeChatDetails() { document.getElementById('chatDetailsModal').classList.remove('show'); }
+        async function openChatDetails(chatId) {
+            const modal = document.getElementById('chatDetailsModal');
+            modal.classList.add('show');
+            
+            document.getElementById('cd-loading').style.display = 'block';
+            document.getElementById('cd-content').style.display = 'none';
+            document.getElementById('cd-desc-container').style.display = 'none';
+            document.getElementById('cd-topics-container').style.display = 'none';
+            document.getElementById('cd-title').innerText = "Analyzing Chat...";
+
+            try {
+                const res = await fetch(`/api/chat_details?user_id=${currentUser}&chat_id=${chatId}`);
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    document.getElementById('cd-loading').style.display = 'none';
+                    document.getElementById('cd-content').style.display = 'block';
+                    
+                    document.getElementById('cd-title').innerText = data.title;
+                    document.getElementById('cd-id').innerText = data.id;
+                    document.getElementById('cd-type').innerText = data.type.replace("ChatType.", "").toUpperCase();
+                    document.getElementById('cd-members').innerText = data.members > 0 ? data.members.toLocaleString() : "N/A";
+                    document.getElementById('cd-msgs').innerText = data.total_messages !== "Unknown" ? data.total_messages.toLocaleString() : "Unknown";
+                    
+                    const descContainer = document.getElementById('cd-desc-container');
+                    if (data.description) {
+                        descContainer.innerText = data.description;
+                        descContainer.style.display = 'block';
+                    }
+
+                    if (data.is_forum && data.topics && data.topics.length > 0) {
+                        const topicsContainer = document.getElementById('cd-topics-container');
+                        const topicsList = document.getElementById('cd-topics-list');
+                        topicsContainer.style.display = 'block';
+                        
+                        topicsList.innerHTML = data.topics.map(t => `
+                            <div style="background: rgba(0,0,0,0.4); border: 1px solid rgba(255,255,255,0.05); border-left: 3px solid var(--accent); padding: 10px 12px; border-radius: 10px; display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <div style="color: #fff; font-size: 12px; font-weight: 700;">${t.title}</div>
+                                    <div style="color: var(--subtext); font-size: 10px; margin-top: 2px;">Topic ID: ${t.id}</div>
+                                </div>
+                                <div style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; padding: 4px 8px; border-radius: 6px; font-size: 10px; font-weight: 800;">
+                                    ${t.top_msg !== "?" ? "Active" : "Idle"}
+                                </div>
+                            </div>
+                        `).join('');
+                    }
+                } else {
+                    document.getElementById('cd-loading').innerText = "❌ " + data.message;
+                }
+            } catch (err) {
+                document.getElementById('cd-loading').innerText = "❌ Network Error.";
+            }
         }
 
         async function fetchChatsList() {
@@ -7475,8 +7563,8 @@ HTML_DASHBOARD = """
                     </div>
                 `;
             } else {
-                overlay.style.left = '5%';
-                overlay.style.right = '5%';
+                overlay.style.left = '1%'; /* 🟢 FIX: Allows the subtitle slider to stretch to 99% of screen width */
+                overlay.style.right = '1%';
                 overlay.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>`;
             }
             
@@ -8244,7 +8332,8 @@ HTML_DASHBOARD = """
 
             let currentBrightLevel = 100;
             function cycleBrightness() {
-                const levels = [100, 75, 50, 25];
+                // 🟢 FIX: Added 150% and 200% brightness overdrive!
+                const levels = [100, 150, 200, 75, 50, 25];
                 let idx = levels.indexOf(currentBrightLevel);
                 currentBrightLevel = levels[(idx + 1) % levels.length];
                 
@@ -8255,7 +8344,7 @@ HTML_DASHBOARD = """
                 // 🟢 FIX: Dynamically update the SVG icon based on brightness level
                 const btn = document.getElementById('hud-brightness-btn');
                 if (btn) {
-                    if (currentBrightLevel === 100) {
+                    if (currentBrightLevel >= 100) {
                         // Full Sun (All Rays)
                         btn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M12 7c-2.76 0-5 2.24-5 5s2.24 5 5 5 5-2.24 5-5-2.24-5-5-5zM2 13h2c.55 0 1-.45 1-1s-.45-1-1-1H2c-.55 0-1 .45-1 1s.45 1 1 1zm18 0h2c.55 0 1-.45 1-1s-.45-1-1-1h-2c-.55 0-1 .45-1 1s.45 1 1 1zM11 2v2c0 .55.45 1 1 1s1-.45 1-1V2c0-.55-.45-1-1-1s-1 .45-1 1zm0 18v2c0 .55.45 1 1 1s1-.45 1-1v-2c0-.55-.45-1-1-1s-1 .45-1 1zM5.99 4.58c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41L5.99 4.58zm12.37 12.37c-.39-.39-1.03-.39-1.41 0-.39.39-.39 1.03 0 1.41l1.06 1.06c.39.39 1.03.39 1.41 0 .39-.39.39-1.03 0-1.41l-1.06-1.06zm1.06-10.96c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41.39.39 1.03.39 1.41 0l1.06-1.06zM7.05 18.36c.39-.39.39-1.03 0-1.41-.39-.39-1.03-.39-1.41 0l-1.06 1.06c-.39.39-.39 1.03 0 1.41.39.39 1.03.39 1.41 0l1.06-1.06z"/></svg>';
                     } else if (currentBrightLevel === 75) {
@@ -8931,9 +9020,9 @@ async def _api_chats_handler(request):
     chat_list = []
     try:
         async def fetch_web_dialogs():
-            chats = []
             try:
-                async for d in uclient.get_dialogs(limit=500):
+                # 🟢 FIX: Removed limit=500 to fetch ALL chats.
+                async for d in uclient.get_dialogs():
                     chat = getattr(d, "chat", None)
                     if not chat: continue
                     cid = getattr(chat, "id", None)
@@ -8946,30 +9035,28 @@ async def _api_chats_handler(request):
                     
                     cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
                     is_forum = getattr(chat, "is_forum", False)
-                    chats.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
-            except AttributeError as e:
-                # 🟢 FIX: Catch ALL attribute errors (monoforum, NoneType, etc.) to bypass Pyrogram's internal parsing bugs
+                    # Append directly to the outer list so data is saved even if the loop times out!
+                    chat_list.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
+            except Exception:
                 pass
-            except Exception as e:
-                # Safely return whatever chats were parsed before the crash instead of failing
-                pass
-            return chats
 
-        max_retries = 3
+        max_retries = 2
         success = False
         last_err = None
 
         for attempt in range(max_retries):
+            chat_list.clear() # Clear before each attempt
             try:
-                # 15-second timeout per attempt to prevent Web UI indefinite hangs
-                chat_list = await asyncio.wait_for(fetch_web_dialogs(), timeout=15.0)
+                # 🟢 FIX: Increased timeout to 25s.
+                await asyncio.wait_for(fetch_web_dialogs(), timeout=25.0)
                 success = True
                 break
             except asyncio.TimeoutError:
+                # 🟢 SMART FALLBACK: If we fetched at least some chats before timing out, consider it a success!
+                if chat_list:
+                    success = True
+                    break
                 last_err = "Telegram API timeout."
-                await asyncio.sleep(1.5)
-            except Exception as e:
-                last_err = str(e)
                 await asyncio.sleep(1.5)
 
         if not success:
@@ -9168,6 +9255,72 @@ async def _api_topics_handler(request):
                 pass
 
     return web.json_response({"status": "success", "topics": topics})
+
+# 🟢 NEW: Deep Chat Details & MetaData Fetcher
+async def _api_chat_details_handler(request):
+    uid = int(request.query.get("user_id", 0))
+    chat_id_str = request.query.get("chat_id", "")
+    try: chat_id = int(chat_id_str)
+    except: chat_id = chat_id_str
+
+    session_str = await db.get_session(uid)
+    if not session_str:
+        return web.json_response({"status": "error", "message": "Not logged in."})
+
+    uclient = USER_CLIENTS.get(uid)
+    is_temp = False
+    
+    # Wake up routine to prevent locks
+    if not uclient or not uclient.is_connected:
+        try:
+            api_id = await db.get_api_id(uid) or API_ID
+            api_hash = await db.get_api_hash(uid) or API_HASH
+            uclient = Client(f"temp_details_{uid}_{uuid.uuid4().hex}", in_memory=True, session_string=session_str, api_id=api_id, api_hash=api_hash, no_updates=True, ipv6=False)
+            await asyncio.wait_for(uclient.connect(), timeout=10.0)
+            is_temp = True
+        except Exception as e:
+            return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
+
+    try:
+        chat = await uclient.get_chat(chat_id)
+        
+        # Safely fetch total message count
+        try:
+            total_msgs = await uclient.get_chat_history_count(chat_id)
+        except Exception:
+            total_msgs = "Unknown"
+
+        # Safely fetch Forum Topics if applicable
+        topics = []
+        if getattr(chat, "is_forum", False):
+            try:
+                # Limit to 100 to prevent timeout on massive groups
+                async for t in uclient.get_forum_topics(chat_id, limit=100):
+                    topics.append({
+                        "id": t.id,
+                        "title": t.title,
+                        "top_msg": getattr(t, "top_message", "?")
+                    })
+            except Exception as e:
+                pass # Ignore Pyrogram pagination bugs
+
+        return web.json_response({
+            "status": "success",
+            "id": str(chat.id),
+            "title": chat.title or chat.first_name or "Unknown",
+            "type": str(getattr(chat, "type", "Unknown")),
+            "members": getattr(chat, "members_count", 0),
+            "total_messages": total_msgs,
+            "description": getattr(chat, "description", getattr(chat, "bio", "")),
+            "is_forum": getattr(chat, "is_forum", False),
+            "topics": topics
+        })
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
+    finally:
+        if is_temp:
+            try: await asyncio.wait_for(uclient.disconnect(), timeout=3.0)
+            except: pass
 
 async def _api_mediainfo_web_handler(request):
     data = await request.json()
@@ -11322,7 +11475,8 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     global PORT
     app_web = web.Application()
     app_web.router.add_get("/api/network", _api_network_stats)
-    app_web.router.add_get("/api/bg", _api_bg_proxy) # <-- ADD THIS LINE
+    app_web.router.add_get("/api/bg", _api_bg_proxy)
+    app_web.router.add_get("/api/chat_details", _api_chat_details_handler) # 🟢 NEW: Chat Details Endpoint
     app_web.router.add_get("/manifest.json", _manifest_handler)
     app_web.router.add_get("/sw.js", _sw_handler)
     app_web.router.add_get("/", _dashboard_ui_handler)
