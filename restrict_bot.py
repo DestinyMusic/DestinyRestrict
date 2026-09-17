@@ -4463,6 +4463,7 @@ HTML_DASHBOARD = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="referrer" content="no-referrer"> <!-- Bypasses TMDB Hotlink Protection -->
     <title>Destiny TG Forwarder</title>
     
     <!-- Anime/Modern Aesthetics Font -->
@@ -4543,11 +4544,12 @@ HTML_DASHBOARD = """
             font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
             background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; 
             transition: background 0.5s ease; position: relative; z-index: 0; 
-            background-image: var(--anime-bg);
+            /* Tint the anime image beautifully so it remains visible but doesn't hide text */
+            background-image: linear-gradient(color-mix(in srgb, var(--bg) 65%, transparent), color-mix(in srgb, var(--bg) 85%, transparent)), var(--anime-bg);
             background-size: cover;
             background-position: center;
             background-attachment: fixed;
-            background-blend-mode: overlay;
+            /* background-blend-mode removed to stop the image from turning completely black */
         }
         
         body::before, body::after { 
