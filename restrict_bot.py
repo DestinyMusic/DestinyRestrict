@@ -9049,7 +9049,7 @@ async def _api_chats_handler(request):
                     cat = "👤 User" if c_type == enums.ChatType.PRIVATE else ("📢 Channel" if c_type == enums.ChatType.CHANNEL else ("🤖 Bot" if c_type == enums.ChatType.BOT else "👥 Group"))
                     is_forum = getattr(chat, "is_forum", False)
                     
-                    # Append directly to the outer list so data is saved even if the loop times out!
+                    # 🟢 FIX: Append directly to the outer list so data is saved even if it times out!
                     chat_list.append({"id": str(cid), "name": f"[{cat}] {name}", "is_forum": is_forum})
             except AttributeError as e:
                 if "'NoneType' object has no attribute 'id'" not in str(e):
@@ -9283,27 +9283,19 @@ async def _api_chat_details_handler(request):
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     try:
-        chat = None
         try:
             chat = await uclient.get_chat(chat_id)
-        except Exception as e:
-            if "PEER_ID_INVALID" in str(e) or "ID not found" in str(e) or "KeyError" in repr(e):
-                # 🟢 DEEP SCAN FALLBACK: If Telegram forgot the hash, we manually search your dialogs.
-                found = False
-                async for d in uclient.get_dialogs(limit=5000): 
-                    if getattr(d.chat, "id", None) == chat_id:
-                        chat = d.chat
-                        found = True
-                        break
-                if not found:
-                    return web.json_response({"status": "error", "message": "Telegram forgot the Access Hash for this chat. Send a quick message to it in Telegram, then refresh!"})
-            else:
-                raise e
+        except PeerIdInvalid:
+            # 🟢 SMART FALLBACK: If Pyrogram forgot the Access Hash, fetch recent dialogs to instantly relearn it!
+            async for _ in uclient.get_dialogs(limit=500): 
+                pass
+            chat = await uclient.get_chat(chat_id)
         
         # Safely fetch total message count
         try:
             total_msgs = await uclient.get_chat_history_count(chat_id)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"[CHAT DETAILS] Could not fetch history count: {e}")
             total_msgs = "Unknown"
 
         # Safely fetch Forum Topics if applicable
@@ -9312,13 +9304,20 @@ async def _api_chat_details_handler(request):
             try:
                 # Limit to 100 to prevent timeout on massive groups
                 async for t in uclient.get_forum_topics(chat_id, limit=100):
+                    # 🟢 FIX: Prevent Pyrogram Message object serialization crash
+                    top_message_data = getattr(t, "top_message", "?")
+                    if hasattr(top_message_data, "id"):
+                        top_msg_val = str(top_message_data.id)
+                    else:
+                        top_msg_val = str(top_message_data)
+                        
                     topics.append({
                         "id": t.id,
                         "title": t.title,
-                        "top_msg": getattr(t, "top_message", "?")
+                        "top_msg": top_msg_val
                     })
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"[CHAT DETAILS] Could not fetch topics: {e}")
 
         return web.json_response({
             "status": "success",
