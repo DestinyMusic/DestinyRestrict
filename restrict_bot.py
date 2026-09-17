@@ -9984,8 +9984,7 @@ async def _api_stream_handler(request):
         cmd += ["-sn"]
 
         if copy_video and not scale_filter:
-            # CRITICAL SAFARI FIX: Force 90kHz timescale. Prevents Apple AVPlayer from 
-            # dropping audio/video sync or stuttering when copying MKV streams into MP4!
+            # CRITICAL SAFARI FIX: Force 90kHz timescale to keep audio/video perfectly synced
             cmd += ["-c:v", "copy", "-video_track_timescale", "90000"]
             if video_codec in {"hevc", "h265", "hvc1"}:
                 cmd += ["-tag:v", "hvc1"]
@@ -10003,7 +10002,8 @@ async def _api_stream_handler(request):
         else:
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
 
-        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # CRITICAL SAFARI FIX: Add frag_duration to strictly interleave A/V frames every 5 seconds
+        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-frag_duration", "5000000", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
@@ -10096,7 +10096,7 @@ async def _api_stream_handler(request):
         "Accept-Ranges": "bytes",
     }
 
-    # Apple requires a fake total size for live transcodes so it knows it can seek
+    # CRITICAL SAFARI FIX: Stop faking the size once FFmpeg finishes, or Safari will buffer forever!
     is_live = not buf_obj['eof']
     total_size = 2147483648 if is_live else buf_obj['size']
     end_byte = total_size - 1
@@ -10106,8 +10106,7 @@ async def _api_stream_handler(request):
         if match and match.group(2):
             end_byte = min(int(match.group(2)), total_size - 1)
             
-        # CRITICAL SAFARI FIX: If Safari asks for bytes beyond the actual finished file,
-        # we must reject it with 416 Range Not Satisfiable to break the infinite retry loop!
+        # Reject requests that overshoot the finished file to break the retry loop
         if start_byte >= total_size:
             return web.Response(status=416, headers={"Content-Range": f"bytes */{total_size}"})
 
