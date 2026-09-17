@@ -8185,33 +8185,33 @@ HTML_DASHBOARD = """
                 const rootStyles = getComputedStyle(document.documentElement);
                 const animeBg = String(rootStyles.getPropertyValue('--anime-bg')).trim();
                 
-                let debugLog = "🛠️ UI BACKGROUND DEBUGGER\n";
-                debugLog += "--------------------------------\n";
-                debugLog += "1️⃣ Active Theme: " + theme + "\n";
-                debugLog += "2️⃣ CSS Variable: " + (animeBg ? animeBg.substring(0, 30) + "..." : "Missing/None") + "\n";
+                let debugLog = "🛠️ UI BACKGROUND DEBUGGER\\n";
+                debugLog += "--------------------------------\\n";
+                debugLog += "1️⃣ Active Theme: " + theme + "\\n";
+                debugLog += "2️⃣ CSS Variable: " + (animeBg ? animeBg.substring(0, 30) + "..." : "Missing/None") + "\\n";
                 
-                // Extract URL
-                const urlMatch = animeBg.match(/url\(['"]?(.*?)['"]?\)/);
+                // Extract URL (Double backslashes for Regex escape inside Python strings)
+                const urlMatch = animeBg.match(/url\\(['"]?(.*?)['"]?\\)/);
                 if (!urlMatch || !urlMatch[1]) {
-                    debugLog += "\n❌ ERROR: No valid URL found in CSS. Ensure theme CSS is formatted correctly.";
+                    debugLog += "\\n❌ ERROR: No valid URL found in CSS. Ensure theme CSS is formatted correctly.";
                     alert(debugLog);
                     return;
                 }
                 
                 const targetUrl = urlMatch[1];
-                debugLog += "3️⃣ Target URL: " + targetUrl.substring(0, 35) + "...\n";
-                debugLog += "\n⏳ Testing Network Connection...\n";
+                debugLog += "3️⃣ Target URL: " + targetUrl.substring(0, 35) + "...\\n";
+                debugLog += "\\n⏳ Testing Network Connection...\\n";
                 
                 // Attempt to load the image via JS to see if browser/HuggingFace blocks it
                 const img = new Image();
                 img.onload = function() {
-                    debugLog += "✅ Network Test: SUCCESS!\n";
-                    debugLog += "The browser downloaded the image perfectly.\n\n";
+                    debugLog += "✅ Network Test: SUCCESS!\\n";
+                    debugLog += "The browser downloaded the image perfectly.\\n\\n";
                     debugLog += "👉 CONCLUSION: If you still can't see the image, the issue is the CSS gradient hiding it. Change the CSS 'background-image' linear-gradient opacity.";
                     alert(debugLog);
                 };
                 img.onerror = function() {
-                    debugLog += "❌ Network Test: FAILED!\n\n";
+                    debugLog += "❌ Network Test: FAILED!\\n\\n";
                     debugLog += "👉 CONCLUSION: HuggingFace's Content Security Policy (CSP) or your mobile adblocker/browser is actively blocking the image URL from loading. Try opening the direct Space URL instead of the embedded iframe.";
                     alert(debugLog);
                 };
