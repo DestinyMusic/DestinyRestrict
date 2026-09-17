@@ -6327,13 +6327,13 @@ HTML_DASHBOARD = """
             let htmlBuffer = "";
             filtered.forEach(c => {
                 htmlBuffer += `
-                    <!-- 🟢 FIX: Added ondblclick, user-select: none, and touch-action to make it mobile app friendly! -->
-                    <div class="task-row" style="margin-bottom: 8px; cursor: pointer; user-select: none; touch-action: manipulation;" ondblclick="openChatDetails('${c.id}')" title="Double tap for detailed info">
+                    <!-- 🟢 FIX: Replaced ondblclick with onclick for mobile touch screens, and added stopPropagation to the Copy button! -->
+                    <div class="task-row" style="margin-bottom: 8px; cursor: pointer; user-select: none; touch-action: manipulation;" onclick="openChatDetails('${c.id}')" title="Tap for detailed info">
                         <div>
                             <div style="font-weight: 700; color: var(--text); font-size: 13px;">${c.name}</div>
                             <div style="font-size: 11px; color: var(--accent); margin-top: 2px;">ID: <code>${c.id}</code></div>
                         </div>
-                        <button class="task-kill" style="color: var(--accent); border-color: var(--card-border); background: var(--bg);" onclick="copyChatId('${c.id}')">📋 COPY ID</button>
+                        <button class="task-kill" style="color: var(--accent); border-color: var(--card-border); background: var(--bg); position: relative; z-index: 10;" onclick="event.stopPropagation(); copyChatId('${c.id}')">📋 COPY</button>
                     </div>
                 `;
             });
@@ -6367,11 +6367,11 @@ HTML_DASHBOARD = """
                     document.getElementById('cd-loading').style.display = 'none';
                     document.getElementById('cd-content').style.display = 'block';
                     
-                    document.getElementById('cd-title').innerText = data.title;
-                    document.getElementById('cd-id').innerText = data.id;
-                    document.getElementById('cd-type').innerText = data.type.replace("ChatType.", "").toUpperCase();
-                    document.getElementById('cd-members').innerText = data.members > 0 ? data.members.toLocaleString() : "N/A";
-                    document.getElementById('cd-msgs').innerText = data.total_messages !== "Unknown" ? data.total_messages.toLocaleString() : "Unknown";
+                    document.getElementById('cd-title').innerText = data.title || "Unknown";
+                    document.getElementById('cd-id').innerText = data.id || "Unknown";
+                    document.getElementById('cd-type').innerText = String(data.type || "").replace("ChatType.", "").toUpperCase();
+                    document.getElementById('cd-members').innerText = (data.members && !isNaN(data.members)) ? Number(data.members).toLocaleString() : "N/A";
+                    document.getElementById('cd-msgs').innerText = (data.total_messages && !isNaN(data.total_messages)) ? Number(data.total_messages).toLocaleString() : "Unknown";
                     
                     const descContainer = document.getElementById('cd-desc-container');
                     if (data.description) {
@@ -9047,8 +9047,8 @@ async def _api_chats_handler(request):
         for attempt in range(max_retries):
             chat_list.clear() # Clear before each attempt
             try:
-                # 🟢 FIX: Increased timeout to 25s.
-                await asyncio.wait_for(fetch_web_dialogs(), timeout=25.0)
+                # 🟢 FIX: Increased timeout to massive 45s to allow thousands of chats to fully download!
+                await asyncio.wait_for(fetch_web_dialogs(), timeout=45.0)
                 success = True
                 break
             except asyncio.TimeoutError:
