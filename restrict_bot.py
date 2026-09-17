@@ -5101,7 +5101,7 @@ HTML_DASHBOARD = """
 
                 <div class="cinema-viewport" id="cinema-viewport">
                     <canvas id="webgl-canvas"></canvas>
-                    <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline preload="auto" crossorigin="anonymous"></video>
+                    <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline preload="auto"></video>
                     <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
 
                     <!-- Video Title Bar -->
@@ -10006,150 +10006,88 @@ async def _api_stream_handler(request):
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
 
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL, # 🟢 FIX: Prevents OS pipe buffer deadlock
+    )
     import aiohttp
-    import asyncio
-    import os
-    import uuid
-
+    
+    # 🟢 FIX: Separate HTTP Header logic strictly for iOS/Apple devices!
     user_agent = request.headers.get("User-Agent", "").lower()
     is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
 
-    client_range = request.headers.get("Range", "")
-    start_byte = 0
-    if client_range:
-        match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
-        if match and match.group(1):
-            start_byte = int(match.group(1))
-
-    logger.info(f"🐛 [DEBUG] INCOMING -> Range: '{client_range}' | Start: {start_byte} | IS_APPLE: {is_apple}")
-
-    # --- 🟢 UNIVERSAL DISK BUFFER ENGINE ---
-    # Safari requires sequential overlapping byte-range requests.
-    # Piping directly to the browser crashes if two requests hit the same pipe concurrently.
-    # Writing the transcode to a temp file allows unlimited, concurrent, rewindable reads!
-    if "TRANSCODE_BUFFERS" not in globals():
-        global TRANSCODE_BUFFERS
-        TRANSCODE_BUFFERS = {}
-
-    stream_key = f"{user_id}_{actual_url}_{quality}_{audio_idx}_{start_time}"
-
-    # Clean orphaned pipes/files for this user
-    for k in list(TRANSCODE_BUFFERS.keys()):
-        if k.startswith(f"{user_id}_") and k != stream_key:
-            old_buf = TRANSCODE_BUFFERS.pop(k)
-            try: old_buf['proc'].kill()
-            except: pass
-            try: os.remove(old_buf['file'])
-            except: pass
-
-    buf_obj = TRANSCODE_BUFFERS.get(stream_key)
-
-    if not buf_obj or buf_obj['proc'].returncode is not None:
-        # Start new FFmpeg process in the background
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-        
-        tmp_file = f"./downloads_{INSTANCE_ID}/buf_{uuid.uuid4().hex}.mp4"
-        os.makedirs(os.path.dirname(tmp_file), exist_ok=True)
-        with open(tmp_file, "wb") as f: pass # Create empty file
-
-        buf_obj = {"proc": proc, "file": tmp_file, "size": 0, "eof": False, "offset": start_byte}
-        TRANSCODE_BUFFERS[stream_key] = buf_obj
-
-        async def _writer(obj):
-            try:
-                with open(obj['file'], "ab") as f:
-                    while True:
-                        chunk = await obj['proc'].stdout.read(524288)
-                        if not chunk: 
-                            obj['eof'] = True
-                            break
-                        f.write(chunk)
-                        f.flush()
-                        obj['size'] += len(chunk)
-            except Exception as e:
-                logger.debug(f"Writer error: {e}")
-            finally:
-                obj['eof'] = True
-
-        asyncio.create_task(_writer(buf_obj))
-        logger.info(f"🍏 [APPLE BUFFER] Started NEW Disk-Buffered FFmpeg transcode.")
-    else:
-        logger.info(f"🍏 [APPLE BUFFER] Cache HIT. Reading concurrently from existing disk buffer.")
-
-    # --- Serve the Buffered File ---
     stream_headers = {
         "Content-Type": "video/mp4",
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-store",
-        "Accept-Ranges": "bytes",
     }
 
-    # Apple requires a fake total size for live transcodes so it knows it can seek
-    fake_total = 2147483648
-    end_byte = fake_total - 1
-
-    if client_range:
-        match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
-        if match and match.group(2):
-            end_byte = min(int(match.group(2)), fake_total - 1)
-        stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
-        stream_headers["Content-Length"] = str(end_byte - start_byte + 1)
-        status_code = 206
+    apple_target_length = None
+    if is_apple:
+        stream_headers["Accept-Ranges"] = "bytes"
+        client_range = request.headers.get("Range", "")
+        if client_range:
+            start_byte = 0
+            end_byte = 2147483647 # Fake 2GB Maximum
+            
+            match = re.match(r"bytes=(\d*)-(\d*)", client_range.strip())
+            if match:
+                if match.group(1): start_byte = int(match.group(1))
+                if match.group(2): end_byte = int(match.group(2))
+                
+            fake_total = 2147483648
+            end_byte = min(end_byte, fake_total - 1)
+            
+            # Mathematical compliance for Safari's strict AVPlayer parser
+            stream_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{fake_total}"
+            
+            apple_target_length = end_byte - start_byte + 1
+            stream_headers["Content-Length"] = str(apple_target_length)
+            status_code = 206
+        else:
+            stream_headers["Content-Length"] = "2147483648"
+            status_code = 200
     else:
-        stream_headers["Content-Length"] = str(fake_total)
+        # ULTRA-STABLE 200 OK RESPONSE FOR CHROME, ANDROID, WINDOWS
+        stream_headers["Accept-Ranges"] = "none"
         status_code = 200
 
-    logger.info(f"🐛 [DEBUG] OUTGOING -> Status: {status_code} | Range: {stream_headers.get('Content-Range')}")
-
     response = web.StreamResponse(status=status_code, headers=stream_headers)
-    
-    bytes_sent = 0
+
     try:
         await response.prepare(request)
-        target_length = end_byte - start_byte + 1
-
-        # Wait up to 10 seconds for the buffer to get its first bytes from FFmpeg
-        for _ in range(50):
-            if buf_obj['size'] > 0 or buf_obj['eof']:
+        bytes_sent = 0
+        while True:
+            buf = await proc.stdout.read(262144) 
+            if not buf:
                 break
-            await asyncio.sleep(0.2)
-
-        with open(buf_obj['file'], "rb") as f:
-            # Map Safari's absolute byte request to our local file offset
-            seek_pos = start_byte - buf_obj['offset']
-            if seek_pos < 0: seek_pos = 0
-            
-            f.seek(seek_pos)
-            
-            while bytes_sent < target_length:
-                chunk = f.read(262144)
                 
-                if not chunk:
-                    if buf_obj['eof']:
-                        logger.info(f"🐛 [DEBUG] FFmpeg EOF Reached.")
-                        break
-                        
-                    # If Safari scrubs too far ahead into the un-downloaded future, force a reload
-                    if f.tell() > buf_obj['size'] + 5000000:
-                        logger.warning(f"🐛 [DEBUG] Hard scrub detected! Client asked for byte {f.tell()} but buffer is at {buf_obj['size']}.")
-                        break
-                        
-                    # Otherwise, wait dynamically for FFmpeg to write more frames
-                    await asyncio.sleep(0.2)
-                    continue
+            # 🟢 FIX: If Safari only asked for a specific chunk size (e.g., 2 bytes for a probe),
+            # we MUST forcefully truncate the data and close the stream. 
+            # If we send more data than we promised in the Content-Length, Safari instantly kills playback!
+            if is_apple and apple_target_length is not None:
+                if bytes_sent + len(buf) >= apple_target_length:
+                    buf = buf[:apple_target_length - bytes_sent]
+                    await response.write(buf)
+                    break
                     
-                await response.write(chunk)
-                bytes_sent += len(chunk)
-                
+            await response.write(buf)
+            bytes_sent += len(buf)
+            
         await response.write_eof()
-    except asyncio.CancelledError:
-        logger.warning(f"🐛 [DEBUG] Connection CANCELLED after {bytes_sent} bytes.")
-        raise
-    except (ConnectionResetError, aiohttp.client_exceptions.ClientConnectionResetError) as e:
-        logger.warning(f"🐛 [DEBUG] Connection RESET by Browser after {bytes_sent} bytes.")
-    except Exception as e:
-        logger.error(f"🐛 [DEBUG] Unhandled Exception: {e}")
+    except (ConnectionResetError, asyncio.CancelledError, aiohttp.client_exceptions.ClientConnectionResetError):
+        pass
+    except Exception:
+        pass
+    finally:
+        try:
+            proc.kill()
+            await proc.wait()
+        except Exception:
+            pass
     return response
+
 
 CLIENT_MSG_CACHE = {}
 CLIENT_MSG_CACHE_MAX = 2048
