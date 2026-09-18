@@ -8520,6 +8520,15 @@ HTML_DASHBOARD = """
                 activeSubtitleIndex = 'off';
                 subtitleCues = [];
                 document.getElementById('subtitle-overlay').innerHTML = '';
+                
+                // 🟢 FIX: Auto-Select Embedded Lyrics or First Available Subtitle!
+                if (pdata.subtitles && pdata.subtitles.length > 0) {
+                    const bestSub = pdata.subtitles.find(s => s.index === 'metadata_lyrics') || pdata.subtitles[0];
+                    sSelect.value = bestSub.index;
+                    activeSubtitleIndex = bestSub.index;
+                    // Trigger the lyrics fetch asynchronously so it populates the UI instantly
+                    setTimeout(applySubtitleSelection, 500); 
+                }
 
                 const savedAspect = localStorage.getItem('player_aspect_mode') || 'contain';
                 const aspectSelect = document.getElementById('pop-aspect-select');
@@ -10841,7 +10850,7 @@ async def _run_ffprobe_json(input_url, fast=True):
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
-            "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
+            "format=duration:format_tags=lyrics,LYRICS,Lyrics:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
             "stream_tags=language,title,handler_name:stream_disposition=default,forced",
             "-of", "json", input_url,
         ]
@@ -11179,6 +11188,17 @@ async def _api_media_probe_handler(request):
                 })
 
             subtitles = []
+            
+            # 🟢 FIX: Detect Internal Metadata Lyrics natively embedded inside FLAC/MP3 files!
+            format_tags = pdata.get("format", {}).get("tags", {})
+            internal_lyrics = format_tags.get("lyrics") or format_tags.get("LYRICS") or format_tags.get("Lyrics")
+            if internal_lyrics:
+                subtitles.append({
+                    "index": "metadata_lyrics",
+                    "label": "Embedded Lyrics",
+                    "language": "eng"
+                })
+                
             for i, st in enumerate(subs):
                 tags = st.get("tags", {}) or {}
                 lang = tags.get("language") or tags.get("LANGUAGE")
@@ -11768,6 +11788,17 @@ async def _api_tg_stream_handler(request):
         filename = str(getattr(media, "file_name", "") or "").lower()
         mime_type = getattr(media, "mime_type", "application/octet-stream") or "application/octet-stream"
 
+        # 🟢 FIX: Enforce correct MIME type to allow Native Browser Album Art rendering!
+        if filename.endswith('.mp3'): mime_type = "audio/mpeg"
+        elif filename.endswith(('.m4a', '.aac')): mime_type = "audio/mp4"
+        elif filename.endswith('.flac'): mime_type = "audio/flac"
+        elif filename.endswith('.ogg'): mime_type = "audio/ogg"
+        elif filename.endswith('.wav'): mime_type = "audio/wav"
+        elif filename.endswith('.opus'): mime_type = "audio/ogg"
+        elif filename.endswith('.webm'): mime_type = "video/webm"
+        elif filename.endswith('.mp4'): mime_type = "video/mp4"
+        elif filename.endswith('.mkv'): mime_type = "video/x-matroska"
+
         parts_map = []
         global_offset = 0
 
@@ -11982,6 +12013,35 @@ async def _api_subtitles_handler(request):
         actual_url = await resolve_direct_link(link)
         # 🟢 FIX: Let FFmpeg fetch directly to extract text instantly without stalling the server!
         logger.debug(f"📝 [SUBTITLES] Direct FFmpeg Extraction (No Loopback): {actual_url[:100]}...")
+
+    # 🟢 FIX: Extract Embedded Metadata Lyrics (ID3/FLAC Tags) directly!
+    if sub_idx == "metadata_lyrics":
+        cmd = [
+            "ffprobe", "-v", "error",
+            "-show_entries", "format_tags=lyrics,LYRICS,Lyrics",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            actual_url
+        ]
+        
+        if not is_tg:
+            from urllib.parse import urlparse
+            parsed_res = urlparse(actual_url)
+            referer = f"{parsed_res.scheme}://{parsed_res.netloc}/"
+            cmd += ["-headers", f"Accept: */*\r\nReferer: {referer}\r\nOrigin: {referer}\r\n"]
+            
+        try:
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+            stdout, _ = await proc.communicate()
+            body = stdout
+            SUBTITLE_CACHE[cache_key] = (bytes(body), time.time() + SUBTITLE_CACHE_TTL)
+            return web.Response(body=body, status=200, headers={
+                "Content-Type": "text/vtt; charset=utf-8",
+                "Content-Length": str(len(body)),
+                "Access-Control-Allow-Origin": "*",
+                "Cache-Control": "public, max-age=3600",
+            })
+        except Exception as exc:
+            return web.Response(status=502, text=str(exc))
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
