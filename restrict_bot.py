@@ -9262,37 +9262,20 @@ HTML_DASHBOARD = """
         async function fetchCountryAnalytics(isoCode, countryName) {
             document.getElementById('country-data-panel').style.display = 'block';
             document.getElementById('c-name').innerText = "Scanning Data...";
-            
-            // 🛠️ DEBUG START: Print network steps to the screen
-            const wikiDiv = document.getElementById('c-wiki');
-            wikiDiv.innerHTML = `<span style="color:#f59e0b; font-family:monospace; font-size: 11px;">
-                [1] Started fetch for: ${countryName} (ISO: ${isoCode})<br>
-            </span>`;
+            document.getElementById('c-wiki').innerHTML = '<span style="color:var(--accent);">Fetching geopolitical records via Secure Backend Proxy...</span>';
             
             if (myGlobe) myGlobe.controls().autoRotate = false;
 
             let countryData = null;
 
-            // 🟢 BLOCK 1: Fetch Core Demographic & Time Data
+            // 🟢 BLOCK 1: Fetch Core Demographic & Time Data via Backend Proxy
             try {
-                let res;
-                let urlUsed = "";
+                // Route through our own Python backend to bypass Mobile ISP / CORS Blocks
+                const proxyUrl = `/api/proxy/country?iso=${isoCode || ''}&name=${encodeURIComponent(countryName)}`;
+                const res = await fetch(proxyUrl);
                 
-                if (isoCode && isoCode !== "-99") {
-                    urlUsed = `https://restcountries.com/v3.1/alpha/${isoCode}`;
-                    wikiDiv.innerHTML += `<span style="color:#f59e0b; font-family:monospace; font-size: 11px;">[2] Requesting: ${urlUsed}...<br></span>`;
-                    res = await fetch(urlUsed);
-                }
+                if (!res.ok) throw new Error("Backend Proxy returned HTTP " + res.status);
                 
-                if (!res || !res.ok) {
-                    urlUsed = `https://restcountries.com/v3.1/name/${encodeURIComponent(countryName)}`;
-                    wikiDiv.innerHTML += `<span style="color:#f59e0b; font-family:monospace; font-size: 11px;">[3] Fallback Request: ${urlUsed}...<br></span>`;
-                    res = await fetch(urlUsed);
-                }
-                
-                if (!res.ok) throw new Error(`HTTP Error ${res.status} from RestCountries`);
-                
-                wikiDiv.innerHTML += `<span style="color:#10b981; font-family:monospace; font-size: 11px;">[4] Response OK! Parsing JSON...<br></span>`;
                 const data = (await res.json())[0];
                 countryData = data; 
                 
@@ -9304,11 +9287,6 @@ HTML_DASHBOARD = """
                 document.getElementById('c-lang').innerText = data.languages ? Object.values(data.languages).join(', ') : 'Unknown';
                 document.getElementById('c-curr').innerText = data.currencies ? Object.values(data.currencies).map(c => `${c.name} (${c.symbol})`).join(', ') : 'Unknown';
 
-                // Check if the missing math function is actually loaded
-                if (typeof updateLiveCountryTime !== "function") {
-                    throw new Error("CRITICAL: updateLiveCountryTime() function is STILL missing! Browser is using cached HTML.");
-                }
-
                 clearInterval(liveClockInterval);
                 if (data.timezones && data.timezones.length > 0) {
                     const primaryTz = data.timezones[0];
@@ -9319,43 +9297,35 @@ HTML_DASHBOARD = """
                 }
 
             } catch (err) {
-                console.error("RestCountries API failed:", err);
+                console.error("Proxy API failed:", err);
                 document.getElementById('c-name').innerText = countryName;
                 document.getElementById('c-cap').innerText = "Error";
                 document.getElementById('c-pop').innerText = "Error";
-                
-                // 🚨 FORCE THE EXACT ERROR TO PRINT ON SCREEN
-                wikiDiv.innerHTML += `
-                    <br><div style="background: rgba(239,68,68,0.2); border: 1px solid #ef4444; padding: 10px; border-radius: 8px;">
-                        <span style="color:#ef4444; font-weight:bold; font-size:14px;">🚨 JAVASCRIPT CRASH DETECTED</span><br><br>
-                        <span style="color:#fff; font-family:monospace; font-size:12px;">${err.message}</span>
-                    </div>
-                `;
-                return; // Stop here if it fails
+                document.getElementById('c-wiki').innerHTML = `<span style="color:#ef4444;">Network Error: Backend Proxy failed. ${err.message}</span>`;
+                return; 
             }
 
-            // 🟢 BLOCK 2: Fetch Wikipedia 
+            // 🟢 BLOCK 2: Fetch Wikipedia via Backend Proxy
             try {
-                wikiDiv.innerHTML = '<span style="color:var(--accent);">Fetching Wikipedia history...</span>';
                 const wikiQuery = countryData ? countryData.name.common : countryName;
-                const wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(wikiQuery)}`);
+                const wikiRes = await fetch(`/api/proxy/wiki?q=${encodeURIComponent(wikiQuery)}`);
                 
                 if (wikiRes.ok) {
                     const wikiData = await wikiRes.json();
                     if (wikiData.type !== "disambiguation" && wikiData.extract) {
                         const pageUrl = (wikiData.content_urls && wikiData.content_urls.desktop) ? wikiData.content_urls.desktop.page : `https://en.wikipedia.org/wiki/${encodeURIComponent(wikiQuery)}`;
-                        wikiDiv.innerHTML = `
+                        document.getElementById('c-wiki').innerHTML = `
                             <p>${wikiData.extract}</p>
                             <a href="${pageUrl}" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: bold; font-size: 11px; text-transform: uppercase; border: 1px solid var(--accent); padding: 5px 10px; border-radius: 6px; display: inline-block; margin-top: 10px;">Read Full Wikipedia Article</a>
                         `;
                     } else {
-                        wikiDiv.innerText = "Wikipedia summary requires disambiguation.";
+                        document.getElementById('c-wiki').innerText = "Wikipedia summary requires disambiguation.";
                     }
                 } else {
-                    wikiDiv.innerText = "Detailed Wikipedia historical records currently unavailable.";
+                    document.getElementById('c-wiki').innerText = "Detailed Wikipedia historical records currently unavailable.";
                 }
             } catch (err) {
-                wikiDiv.innerText = "Detailed Wikipedia historical records currently unavailable.";
+                document.getElementById('c-wiki').innerText = "Detailed Wikipedia historical records currently unavailable.";
             }
         }
     </script>
@@ -12589,6 +12559,45 @@ async def _api_playlist_handler(request):
         return web.json_response({"status": "success", "playlist": playlist})
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)})
+
+# ==============================================================================
+# --- NEW: WORLD EXPLORER PROXY ENDPOINTS ---
+# ==============================================================================
+async def _api_proxy_country(request):
+    iso = request.query.get("iso", "").strip()
+    name = request.query.get("name", "").strip()
+    import aiohttp
+    try:
+        async with aiohttp.ClientSession() as session:
+            if iso and iso != "-99":
+                url = f"https://restcountries.com/v3.1/alpha/{iso}"
+            else:
+                from urllib.parse import quote
+                url = f"https://restcountries.com/v3.1/name/{quote(name)}"
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return web.json_response(data)
+                else:
+                    return web.Response(status=resp.status, text=await resp.text())
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
+
+async def _api_proxy_wiki(request):
+    q = request.query.get("q", "").strip()
+    import aiohttp
+    from urllib.parse import quote
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(q)}"
+            async with session.get(url) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return web.json_response(data)
+                else:
+                    return web.Response(status=resp.status, text=await resp.text())
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
                 
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
@@ -12632,7 +12641,10 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/settings/tokens", _api_get_worker_tokens)
     app_web.router.add_post("/api/settings/tokens", _api_save_worker_tokens)
     app_web.router.add_get("/api/playlist", _api_playlist_handler) # 🟢 ADD THIS LINE
-    app_web.router.add_get("/api/stream", _api_stream_handler)        
+    app_web.router.add_get("/api/stream", _api_stream_handler)      
+    # 🟢 ADD THESE TWO NEW LINES HERE:
+    app_web.router.add_get("/api/proxy/country", _api_proxy_country)
+    app_web.router.add_get("/api/proxy/wiki", _api_proxy_wiki)  
     
     # 🟢 ADD THIS NEW ROUTE FOR THE STOP BUTTON
     async def _api_kill_stream(request):
