@@ -7787,9 +7787,10 @@ HTML_DASHBOARD = """
             let t = forceTime !== null ? forceTime : (playerRequiresTranscode ? (playerTimelineOffset + (video.currentTime||0)) : (video.currentTime||0));
             const adjustedTime = t - subtitleSyncOffset;
 
-            // 🟢 DYNAMIC UI SWITCH: Use Apple Music Lyrics view if Audio track OR LRC file!
-            const isAudioMode = document.getElementById('webgl-canvas')?.style.display === 'none';
-            const useScroller = subtitleCues[0].isLrc || isAudioMode;
+            // 🟢 CRITICAL FIX: Strict Separation of Lyrics vs Subtitles!
+            // Only use the Apple Music Lyrics Scroller if it is explicitly an LRC file.
+            // If it is a VTT file (even for an audio track), use the standard bottom Subtitle Overlay!
+            const useScroller = subtitleCues.length > 0 && subtitleCues[0].isLrc === true;
 
             if (useScroller) {
                 if (overlay) overlay.style.display = 'none';
@@ -7798,7 +7799,6 @@ HTML_DASHBOARD = """
                     
                     // Render HTML lines only once per track
                     if (scroller.dataset.rendered !== activeSubtitleIndex) {
-                        // 🟢 FIX: Removed onclick="" since lyrics are now beautifully untouchable
                         scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line" id="lrc-${i}">${c.text}</div>`).join('');
                         scroller.dataset.rendered = activeSubtitleIndex;
                         applySubtitleStyle(); // Sync colors & fonts instantly
@@ -7828,7 +7828,7 @@ HTML_DASHBOARD = """
                 return;
             }
 
-            // Normal Video WebVTT Subtitles
+            // 🎥 Normal Video WebVTT Subtitles (or VTT on Audio)
             if (scroller) scroller.style.display = 'none';
             if (overlay) overlay.style.display = 'flex';
             
@@ -7864,7 +7864,7 @@ HTML_DASHBOARD = """
             overlay.dataset.isTop = hasTop ? 'true' : 'false';
             applySubtitleStyle();
         }
-        
+
         async function applySubtitleSelection() {
             const subSelect = document.getElementById('pop-sub-select');
             const overlay = document.getElementById('subtitle-overlay');
@@ -8164,11 +8164,20 @@ HTML_DASHBOARD = """
         }
 
         function buildNativeUrl() {
+            // 🟢 CRITICAL FIX: For Direct HTTP Links, give the pure CDN URL straight to the browser!
+            // This bypasses the Python proxy completely, making seeking INSTANT for native audio & video.
+            if (playerSourceKind === 'direct' && window.currentProbeData && window.currentProbeData.resolved_url) {
+                // If it's a single file (not a ZIP playlist), bypass the proxy!
+                if (!window.globalPlaylist || window.globalPlaylist.length === 0) {
+                    return window.currentProbeData.resolved_url;
+                }
+            }
+
             let base = playerSourceKind === 'tg' 
                 ? `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`
                 : `/api/direct_stream?user_id=${encodeURIComponent(currentUser)}&url=${encodeURIComponent(activeMediaLink)}`;
                 
-            // 🟢 INJECT TRACK INDEX FOR ZIP PLAYLISTS
+            // INJECT TRACK INDEX FOR ZIP PLAYLISTS
             if (window.globalPlaylist && window.globalPlaylist.length > 0) {
                 const track = window.globalPlaylist[window.currentPlayIndex];
                 if (track) base += `&zip_idx=${track.original_index}`;
@@ -8417,11 +8426,15 @@ HTML_DASHBOARD = """
                 const [pdata, plistData] = await Promise.all([probePromise, playlistPromise]);
                 if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
 
+                // 🟢 CRITICAL FIX: Save the probe data globally so the URL builder can bypass the proxy!
+                window.currentProbeData = pdata; 
+
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
                 playerTotalDuration = Number(pdata.duration) || 0;
                 
                 // 🟢 PLAYLIST INITIALIZATION & GLOBAL TIMELINE MATH
-                window.globalPlaylist = plistData.playlist || [];
+                window.rawZipEntries = plistData.playlist || [];
+                window.globalPlaylist = window.rawZipEntries.filter(t => !t.is_sub); // 🟢 Hide LRC files from audio queue
                 window.currentPlayIndex = 0;
                 
                 if (window.globalPlaylist.length > 0 && playerTotalDuration > 0) {
@@ -8481,35 +8494,163 @@ HTML_DASHBOARD = """
                     const coverImg = document.getElementById('album-cover-art');
                     const trackInfo = document.getElementById('album-track-info');
                     
+                    // 🟢 PREVENT UI COLLAPSE: Force image to hold its space even if broken/empty
+                    if (coverImg) {
+                        coverImg.style.minHeight = '150px';
+                        coverImg.style.minWidth = '150px';
+                    }
+
+                    // 🟢 DYNAMIC LYRICS ENGINE FOR ZIPS & SINGLE FILES
+                    async function fetchSmartLyrics(zipIdx) {
+                        const overlay = document.getElementById('subtitle-overlay');
+                        const scroller = document.getElementById('lyrics-scroller');
+                        if (overlay) overlay.innerHTML = '';
+                        if (scroller) scroller.dataset.rendered = "false";
+                        subtitleCues = [];
+                        activeSubtitleIndex = 'off';
+                        
+                        if (window.subtitleAbortController) window.subtitleAbortController.abort();
+                        window.subtitleAbortController = new AbortController();
+                        
+                        let text = "";
+                        try {
+                            // 1. FIRST PRIORITY: Extract internal metadata lyrics via FFprobe directly from the track!
+                            let url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=metadata_lyrics`;
+                            if (zipIdx !== '') url += `&zip_idx=${zipIdx}`;
+                            
+                            const resInternal = await fetch(url, { signal: window.subtitleAbortController.signal });
+                            if (resInternal.ok) text = await resInternal.text();
+                            
+                            // 2. SECOND PRIORITY: Check for external .lrc / .vtt file matching the track name inside the ZIP
+                            if ((!text || text.trim().length === 0) && zipIdx !== '' && window.rawZipEntries) {
+                                const track = window.rawZipEntries.find(t => t.original_index === zipIdx);
+                                if (track) {
+                                    const baseName = track.display_name.substring(0, track.display_name.lastIndexOf('.'));
+                                    const lrcTrack = window.rawZipEntries.find(t => 
+                                        t.display_name.toLowerCase() === `${baseName.toLowerCase()}.lrc` || 
+                                        t.display_name.toLowerCase() === `${baseName.toLowerCase()}.vtt`
+                                    );
+                                    if (lrcTrack) {
+                                        let lrcUrl = buildNativeUrl();
+                                        lrcUrl = lrcUrl.replace(`zip_idx=${zipIdx}`, `zip_idx=${lrcTrack.original_index}`);
+                                        if (!lrcUrl.includes('zip_idx')) lrcUrl += `&zip_idx=${lrcTrack.original_index}`;
+                                        
+                                        const resExternal = await fetch(lrcUrl, { signal: window.subtitleAbortController.signal });
+                                        if (resExternal.ok) text = await resExternal.text();
+                                    }
+                                }
+                            }
+                            
+                            if (text && text.trim().length > 0) {
+                                activeSubtitleIndex = 'metadata_lyrics';
+                                if (text.includes('[00:') || text.includes('[01:') || text.includes('[02:')) {
+                                    subtitleCues = parseLRC(text);
+                                } else {
+                                    subtitleCues = parseWebVTT(text);
+                                }
+                            }
+                            renderCurrentSubtitle();
+                        } catch (err) {
+                            if (err?.name !== 'AbortError') console.warn('Lyrics fetch failed:', err);
+                        }
+                    }
+
                     function updateAlbumText() {
+                        let currentCoverUrl = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png'; // Safe fallback
+                        let currentZipIdx = ''; 
+                        
+                        let currentIsAudio = false;
+                        let currentIsVideo = false;
+
+                        // Check single file metadata first
+                        if (pdata && pdata.mime_type) {
+                            if (pdata.mime_type.startsWith('audio')) currentIsAudio = true;
+                            if (pdata.mime_type.startsWith('video')) currentIsVideo = true;
+                        }
+
+                        // 1. Text & URL Logic (Handles BOTH Playlists and Single Tracks)
                         if (window.globalPlaylist && window.globalPlaylist.length > 0) {
                             const track = window.globalPlaylist[window.currentPlayIndex];
+                            currentZipIdx = track.original_index;
+                            
+                            // 🟢 CRITICAL FIX: Dynamically detect if the current playlist track is Audio or Video!
+                            if (track.display_name) {
+                                const ext = track.display_name.split('.').pop().toLowerCase();
+                                if (['mp3', 'flac', 'm4a', 'wav', 'aac', 'ogg', 'alac', 'mka', 'opus'].includes(ext)) {
+                                    currentIsAudio = true;
+                                    currentIsVideo = false;
+                                } else if (['mp4', 'mkv', 'webm', 'avi', 'm4v', 'ts'].includes(ext)) {
+                                    currentIsAudio = false;
+                                    currentIsVideo = true;
+                                }
+                            }
+
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">TRACK ${window.currentPlayIndex + 1} OF ${window.globalPlaylist.length}</span><br>${track.display_name}`;
                             if (titleEl) titleEl.innerText = `[${window.currentPlayIndex + 1}/${window.globalPlaylist.length}] ${track.display_name}`;
+                            
+                            // ZIPs: Use 'activeMediaLink' so the server knows which ZIP file to look inside
+                            const zipLink = (typeof activeMediaLink !== 'undefined' && activeMediaLink) ? activeMediaLink : link;
+                            currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(zipLink)}&zip_idx=${track.original_index}`;
+                            
                         } else {
-                            trackInfo.innerHTML = '';
-                            if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
+                            // Single Track
+                            let titleText = pdata.file_name || 'Media Stream';
+                            trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">NOW PLAYING</span><br>${titleText}`;
+                            if (titleEl) titleEl.innerText = titleText;
+                            
+                            // Single tracks: Use 'link' to point directly to the individual media file
+                            currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
+                        }
+
+                        // 2. Display Logic
+                        // 🟢 CRITICAL FIX: Only show the cover container if it's Audio! If it's a Video track, hide it!
+                        if ((pdata.has_cover || currentIsAudio) && !currentIsVideo) {
+                            coverContainer.style.display = 'flex';
+                            coverContainer.style.zIndex = '50'; // Ensure container stays above any native video elements
+                            
+                            if (coverImg) {
+                                coverImg.style.display = 'block'; 
+                                coverImg.style.minHeight = '220px';
+                                coverImg.style.minWidth = '220px';
+                                coverImg.style.opacity = '1'; 
+                                
+                                // Handle failures gracefully by falling back to the icon
+                                coverImg.onerror = function() {
+                                    if (!this.src.includes('flaticon')) {
+                                        this.src = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
+                                    }
+                                    vp.style.backgroundImage = 'none';
+                                };
+                                
+                                // Handle successful loads to set the blurred background
+                                coverImg.onload = function() {
+                                    if (!this.src.includes('flaticon')) {
+                                        vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${this.src}')`;
+                                        vp.style.backgroundSize = 'cover';
+                                        vp.style.backgroundPosition = 'center';
+                                    } else {
+                                        vp.style.backgroundImage = 'none';
+                                    }
+                                };
+                                
+                                // Fire request!
+                                coverImg.src = currentCoverUrl;
+                            }
+                        } else {
+                            // 🟢 IT'S A VIDEO: Hide the cover container completely so the video feed plays!
+                            if (coverContainer) coverContainer.style.display = 'none';
+                            if (vp) vp.style.backgroundImage = 'none';
+                        }
+                        
+                        // 🟢 TRIGGER SMART LYRICS REFRESH!
+                        // ONLY fetch smart lyrics automatically if it's an Audio track!
+                        if (currentIsAudio && typeof fetchSmartLyrics === 'function') {
+                            fetchSmartLyrics(currentZipIdx);
                         }
                     }
                     window.updateAlbumText = updateAlbumText;
-                    updateAlbumText();
-                    
-                    if (pdata.has_cover || window.globalPlaylist.length > 0) {
-                        coverContainer.style.display = 'flex';
-                        coverImg.src = pdata.has_cover ? `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}` : 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
-                        if (pdata.has_cover) {
-                            vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${coverImg.src}')`;
-                            vp.style.backgroundSize = 'cover';
-                            vp.style.backgroundPosition = 'center';
-                        } else {
-                            vp.style.backgroundImage = 'none';
-                        }
-                    } else {
-                        coverContainer.style.display = 'none';
-                        vp.style.backgroundImage = 'none';
-                    }
+                    updateAlbumText(); // Call immediately on load
                 }
-
                 qSelect.innerHTML = '';
                 (pdata.qualities?.length ? pdata.qualities : ['Original']).forEach(q => addOption(qSelect, q, q));
 
@@ -11092,6 +11233,7 @@ async def _api_media_probe_handler(request):
                     duration_val = tg_duration
                     logger.info(f"🔎 [PROBE TG] Found Telegram native duration: {duration_val}s")
 
+            pdata = {} # 🟢 FIX: Initialize pdata to prevent UnboundLocalError when FFprobe fails on ZIPs
             try:
                 pdata = await _run_ffprobe_json(probe_input, fast=True)
                 streams = pdata.get("streams", []) or []
@@ -11269,6 +11411,8 @@ async def _api_cover_handler(request):
     except:
         user_id = 0
     link = request.query.get("link", "").strip()
+    zip_idx = request.query.get("zip_idx", "").strip() # 🟢 NEW: Capture ZIP Playlist Index
+    
     if not link:
         return web.Response(status=400, text="No link provided")
 
@@ -11281,8 +11425,13 @@ async def _api_cover_handler(request):
             chat_id = parsed.get("chat_id")
             msg_id = parsed.get("msg_id")
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+            if zip_idx:
+                actual_url += f"&zip_idx={zip_idx}" # 🟢 Route FFmpeg directly into the ZIP track!
         else:
             actual_url = await resolve_direct_link(link)
+            if zip_idx:
+                from urllib.parse import quote
+                actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}&zip_idx={zip_idx}"
 
         # Grabs the exact cover frame directly from the media container
         cmd = [
@@ -11991,13 +12140,15 @@ async def _api_subtitles_handler(request):
         user_id = 0
     link = request.query.get("link", "").strip()
     sub_idx = request.query.get("sub_idx", "0").strip()
+    zip_idx = request.query.get("zip_idx", "").strip() # 🟢 NEW: Support ZIP
+    
     if not link:
         return web.Response(status=400, text="Invalid Link")
 
     is_tg = _is_tg_link(link)
     logger.info(f"📝 [SUBTITLES] Extract Request | User: {user_id} | Is TG: {is_tg} | Sub_Idx: {sub_idx} | Link: {link[:60]}...")
 
-    cache_key = f"{user_id}:{link}:{sub_idx}"
+    cache_key = f"{user_id}:{link}:{sub_idx}:{zip_idx}"
     now = time.time()
     cached = SUBTITLE_CACHE.get(cache_key)
     if cached and cached[1] > now:
@@ -12014,16 +12165,19 @@ async def _api_subtitles_handler(request):
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
         msg_id = parsed.get("msg_id")
-        msg_range = parsed.get("msg_range") # 🟢 Extract range
+        msg_range = parsed.get("msg_range") 
         if chat_id is None or msg_id is None:
             return web.Response(status=400, text="Invalid Telegram link")
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
         if msg_range:
-            actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
+            actual_url += f"&range={msg_range[0]}-{msg_range[1]}" 
+        if zip_idx:
+            actual_url += f"&zip_idx={zip_idx}" # 🟢 Point FFprobe inside the ZIP track
     else:
         actual_url = await resolve_direct_link(link)
-        # 🟢 FIX: Let FFmpeg fetch directly to extract text instantly without stalling the server!
-        logger.debug(f"📝 [SUBTITLES] Direct FFmpeg Extraction (No Loopback): {actual_url[:100]}...")
+        if zip_idx:
+            from urllib.parse import quote
+            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}&zip_idx={zip_idx}"
 
     # 🟢 FIX: Extract Embedded Metadata Lyrics (ID3/FLAC Tags) directly!
     if sub_idx == "metadata_lyrics":
@@ -12183,12 +12337,15 @@ async def get_zip_playlist(read_fn, zip_size):
         tail_len = min(262144, zip_size)
         tail = await read_fn(zip_size - tail_len, tail_len)
         entries = _parse_central_directory_full(tail, zip_size - tail_len, zip_size)
-        valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
+        valid_media = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
+        valid_subs = (".lrc", ".srt", ".vtt")
         playlist = []
         for idx, e in enumerate(entries):
-            if e["name"].lower().endswith(valid_exts) and e["method"] == 0:
+            lower_name = e["name"].lower()
+            if (lower_name.endswith(valid_media) or lower_name.endswith(valid_subs)) and e["method"] == 0:
                 e["original_index"] = idx
                 e["display_name"] = e["name"].split("/")[-1].split("\\")[-1]
+                e["is_sub"] = lower_name.endswith(valid_subs) # 🟢 Tag subtitles so they aren't played as audio
                 playlist.append(e)
         return playlist
     except Exception: return []
