@@ -10695,20 +10695,22 @@ async def _probe_tg_client(client, chat_id, msg_id):
         await get_client_msg(client, chat_id, msg_id)
         return client
     except Exception as e:
-        # 🟢 FIX: If the worker bot doesn't know the channel yet (PeerIdInvalid),
-        # force it to quickly fetch its chat list to learn the access_hash!
-        err_str = str(e)
-        if getattr(client, "bot_token", None) and ("Peer" in err_str or "Channel" in err_str or "KeyError" in err_str):
+        # 🟢 FIX: Broaden error catching. Any failure on the first try might mean 
+        # the bot's local SQLite DB is missing the peer. Force an update!
+        if getattr(client, "bot_token", None):
             try:
-                async for _ in client.get_dialogs(limit=50):
+                logger.debug(f"Worker {getattr(client, 'name', 'bot')} missing peer {chat_id}. Forcing dialog scan...")
+                # Scan only the most recent 20 dialogs to keep it blazing fast
+                async for _ in client.get_dialogs(limit=20):
                     pass
-                # Retry fetching the message now that the channel is cached!
+                # Try one last time now that the cache is warm
                 await get_client_msg(client, chat_id, msg_id)
+                logger.info(f"✅ Worker {getattr(client, 'name', 'bot')} successfully resolved {chat_id} after scan.")
                 return client
-            except Exception:
+            except Exception as inner_e:
+                logger.debug(f"Worker {getattr(client, 'name', 'bot')} still failed after scan: {inner_e}")
                 pass
         return None
-
 
 async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
     """Return accessible bot clients first, then one user-session fallback. Strictly scoped to user_id."""
@@ -10755,8 +10757,9 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
         pool = []
         if candidates:
             results = await asyncio.gather(
-                # 🟢 FIX: Increased timeout from 4 to 12s to give bots time to scan their chat list!
-                *[asyncio.wait_for(_probe_tg_client(c, chat_id, msg_id), timeout=12.0) for c in candidates],
+                # 🟢 FIX: Increased timeout to 20s. If a bot needs to fetch dialogs, 
+                # it needs enough time to finish before being marked as 'failed'.
+                *[asyncio.wait_for(_probe_tg_client(c, chat_id, msg_id), timeout=20.0) for c in candidates],
                 return_exceptions=True,
             )
             for result in results:
