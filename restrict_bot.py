@@ -5776,7 +5776,6 @@ HTML_DASHBOARD = """
             <div id="view-globe" class="view-section">
                 <div class="section-title">Global Database & Timezones</div>
                 
-                <!-- 🟢 NEW: SEARCH BAR -->
                 <div class="input-group" style="margin-bottom: 20px;">
                     <div style="display: flex; gap: 8px;">
                         <input type="text" id="country-search-input" placeholder="Search any country (e.g. Japan, Brazil, India)..." style="flex: 1; border-radius: 16px; border: 2px solid var(--card-border); background: rgba(0,0,0,0.3); color: #fff; padding: 14px 16px;" onkeypress="if(event.key === 'Enter') searchCountryManual()">
@@ -5784,16 +5783,18 @@ HTML_DASHBOARD = """
                     </div>
                 </div>
 
-                <div style="display: flex; flex-wrap: wrap; gap: 20px;">
+                <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch;">
                     
-                    <!-- 3D Globe Projection Area (Height optimized to remove the black gap) -->
-                    <div id="globe-container" style="flex: 1 1 400px; min-height: 350px; height: 45vh; border-radius: 24px; overflow: hidden; position: relative; border: 1px solid var(--card-border); box-shadow: 0 10px 40px rgba(0,0,0,0.5); background: #000;">
-                        <!-- Globe.gl engine injects here -->
+                    <!-- 🟢 FIX: Perfectly Centered 3D Globe Projection Area -->
+                    <div style="flex: 1 1 400px; min-height: 450px; height: 55vh; border-radius: 24px; overflow: hidden; position: relative; border: 1px solid var(--card-border); box-shadow: 0 10px 40px rgba(0,0,0,0.5); background: #000; display: flex; align-items: center; justify-content: center;">
+                        <div id="globe-container" style="width: 100%; height: 100%; display: block;">
+                            <!-- Globe.gl engine injects here -->
+                        </div>
                     </div>
                     
                     <!-- Interactive Side Intelligence Panel -->
                     <div class="card" style="flex: 1 1 350px; display: flex; flex-direction: column; max-height: 600px; overflow-y: auto; padding: 25px; scrollbar-width: thin;">
-                        <div id="country-empty" style="text-align:center; color: var(--subtext); margin-top: 10%;">
+                        <div id="country-empty" style="text-align:center; color: var(--subtext); margin-top: 15%;">
                             <div style="font-size: 60px; margin-bottom: 20px;">🌍</div>
                             <h3 style="color: #fff;">Spin the globe!</h3>
                             <p style="font-size: 13px; line-height: 1.5;">Click a country or use the search bar above to fetch live Timezones, Geo-Political data, Economics, and Recent News.</p>
@@ -8831,10 +8832,9 @@ HTML_DASHBOARD = """
             globeInitialized = true;
             
             const container = document.getElementById('globe-container');
-            container.innerHTML = '<div style="color:var(--accent); text-align:center; margin-top: 25%; font-weight: bold; font-size: 18px;">⏳ Connecting to Satellites...<br><span style="font-size:12px; color:var(--subtext);">Loading Topographical Map Data</span></div>';
+            container.innerHTML = '<div style="color:var(--accent); text-align:center; margin-top: 40%; font-weight: bold; font-size: 18px;">⏳ Connecting to Satellites...<br><span style="font-size:12px; color:var(--subtext);">Loading Topographical Map Data</span></div>';
 
             setTimeout(() => {
-                // 🟢 FIX 1: Switched all endpoints to jsDelivr CDN to completely bypass regional ISP blocks on raw.githubusercontent!
                 fetch('https://cdn.jsdelivr.net/npm/globe.gl@2.32.0/example/datasets/ne_110m_admin_0_countries.geojson')
                     .then(res => {
                         if (!res.ok) throw new Error("Map data blocked by network.");
@@ -8843,8 +8843,10 @@ HTML_DASHBOARD = """
                     .then(countries => {
                         container.innerHTML = ''; 
 
+                        // 🟢 FIX: Explicitly pass width and height to force perfect centering!
                         myGlobe = Globe()(container)
-                            // 🟢 FIX 2: Pinned versions for the Ultra-HD Satellite map & topology
+                            .width(container.clientWidth)
+                            .height(container.clientHeight)
                             .globeImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-blue-marble.jpg')
                             .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
                             .backgroundImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/night-sky.png')
@@ -8854,7 +8856,7 @@ HTML_DASHBOARD = """
                             .polygonSideColor(() => 'rgba(0, 0, 0, 0.2)')
                             .polygonStrokeColor(() => '#38bdf8')
                             .polygonLabel(({ properties: d }) => {
-                                // 🟢 FIX 3: Force the English label strictly from the Map Data
+                                // 🟢 FIX: Strictly enforce English naming for the hover labels
                                 const englishName = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
                                 return `
                                 <div style="background: rgba(0,0,0,0.85); border: 1px solid var(--accent); padding: 8px 12px; border-radius: 12px; color: white; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
@@ -8869,7 +8871,7 @@ HTML_DASHBOARD = """
                                 .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(255, 255, 255, 0.05)');
                             })
                             .onPolygonClick(({ properties: d }) => {
-                                // 🟢 Force English search terms
+                                // 🟢 FIX: Strictly pass English names down to the API
                                 const name = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
                                 const iso2 = d.ISO_A2 !== "-99" ? d.ISO_A2 : null;
                                 const iso3 = d.ISO_A3 !== "-99" ? d.ISO_A3 : null;
@@ -8879,24 +8881,23 @@ HTML_DASHBOARD = """
                         myGlobe.controls().autoRotate = true;
                         myGlobe.controls().autoRotateSpeed = 1.0;
                         
+                        // 🟢 FIX: Centered starting position with proper altitude
                         const isMobile = window.innerWidth < 768;
-                        myGlobe.pointOfView({ altitude: isMobile ? 3.0 : 2.2 });
+                        myGlobe.pointOfView({ lat: 20, lng: 0, altitude: isMobile ? 2.5 : 2.0 });
 
                         window.addEventListener('resize', () => {
-                            if(document.getElementById('view-globe').classList.contains('active')) {
+                            if(document.getElementById('view-globe').classList.contains('active') && myGlobe) {
                                 myGlobe.width(container.clientWidth);
                                 myGlobe.height(container.clientHeight);
                             }
                         });
 
-                        // 🟢 FIX 4: Fetch Capitals and Cities through JSdelivr CDN
                         fetch('https://cdn.jsdelivr.net/npm/globe.gl@2.32.0/example/datasets/ne_110m_populated_places_simple.geojson')
                             .then(res => res.json())
                             .then(places => {
                                 myGlobe.labelsData(places.features)
                                     .labelLat(d => d.properties.latitude)
                                     .labelLng(d => d.properties.longitude)
-                                    // 🟢 Force English City Names
                                     .labelText(d => d.properties.nameen || d.properties.nameascii || d.properties.name)
                                     .labelSize(d => d.properties.megacity ? 1.5 : 0.6)
                                     .labelDotRadius(d => d.properties.megacity ? 0.4 : 0.2)
@@ -8906,9 +8907,9 @@ HTML_DASHBOARD = """
                             });
                     })
                     .catch(err => {
-                        container.innerHTML = `<div style="color:var(--danger); text-align:center; margin-top: 25%;">❌ Satellite connection failed. Error: ${err.message}<br><span style="font-size:12px;color:var(--subtext);">Try searching manually or check your network.</span></div>`;
+                        container.innerHTML = `<div style="color:var(--danger); text-align:center; margin-top: 40%;">❌ Satellite connection failed. Error: ${err.message}<br><span style="font-size:12px;color:var(--subtext);">Try searching manually or check your network.</span></div>`;
                     });
-            }, 50); 
+            }, 100); // 100ms delay to guarantee DOM is rendered before ThreeJS measures it
         }
 
         async function searchCountryManual() {
@@ -8926,31 +8927,43 @@ HTML_DASHBOARD = """
             try {
                 let data = null;
                 
-                const fetchAPI = async (url) => {
-                    try {
-                        const r = await fetch(url);
-                        if (r.ok) return await r.json();
-                    } catch(e) {}
+                // 🟢 FIX: Intelligent fallback array. Tries absolute exact matches first, then fuzzy search.
+                const fetchAPI = async (urls) => {
+                    for (let url of urls) {
+                        try {
+                            const r = await fetch(url);
+                            if (r.ok) {
+                                const json = await r.json();
+                                if (json && json.length > 0) return json;
+                            }
+                        } catch(e) {}
+                    }
                     return null;
                 };
 
+                let searchUrls = [];
                 if (isManualSearch) {
-                    data = await fetchAPI(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
+                    searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}?fullText=true`);
+                    searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
                 } else {
-                    if (iso3 && iso3 !== "-99") data = await fetchAPI(`https://restcountries.com/v3.1/alpha/${iso3}`);
-                    if (!data && iso2 && iso2 !== "-99") data = await fetchAPI(`https://restcountries.com/v3.1/alpha/${iso2}`);
-                    if (!data) data = await fetchAPI(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
+                    if (iso3 && iso3 !== "-99") searchUrls.push(`https://restcountries.com/v3.1/alpha/${iso3}`);
+                    if (iso2 && iso2 !== "-99") searchUrls.push(`https://restcountries.com/v3.1/alpha/${iso2}`);
+                    searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}?fullText=true`);
+                    searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
                 }
 
-                if (!data || !Array.isArray(data) || data.length === 0) {
+                data = await fetchAPI(searchUrls);
+
+                if (!data) {
+                    // Final desparation fallback: strip to first word
                     const shortName = rawName.split(" ")[0];
-                    data = await fetchAPI(`https://restcountries.com/v3.1/name/${encodeURIComponent(shortName)}`);
-                    if (!data || !Array.isArray(data) || data.length === 0) throw new Error("Target data completely classified or missing.");
+                    data = await fetchAPI([`https://restcountries.com/v3.1/name/${encodeURIComponent(shortName)}`]);
+                    if (!data) throw new Error(`Target data for '${rawName}' classified or missing.`);
                 }
 
                 const country = data[0]; 
                 
-                // 🟢 EXTRACT STRICT ENGLISH NAMES FOR RELIABLE WIKIPEDIA QUERIES
+                // 🟢 STRICT ENGLISH NAME EXTRACTION
                 let englishName = country.name.common;
                 if (country.name.translations && country.name.translations.eng) {
                     englishName = country.name.translations.eng.common || englishName;
@@ -8959,18 +8972,17 @@ HTML_DASHBOARD = """
                 try {
                     if (myGlobe && country.latlng) {
                         const isMobile = window.innerWidth < 768;
-                        myGlobe.pointOfView({ lat: country.latlng[0], lng: country.latlng[1], altitude: isMobile ? 3.0 : 2.2 }, 1000);
+                        // Center exactly on the country, slightly zoomed in
+                        myGlobe.pointOfView({ lat: country.latlng[0], lng: country.latlng[1], altitude: isMobile ? 1.8 : 1.2 }, 1200);
                     }
                 } catch(camErr) { console.warn("Camera jump skipped", camErr); }
 
                 let wikiSummary = "<i style='color:var(--subtext);'>Accessing local intelligence failed. No recent developments available in the active database.</i>";
                 try {
-                    // Try the exact English name first
                     let wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(englishName)}`);
                     let wikiData = await wikiRes.json();
                     
-                    // Fallback to the raw map data name if the English one fails
-                    if(wikiData.title === "Not found." && rawName) {
+                    if((wikiData.title === "Not found." || wikiData.type === "disambiguation") && rawName) {
                         wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(rawName)}`);
                         wikiData = await wikiRes.json();
                     }
@@ -9019,7 +9031,6 @@ HTML_DASHBOARD = """
                 let currencies = "None";
                 if(country.currencies) currencies = Object.values(country.currencies).map(c => `${c.name} (${c.symbol})`).join(', ');
                 
-                // 🟢 Force English display for languages by falling back to the key names if needed
                 let languages = "None";
                 if(country.languages) languages = Object.values(country.languages).join(', ');
 
