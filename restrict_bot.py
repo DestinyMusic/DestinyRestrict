@@ -7705,9 +7705,9 @@ HTML_DASHBOARD = """
             return cues.sort((a, b) => a.start - b.start);
         }
 
-        // 🟢 NEW: LRC Lyrics Format Parser (Supports standard [mm:ss.xx] and syllable <mm:ss.xx>)
+        // 🟢 UPGRADED: LRC Parser with Duplicate Line Cleaning & Sequential Deduping
         function parseLRC(text) {
-            const cues = [];
+            const rawCues = [];
             const lines = String(text).replace(/\\r/g, '').split('\\n');
             const lrcRegex = /(?:\\[|<)(\\d{2,}):(\\d{2})(?:\\.(\\d{2,3}))?(?:\\]|>)/g;
             
@@ -7721,16 +7721,35 @@ HTML_DASHBOARD = """
                             const sec = parseInt(m[2], 10);
                             const ms = m[3] ? parseInt(m[3].padEnd(3, '0'), 10) / 1000 : 0;
                             const time = min * 60 + sec + ms;
-                            cues.push({ start: time, end: time + 10, text: textContent, isLrc: true });
+                            rawCues.push({ start: time, text: textContent });
                         });
                     }
                 }
             });
-            cues.sort((a, b) => a.start - b.start);
-            for(let i=0; i<cues.length-1; i++) {
-                if(cues[i].end > cues[i+1].start) {
-                    cues[i].end = cues[i+1].start;
+            
+            // Sort chronologically by timestamp
+            rawCues.sort((a, b) => a.start - b.start);
+            
+            // 🟢 Deduping Engine: Filter out duplicate consecutive chorus lines
+            const cues = [];
+            for (let i = 0; i < rawCues.length; i++) {
+                const current = rawCues[i];
+                // Check if this exact text appears immediately after, avoid stacking identical lines
+                if (cues.length > 0 && cues[cues.length - 1].text === current.text && (current.start - cues[cues.length - 1].start < 2.0)) {
+                    continue; // Skip duplicate rapid-fire chorus triggers
                 }
+                
+                let endTime = current.start + 6.0; // Default line display window
+                if (i < rawCues.length - 1) {
+                    endTime = Math.min(endTime, rawCues[i + 1].start);
+                }
+                
+                cues.push({
+                    start: current.start,
+                    end: Math.max(current.start + 1.5, endTime),
+                    text: current.text,
+                    isLrc: true
+                });
             }
             return cues;
         }
@@ -7908,36 +7927,23 @@ HTML_DASHBOARD = """
             const stretch = document.getElementById('subtitle-width-slider')?.value || 95; 
             
             const overlay = document.getElementById('subtitle-overlay');
-            const canvas = document.getElementById('webgl-canvas');
             
             if (overlay) {
-                if (canvas && canvas.style.display !== 'none') {
-                    const viewportHeight = overlay.parentElement.clientHeight;
-                    const canvasHeight = parseFloat(canvas.style.height) || viewportHeight;
-                    const topEdge = (viewportHeight - canvasHeight) / 2;
-                    const bottomEdge = (viewportHeight - canvasHeight) / 2;
-                    
-                    if (overlay.dataset.isTop === 'true') {
-                        overlay.style.top = `${Math.max(0, topEdge + (canvasHeight * 0.10))}px`;
-                        overlay.style.bottom = 'auto';
-                    } else {
-                        overlay.style.top = 'auto';
-                        overlay.style.bottom = `${Math.max(0, bottomEdge + (canvasHeight * ((100 - pos) / 100)))}px`; 
-                    }
-                } else {
-                    if (overlay.dataset.isTop === 'true') {
-                        overlay.style.top = '10%';
-                        overlay.style.bottom = 'auto';
-                    } else {
-                        overlay.style.top = 'auto';
-                        overlay.style.bottom = `${100 - pos}%`; 
-                    }
-                }
-                overlay.style.alignItems = 'center'; 
+                overlay.style.position = 'absolute';
+                overlay.style.bottom = '12%'; // Anchored neatly above the OSD player controls
+                overlay.style.top = 'auto';
+                overlay.style.left = '5%';
+                overlay.style.right = '5%';
+                overlay.style.display = 'flex';
+                overlay.style.flexDirection = 'column';
+                overlay.style.alignItems = 'center';
+                overlay.style.justifyContent = 'flex-end';
+                overlay.style.zIndex = '28';
+                overlay.style.pointerEvents = 'none';
             }
 
             let responsiveSize = size;
-            let lyricSize = size + 4; // Lyrics look better slightly larger than standard subs
+            let lyricSize = size + 4; 
             
             if (window.innerWidth < 600) {
                 responsiveSize = Math.max(12, size * 0.65); 
@@ -7952,18 +7958,18 @@ HTML_DASHBOARD = """
                 text.style.fontFamily = font;
                 text.style.fontWeight = weight;
                 text.style.maxWidth = `${stretch}%`;
+                text.style.textAlign = 'center';
             });
 
-            // 🟢 Sync Apple Music Lyrics Scroller
+            // Sync Apple Music Lyrics Scroller
             document.querySelectorAll('.lrc-line').forEach(text => {
                 text.style.fontFamily = font;
                 text.style.fontWeight = weight;
-                // We keep the inactive lines greyed out
                 text.style.color = 'rgba(255,255,255,0.4)';
                 text.style.fontSize = `${responsiveSize}px`;
             });
             document.querySelectorAll('.lrc-line.active').forEach(text => {
-                text.style.color = fg; // Apply user's selected color to the active line!
+                text.style.color = fg; 
                 text.style.fontSize = `${lyricSize}px`;
             });
         }
