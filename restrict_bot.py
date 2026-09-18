@@ -4861,7 +4861,7 @@ HTML_DASHBOARD = """
 
         /* 🟢 NEW: Dedicated Audio Lyrics Scroller */
         .lyrics-scroller {
-            position: absolute; top: 55%; bottom: 8%; left: 5%; right: 5%;
+            position: absolute; top: 68%; bottom: 12%; left: 5%; right: 5%;
             overflow-y: auto; text-align: center; z-index: 10;
             display: none; scroll-behavior: smooth;
             -ms-overflow-style: none; scrollbar-width: none;
@@ -7671,6 +7671,8 @@ HTML_DASHBOARD = """
             return cues.sort((a, b) => a.start - b.start);
         }
 
+        let lyricsAbortController = null;
+
         // 🟢 NEW: Dedicated Lyrics Fetcher & Parser
         async function fetchSmartLyrics(zipIdx = '') {
             const scroller = document.getElementById('lyrics-scroller');
@@ -7680,22 +7682,30 @@ HTML_DASHBOARD = """
             
             subtitleCues = [];
             activeSubtitleIndex = 'off';
+
+            // 🟢 FIX: Instantly cancel previous lyric downloads if the user skips tracks rapidly!
+            if (lyricsAbortController) {
+                lyricsAbortController.abort();
+                lyricsAbortController = null;
+            }
+            lyricsAbortController = new AbortController();
             
             try {
-                let zipParam = zipIdx ? `&zip_idx=${zipIdx}` : '';
+                // 🟢 FIX: Ensure Track 0 isn't accidentally treated as 'empty'
+                let zipParam = (zipIdx !== '') ? `&zip_idx=${zipIdx}` : '';
                 if (!zipParam && window.globalPlaylist && window.globalPlaylist.length > 0) {
                     const track = window.globalPlaylist[window.currentPlayIndex];
                     if (track) zipParam = `&zip_idx=${track.original_index}`;
                 }
 
                 const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=metadata_lyrics${zipParam}`;
-                const res = await fetch(url);
+                const res = await fetch(url, { signal: lyricsAbortController.signal });
                 if (!res.ok) return;
                 
+                // 🟢 FIX: Double-escaped backslashes for Python string compatibility!
                 const text = await res.text();
                 if (!text || text.trim().length === 0) return;
                 
-                // 🟢 FIX: Double-escaped backslashes for Python string compatibility!
                 const lines = text.split('\\n');
                 const lrcCues = [];
                 const timeRegex = /\\[(\\d{2}):(\\d{2}\\.\\d{2,3})\\](.*)/;
@@ -7705,10 +7715,15 @@ HTML_DASHBOARD = """
                     if (match) {
                         const min = parseInt(match[1], 10);
                         const sec = parseFloat(match[2]);
-                        const textContent = match[3].trim();
+                        
+                        // 🟢 FIX: Strip out all internal Syllable/TTML timing tags (e.g., <00:48.432>) and extra brackets
+                        let textContent = match[3].replace(/<[^>]+>/g, '').replace(/\\[\\d{2}:\\d{2}\\.\\d{2,3}\\]/g, '').trim();
+                        
                         if (textContent) lrcCues.push({ start: min * 60 + sec, text: textContent, isLrc: true });
                     } else if (line.trim() !== '' && !line.startsWith('[')) {
-                        lrcCues.push({ start: -1, text: line.trim(), isLrc: true }); // Unsynced
+                        // Clean up unsynced lines too just in case
+                        let textContent = line.replace(/<[^>]+>/g, '').trim();
+                        if (textContent) lrcCues.push({ start: -1, text: textContent, isLrc: true });
                     }
                 }
                 
@@ -7719,7 +7734,9 @@ HTML_DASHBOARD = """
                     activeSubtitleIndex = 'metadata_lyrics';
                     renderCurrentSubtitle();
                 }
-            } catch(e) { console.warn("Smart lyrics fetch failed:", e); }
+            } catch(e) { 
+                if (e.name !== 'AbortError') console.warn("Smart lyrics fetch failed:", e); 
+            }
         }
 
         function renderCurrentSubtitle(forceTime = null) {
@@ -8428,10 +8445,10 @@ HTML_DASHBOARD = """
                         coverContainer = document.createElement('div');
                         coverContainer.id = 'album-cover-container';
                         coverContainer.style.position = 'absolute';
-                        coverContainer.style.top = '0';
+                        coverContainer.style.top = '5%';
                         coverContainer.style.left = '0';
                         coverContainer.style.width = '100%';
-                        coverContainer.style.height = '100%';
+                        coverContainer.style.height = '60%'; // 🟢 FIX: Restrict cover art to the top 60% of screen
                         coverContainer.style.transform = 'none';
                         coverContainer.style.display = 'flex';
                         coverContainer.style.flexDirection = 'column';
@@ -8442,7 +8459,7 @@ HTML_DASHBOARD = """
                         
                         const coverImg = document.createElement('img');
                         coverImg.id = 'album-cover-art';
-                        coverImg.style.maxHeight = '50%'; // 🟢 FIX: Constrain height to avoid overlap
+                        coverImg.style.maxHeight = '70%'; // 🟢 FIX: Scales nicely inside the new 60% container
                         coverImg.style.maxWidth = '80%';
                         coverImg.style.objectFit = 'contain';
                         coverImg.style.borderRadius = '20px';
@@ -8450,7 +8467,7 @@ HTML_DASHBOARD = """
                         
                         const trackInfo = document.createElement('div');
                         trackInfo.id = 'album-track-info';
-                        trackInfo.style.marginTop = '25px';
+                        trackInfo.style.marginTop = '15px'; // 🟢 Tighter spacing
                         trackInfo.style.color = '#fff';
                         trackInfo.style.fontSize = '20px';
                         trackInfo.style.fontWeight = '800';
@@ -11680,7 +11697,8 @@ async def _api_subtitles_handler(request):
     is_tg = _is_tg_link(link)
     logger.info(f"📝 [SUBTITLES] Extract Request | User: {user_id} | Is TG: {is_tg} | Sub_Idx: {sub_idx} | Link: {link[:60]}...")
 
-    cache_key = f"{user_id}:{link}:{sub_idx}"
+    # 🟢 FIX: Include zip_idx in the cache key so different tracks in an album don't overwrite each other!
+    cache_key = f"{user_id}:{link}:{sub_idx}:{zip_idx}"
     now = time.time()
     cached = SUBTITLE_CACHE.get(cache_key)
     if cached and cached[1] > now:
