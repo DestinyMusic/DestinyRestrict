@@ -9273,18 +9273,29 @@ HTML_DASHBOARD = """
                 const proxyUrl = `/api/proxy/country?iso=${isoCode || ''}&name=${encodeURIComponent(countryName)}`;
                 const res = await fetch(proxyUrl);
                 
+                const rawText = await res.text();
+                let rawJson;
+                try {
+                    rawJson = JSON.parse(rawText);
+                } catch (e) {
+                    throw new Error(`Invalid JSON from server: ${rawText.substring(0, 40)}...`);
+                }
+
                 if (!res.ok) {
-                    const errText = await res.text();
-                    throw new Error(`HTTP ${res.status}: ${errText.substring(0, 50)}`);
+                    throw new Error(rawJson.error || `HTTP ${res.status}`);
                 }
                 
-                const rawJson = await res.json();
-                
-                // 🟢 BULLETPROOF FIX: Safely handle both Array [ {data} ] and Object {data} responses
-                const data = Array.isArray(rawJson) ? rawJson[0] : rawJson;
+                // 🟢 BULLETPROOF FIX: Extract data safely, whether it's an Array or an Object
+                let data = null;
+                if (Array.isArray(rawJson) && rawJson.length > 0) {
+                    data = rawJson[0];
+                } else if (typeof rawJson === 'object' && rawJson !== null && !Array.isArray(rawJson)) {
+                    data = rawJson;
+                }
                 
                 if (!data || !data.flags) {
-                    throw new Error("API returned an unexpected JSON structure.");
+                    console.error("Failed API Dump:", rawJson); // Logs to browser console for debugging
+                    throw new Error("API returned an unrecognizable structure.");
                 }
                 
                 countryData = data; 
@@ -12577,21 +12588,45 @@ async def _api_proxy_country(request):
     iso = request.query.get("iso", "").strip()
     name = request.query.get("name", "").strip()
     import aiohttp
-    try:
+    import json
+    from urllib.parse import quote
+
+    async def fetch_api(url):
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         async with aiohttp.ClientSession() as session:
-            if iso and iso != "-99":
-                url = f"https://restcountries.com/v3.1/alpha/{iso}"
-            else:
-                from urllib.parse import quote
-                url = f"https://restcountries.com/v3.1/name/{quote(name)}"
-            
             async with session.get(url, headers=headers) as resp:
-                # Exact raw passthrough to prevent Python JSON conversion bugs
-                text = await resp.text()
-                return web.Response(status=resp.status, text=text, content_type="application/json")
+                if resp.status == 200:
+                    try:
+                        data = await resp.json()
+                        # Ensure we actually got data, not an empty list [] or error dict
+                        if isinstance(data, list) and len(data) > 0: return data
+                        if isinstance(data, dict) and "flags" in data: return data
+                    except Exception:
+                        pass
+                return None
+
+    try:
+        data = None
+        # Attempt 1: Try ISO Code
+        if iso and iso != "-99":
+            data = await fetch_api(f"https://restcountries.com/v3.1/alpha/{iso}")
+        
+        # Attempt 2: Fallback to Exact Name Search
+        if not data and name:
+            data = await fetch_api(f"https://restcountries.com/v3.1/name/{quote(name)}?fullText=true")
+            
+        # Attempt 3: Fallback to Partial Name Search
+        if not data and name:
+            data = await fetch_api(f"https://restcountries.com/v3.1/name/{quote(name)}")
+
+        # Return Success or clear 404 Error
+        if data:
+            return web.json_response(data)
+        else:
+            return web.Response(status=404, text=json.dumps({"error": "Country data not found or API rate limited."}), content_type="application/json")
+            
     except Exception as e:
-        return web.Response(status=500, text=str(e))
+        return web.Response(status=500, text=json.dumps({"error": str(e)}), content_type="application/json")
 
 async def _api_proxy_wiki(request):
     q = request.query.get("q", "").strip()
