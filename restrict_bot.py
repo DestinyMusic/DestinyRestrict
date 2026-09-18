@@ -7667,7 +7667,7 @@ HTML_DASHBOARD = """
         function parseWebVTT(text) {
             if (!text) return [];
             const cues = [];
-            const lines = String(text).replace(/\r/g, '').split('\n');
+            const lines = String(text).replace(/\\r/g, '').split('\\n');
             let i = 0;
             
             while (i < lines.length) {
@@ -7675,7 +7675,7 @@ HTML_DASHBOARD = """
                     const timeParts = lines[i].split('-->');
                     const start = vttTimeToSeconds(timeParts[0]);
                     
-                    const endMatch = timeParts[1].trim().match(/^(\S+)(.*)/);
+                    const endMatch = timeParts[1].trim().match(/^(\\S+)(.*)/);
                     const end = endMatch ? vttTimeToSeconds(endMatch[1]) : 0;
                     const settings = endMatch ? endMatch[2].trim() : '';
                     
@@ -7686,14 +7686,14 @@ HTML_DASHBOARD = """
                         i++;
                     }
                     
-                    let rawText = payload.join('\n');
+                    let rawText = payload.join('\\n');
                     let isTop = false;
                     if (rawText.includes('{\\an8}') || rawText.includes('{\\an7}') || rawText.includes('{\\an9}') || settings.includes('line:0') || settings.includes('line:10%')) {
                         isTop = true;
                     }
                     
-                    let cleanText = rawText.replace(/\{[^}]*\}/g, '').trim();
-                    cleanText = cleanText.replace(/<c\.([^>]+)>([^<]+)<\/c>/gi, '<span style="color:$1;">$2</span>');
+                    let cleanText = rawText.replace(/\\{[^}]*\\}/g, '').trim();
+                    cleanText = cleanText.replace(/<c\\.([^>]+)>([^<]+)<\\/c>/gi, '<span style="color:$1;">$2</span>');
                     
                     if (cleanText && Number.isFinite(start) && Number.isFinite(end)) {
                         cues.push({ start, end, text: cleanText, isTop: isTop });
@@ -7705,16 +7705,16 @@ HTML_DASHBOARD = """
             return cues.sort((a, b) => a.start - b.start);
         }
 
-        // 🟢 NEW: LRC Lyrics Format Parser
+        // 🟢 NEW: LRC Lyrics Format Parser (Supports standard [mm:ss.xx] and syllable <mm:ss.xx>)
         function parseLRC(text) {
             const cues = [];
-            const lines = String(text).replace(/\r/g, '').split('\n');
-            const lrcRegex = /\[(\d{2,}):(\d{2})(?:\.(\d{2,3}))?\]/g;
+            const lines = String(text).replace(/\\r/g, '').split('\\n');
+            const lrcRegex = /(?:\\[|<)(\\d{2,}):(\\d{2})(?:\\.(\\d{2,3}))?(?:\\]|>)/g;
             
             lines.forEach(line => {
                 const matches = [...line.matchAll(lrcRegex)];
                 if (matches.length > 0) {
-                    const textContent = line.replace(/\[.*?\]/g, '').trim();
+                    const textContent = line.replace(/(?:\\[|<).*?(?:\\]|>)/g, '').trim();
                     if (textContent) {
                         matches.forEach(m => {
                             const min = parseInt(m[1], 10);
@@ -9140,7 +9140,7 @@ HTML_DASHBOARD = """
                                     let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
                                     timeStr = new Date(utcMs).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
                                 } else {
-                                    let match = tz.match(/UTC([+-])(\d{2}):(\d{2})/);
+                                    let match = tz.match(/UTC([+-])(\\d{2}):(\\d{2})/);
                                     if(match) {
                                         let sign = match[1] === '+' ? 1 : -1;
                                         let hrs = parseInt(match[2]);
