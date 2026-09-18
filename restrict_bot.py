@@ -8482,32 +8482,62 @@ HTML_DASHBOARD = """
                     const trackInfo = document.getElementById('album-track-info');
                     
                     function updateAlbumText() {
+                        let currentCoverUrl = '';
+
+                        // 1. Text & URL Logic (Handles BOTH Playlists and Single Tracks)
                         if (window.globalPlaylist && window.globalPlaylist.length > 0) {
                             const track = window.globalPlaylist[window.currentPlayIndex];
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">TRACK ${window.currentPlayIndex + 1} OF ${window.globalPlaylist.length}</span><br>${track.display_name}`;
                             if (titleEl) titleEl.innerText = `[${window.currentPlayIndex + 1}/${window.globalPlaylist.length}] ${track.display_name}`;
+                            
+                            // 🟢 Target specific track cover inside ZIP!
+                            currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}&zip_idx=${track.original_index}`;
                         } else {
-                            trackInfo.innerHTML = '';
-                            if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
+                            // 🟢 Show Name beautifully for Single Tracks
+                            let titleText = pdata.file_name || 'Media Stream';
+                            trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">NOW PLAYING</span><br>${titleText}`;
+                            if (titleEl) titleEl.innerText = titleText;
+                            
+                            currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
+                        }
+
+                        // 2. Dynamic Image Loading & Background Updates
+                        const isAudioFile = pdata.mime_type && pdata.mime_type.startsWith('audio');
+                        
+                        // Show container if it's Audio, Playlist, or Video with a Cover Art
+                        if (pdata.has_cover || window.globalPlaylist.length > 0 || isAudioFile) {
+                            coverContainer.style.display = 'flex';
+                            coverImg.style.opacity = '0.4'; // Dim while loading
+                            
+                            // 🟢 Auto-fallback if the specific track inside ZIP doesn't have a cover
+                            coverImg.onerror = function() {
+                                coverImg.src = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
+                                coverImg.style.opacity = '1';
+                                vp.style.backgroundImage = 'none';
+                            };
+                            
+                            // 🟢 Set rich background only if it's a real cover
+                            coverImg.onload = function() {
+                                coverImg.style.opacity = '1';
+                                if (!coverImg.src.includes('flaticon')) {
+                                    vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${coverImg.src}')`;
+                                    vp.style.backgroundSize = 'cover';
+                                    vp.style.backgroundPosition = 'center';
+                                } else {
+                                    vp.style.backgroundImage = 'none';
+                                }
+                            };
+                            
+                            // Trigger the fetch!
+                            coverImg.src = currentCoverUrl;
+
+                        } else {
+                            coverContainer.style.display = 'none';
+                            vp.style.backgroundImage = 'none';
                         }
                     }
                     window.updateAlbumText = updateAlbumText;
-                    updateAlbumText();
-                    
-                    if (pdata.has_cover || window.globalPlaylist.length > 0) {
-                        coverContainer.style.display = 'flex';
-                        coverImg.src = pdata.has_cover ? `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}` : 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
-                        if (pdata.has_cover) {
-                            vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${coverImg.src}')`;
-                            vp.style.backgroundSize = 'cover';
-                            vp.style.backgroundPosition = 'center';
-                        } else {
-                            vp.style.backgroundImage = 'none';
-                        }
-                    } else {
-                        coverContainer.style.display = 'none';
-                        vp.style.backgroundImage = 'none';
-                    }
+                    updateAlbumText(); // Call immediately on load
                 }
 
                 qSelect.innerHTML = '';
@@ -11269,6 +11299,8 @@ async def _api_cover_handler(request):
     except:
         user_id = 0
     link = request.query.get("link", "").strip()
+    zip_idx = request.query.get("zip_idx", "").strip() # 🟢 NEW: Capture ZIP Playlist Index
+    
     if not link:
         return web.Response(status=400, text="No link provided")
 
@@ -11281,8 +11313,13 @@ async def _api_cover_handler(request):
             chat_id = parsed.get("chat_id")
             msg_id = parsed.get("msg_id")
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+            if zip_idx:
+                actual_url += f"&zip_idx={zip_idx}" # 🟢 Route FFmpeg directly into the ZIP track!
         else:
             actual_url = await resolve_direct_link(link)
+            if zip_idx:
+                from urllib.parse import quote
+                actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}&zip_idx={zip_idx}"
 
         # Grabs the exact cover frame directly from the media container
         cmd = [
