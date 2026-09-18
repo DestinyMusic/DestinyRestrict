@@ -8544,7 +8544,7 @@ HTML_DASHBOARD = """
                     }
 
                     function updateAlbumText() {
-                        let currentCoverUrl = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png'; // 🟢 Safe fallback
+                        let currentCoverUrl = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png'; // Safe fallback
                         let currentZipIdx = ''; 
 
                         // 1. Text & URL Logic (Handles BOTH Playlists and Single Tracks)
@@ -8552,10 +8552,19 @@ HTML_DASHBOARD = """
                             const track = window.globalPlaylist[window.currentPlayIndex];
                             currentZipIdx = track.original_index;
                             
+                            // 🟢 CRITICAL FIX: Force the app to recognize the extracted ZIP track as an audio file!
+                            // This stops the player from hiding the album art behind a black "video" screen.
+                            if (track.display_name) {
+                                const ext = track.display_name.split('.').pop().toLowerCase();
+                                if (['mp3', 'flac', 'm4a', 'wav', 'aac', 'ogg'].includes(ext)) {
+                                    pdata.mime_type = 'audio/' + ext; 
+                                }
+                            }
+
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">TRACK ${window.currentPlayIndex + 1} OF ${window.globalPlaylist.length}</span><br>${track.display_name}`;
                             if (titleEl) titleEl.innerText = `[${window.currentPlayIndex + 1}/${window.globalPlaylist.length}] ${track.display_name}`;
                             
-                            // 🟢 FIX FOR ZIPS: Use 'activeMediaLink' so the server knows which ZIP file to look inside
+                            // ZIPs: Use 'activeMediaLink' so the server knows which ZIP file to look inside
                             const zipLink = (typeof activeMediaLink !== 'undefined' && activeMediaLink) ? activeMediaLink : link;
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(zipLink)}&zip_idx=${track.original_index}`;
                             
@@ -8565,7 +8574,7 @@ HTML_DASHBOARD = """
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">NOW PLAYING</span><br>${titleText}`;
                             if (titleEl) titleEl.innerText = titleText;
                             
-                            // 🟢 FIX FOR SINGLE TRACKS: Use 'link' to point directly to the individual media file
+                            // Single tracks: Use 'link' to point directly to the individual media file
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
                         }
 
@@ -8574,9 +8583,10 @@ HTML_DASHBOARD = """
                         
                         if (pdata.has_cover || window.globalPlaylist.length > 0 || isAudioFile) {
                             coverContainer.style.display = 'flex';
+                            coverContainer.style.zIndex = '50'; // 🟢 Ensure container stays above any native video elements
                             
                             if (coverImg) {
-                                // 🟢 CRITICAL FIX: Force explicit dimensions instantly so it never collapses!
+                                coverImg.style.display = 'block'; // 🟢 Ensure the image element itself isn't hidden by fullscreen CSS
                                 coverImg.style.minHeight = '220px';
                                 coverImg.style.minWidth = '220px';
                                 coverImg.style.opacity = '1'; 
