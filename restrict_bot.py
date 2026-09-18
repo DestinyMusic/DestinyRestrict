@@ -8858,15 +8858,15 @@ HTML_DASHBOARD = """
                     myGlobe = Globe()(container)
                         .width(container.clientWidth)
                         .height(container.clientHeight)
-                        // 🟢 FIX: Replaced overexposed 'earth-blue-marble.jpg' with beautiful 'earth-dark.jpg'
-                        .globeImageUrl('https://unpkg.com/three-globe@2.31.1/example/img/earth-dark.jpg')
+                        // 🟢 FIX: 'earth-night.jpg' adds glowing city lights so the globe isn't too black!
+                        .globeImageUrl('https://unpkg.com/three-globe@2.31.1/example/img/earth-night.jpg')
                         .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
                         .backgroundImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/night-sky.png')
                         .polygonsData(mapFeatures)
                         .polygonAltitude(0.005)
-                        // 🟢 FIX: Dimmed cap color significantly to stop blinding brightness
-                        .polygonCapColor(() => 'rgba(0, 0, 0, 0.4)')
-                        .polygonSideColor(() => 'rgba(0, 0, 0, 0.2)')
+                        // 🟢 FIX: Translucent white cap color so city lights shine through beautifully
+                        .polygonCapColor(() => 'rgba(255, 255, 255, 0.05)')
+                        .polygonSideColor(() => 'rgba(0, 0, 0, 0.3)')
                         .polygonStrokeColor(() => '#38bdf8')
                         .polygonLabel(({ properties: d }) => {
                             const englishName = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
@@ -8880,7 +8880,7 @@ HTML_DASHBOARD = """
                         .onPolygonHover(hoverD => {
                             myGlobe
                             .polygonAltitude(d => d === hoverD ? 0.04 : 0.005)
-                            .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(0, 0, 0, 0.4)');
+                            .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(255, 255, 255, 0.05)');
                         })
                         .onPolygonClick(({ properties: d }) => {
                             const name = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
@@ -8903,26 +8903,40 @@ HTML_DASHBOARD = """
                         }
                     });
 
-                    // 🟢 FIX: Fetch ALL Country Centroids to display Country Names instead of just cities
-                    fetch('https://restcountries.com/v3.1/all')
-                        .then(res => res.json())
-                        .then(allCountries => {
-                            const labels = allCountries.filter(c => c.latlng).map(c => ({
-                                lat: c.latlng[0],
-                                lng: c.latlng[1],
-                                name: c.name.common
-                            }));
-                            myGlobe.labelsData(labels)
-                                .labelLat(d => d.lat)
-                                .labelLng(d => d.lng)
-                                .labelText(d => d.name)
-                                .labelSize(1.5)
-                                .labelDotRadius(0.3)
-                                .labelColor(() => 'rgba(255, 255, 255, 0.95)')
-                                .labelResolution(2)
-                                .labelAltitude(0.01);
-                        })
-                        .catch(err => console.warn("Country labels fetch failed", err));
+                    // 🟢 FIX: Robust Labels Fetching using Proxies to guarantee country names load!
+                    const fetchLabels = async () => {
+                        const urls = [
+                            'https://restcountries.com/v3.1/all',
+                            'https://corsproxy.io/?https%3A%2F%2Frestcountries.com%2Fv3.1%2Fall',
+                            'https://api.allorigins.win/raw?url=https%3A%2F%2Frestcountries.com%2Fv3.1%2Fall'
+                        ];
+                        for (let u of urls) {
+                            try {
+                                const r = await fetch(u);
+                                if (r.ok) {
+                                    const allCountries = await r.json();
+                                    const labels = allCountries.filter(c => c.latlng).map(c => ({
+                                        lat: c.latlng[0],
+                                        lng: c.latlng[1],
+                                        name: c.name.common
+                                    }));
+                                    myGlobe.labelsData(labels)
+                                        .labelLat(d => d.lat)
+                                        .labelLng(d => d.lng)
+                                        .labelText(d => d.name)
+                                        .labelSize(1.5)
+                                        .labelDotRadius(0.3)
+                                        .labelColor(() => 'rgba(255, 255, 255, 0.95)')
+                                        .labelResolution(2)
+                                        .labelAltitude(0.01);
+                                    return; // Success, exit loop
+                                }
+                            } catch(e) {}
+                        }
+                        console.warn("Country labels fetch failed completely.");
+                    };
+                    fetchLabels();
+
                 })
                 .catch(err => {
                     container.innerHTML = `<div style="color:var(--danger); text-align:center; margin-top: 40%;">❌ Satellite connection failed. Error: ${err.message}<br><span style="font-size:12px;color:var(--subtext);">Try searching manually or check your network.</span></div>`;
@@ -8943,17 +8957,24 @@ HTML_DASHBOARD = """
             panel.innerHTML = '<div style="color:var(--accent); text-align:center; padding: 50px;"><b>⏳ Fetching Classified Data...</b><br><span style="font-size: 11px; color: var(--subtext);">Accessing Geopolitical & Economic Servers</span></div>';
 
             try {
-                // 🟢 FIX: Handle both Array and Object responses correctly to prevent Target Lock Failed
+                // 🟢 FIX: Handle both Array and Object responses + aggressively use CORS Proxies to prevent Blocks
                 const fetchAPI = async (urls) => {
-                    for (let url of urls) {
-                        try {
-                            const r = await fetch(url);
-                            if (r.ok) {
-                                const json = await r.json();
-                                if (Array.isArray(json) && json.length > 0) return json;
-                                if (json && !Array.isArray(json) && json.name) return [json]; // Handle single object
-                            }
-                        } catch(e) {}
+                    for (let base of urls) {
+                        const attempts = [
+                            base, // Direct
+                            `https://corsproxy.io/?${encodeURIComponent(base)}`, // Proxy 1
+                            `https://api.allorigins.win/raw?url=${encodeURIComponent(base)}` // Proxy 2
+                        ];
+                        for (let url of attempts) {
+                            try {
+                                const r = await fetch(url);
+                                if (r.ok) {
+                                    const json = await r.json();
+                                    if (Array.isArray(json) && json.length > 0) return json;
+                                    if (json && !Array.isArray(json) && json.name) return [json]; // Handle single object
+                                }
+                            } catch(e) {}
+                        }
                     }
                     return null;
                 };
@@ -8980,7 +9001,8 @@ HTML_DASHBOARD = """
 
                 let englishName = rawName;
                 let regionInfo = "Region Data Unavailable";
-                let flagUrl = "https://cdn-icons-png.flaticon.com/512/323/323315.png"; // Generic globe icon
+                // 🟢 FIX: Properly use a Globe Icon instead of the French Flag!
+                let flagUrl = "https://cdn-icons-png.flaticon.com/512/2111/2111646.png"; 
                 let tzHtml = '<div style="color:var(--subtext); font-size:12px;">Timezone data unavailable.</div>';
                 let capitalText = 'Unknown';
                 let popText = 'Unknown';
@@ -9047,7 +9069,7 @@ HTML_DASHBOARD = """
                     if(country.population) popText = country.population.toLocaleString();
                 }
 
-                // 🟢 ALWAYS FETCH WIKIPEDIA (Provides a graceful fallback if RestCountries API is down!)
+                // 🟢 ALWAYS FETCH WIKIPEDIA (Provides a graceful fallback if RestCountries API is totally down!)
                 let wikiSummary = "<i style='color:var(--subtext);'>Accessing local intelligence failed. No recent developments available in the active database.</i>";
                 try {
                     let wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(englishName)}`);
