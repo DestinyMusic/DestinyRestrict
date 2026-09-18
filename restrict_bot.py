@@ -4836,11 +4836,11 @@ HTML_DASHBOARD = """
 
         /* Custom subtitle layer: fully independent of the hidden <video>. */
         .subtitle-overlay {
-            position: absolute; left: 1%; right: 1%; bottom: 10%; /* 🟢 FIX: Widened boundaries */
+            position: absolute; left: 0%; right: 0%; bottom: 10%; /* 🟢 FIX: Let it stretch to the absolute edges */
             display: flex; justify-content: center; align-items: flex-end;
             z-index: 28; pointer-events: none;
             text-align: center;
-            padding: 0 10px;
+            padding: 0 4px; /* 🟢 FIX: Reduced padding to maximize width */
             transition: opacity 0.25s ease, transform 0.25s ease;
         }
         .subtitle-text {
@@ -5545,9 +5545,9 @@ HTML_DASHBOARD = """
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold; margin-top: 10px;">SUBTITLE WIDTH (STRETCH LINES)</label>
                         <div style="display: flex; gap: 8px; margin-bottom: 14px; align-items: center;">
-                            <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">NARROW</span>
-                            <input id="subtitle-width-slider" type="range" min="30" max="100" value="95" oninput="applySubtitleStyle()" style="flex: 1; accent-color: var(--accent);"> <!-- 🟢 FIX: Changed default value to 95 -->
-                            <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">WIDE</span>
+                            <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">10%</span>
+                            <input id="subtitle-width-slider" type="range" min="10" max="100" value="95" oninput="applySubtitleStyle()" style="flex: 1; accent-color: var(--accent);"> 
+                            <span style="color: var(--subtext); font-size: 10px; font-weight: bold;">100%</span>
                         </div>
 
                         <label style="font-size: 11px; color: var(--subtext); font-weight: bold;">ASPECT RATIO</label>
@@ -7868,8 +7868,8 @@ HTML_DASHBOARD = """
             
             // 3D Split-Screen (VR/SBS) Subtitle Duplication
             if (matrix3DOut === 'vr') {
-                overlay.style.left = '0';
-                overlay.style.right = '0';
+                overlay.style.left = '0%';
+                overlay.style.right = '0%';
                 overlay.innerHTML = `
                     <div style="display: flex; width: 100%; justify-content: space-around;">
                         <div style="flex: 1; display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>
@@ -7877,8 +7877,8 @@ HTML_DASHBOARD = """
                     </div>
                 `;
             } else {
-                overlay.style.left = '1%'; /* 🟢 FIX: Allows the subtitle slider to stretch to 99% of screen width */
-                overlay.style.right = '1%';
+                overlay.style.left = '0%'; /* 🟢 FIX: Unlocked to a full 100% of the screen width */
+                overlay.style.right = '0%';
                 overlay.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>`;
             }
             
@@ -13686,4 +13686,4 @@ if __name__ == "__main__":
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-    
+        
