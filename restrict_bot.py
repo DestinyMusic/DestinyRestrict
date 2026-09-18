@@ -8544,8 +8544,8 @@ HTML_DASHBOARD = """
                     }
 
                     function updateAlbumText() {
-                        let currentCoverUrl = '';
-                        let currentZipIdx = ''; // 🟢 Track this
+                        let currentCoverUrl = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png'; // 🟢 Safe fallback
+                        let currentZipIdx = ''; 
 
                         // 1. Text & URL Logic (Handles BOTH Playlists and Single Tracks)
                         if (window.globalPlaylist && window.globalPlaylist.length > 0) {
@@ -8554,47 +8554,52 @@ HTML_DASHBOARD = """
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">TRACK ${window.currentPlayIndex + 1} OF ${window.globalPlaylist.length}</span><br>${track.display_name}`;
                             if (titleEl) titleEl.innerText = `[${window.currentPlayIndex + 1}/${window.globalPlaylist.length}] ${track.display_name}`;
                             
-                            // 🟢 Target specific track cover inside ZIP!
+                            // ZIPs: Always attempt to extract cover for the specific track
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}&zip_idx=${track.original_index}`;
                         } else {
-                            // 🟢 Show Name beautifully for Single Tracks
+                            // Single Track
                             let titleText = pdata.file_name || 'Media Stream';
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">NOW PLAYING</span><br>${titleText}`;
                             if (titleEl) titleEl.innerText = titleText;
                             
+                            // Single tracks: Always try to extract cover for audio files so album art never fails
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
                         }
 
-                        // 2. Dynamic Image Loading & Background Updates
+                        // 2. Display Logic
                         const isAudioFile = pdata.mime_type && pdata.mime_type.startsWith('audio');
                         
-                        // Show container if it's Audio, Playlist, or Video with a Cover Art
                         if (pdata.has_cover || window.globalPlaylist.length > 0 || isAudioFile) {
                             coverContainer.style.display = 'flex';
-                            coverImg.style.opacity = '0.4'; // Dim while loading
                             
-                            // 🟢 Auto-fallback if the specific track inside ZIP doesn't have a cover
-                            coverImg.onerror = function() {
-                                coverImg.src = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
-                                coverImg.style.opacity = '1';
-                                vp.style.backgroundImage = 'none';
-                            };
-                            
-                            // 🟢 Set rich background only if it's a real cover
-                            coverImg.onload = function() {
-                                coverImg.style.opacity = '1';
-                                if (!coverImg.src.includes('flaticon')) {
-                                    vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${coverImg.src}')`;
-                                    vp.style.backgroundSize = 'cover';
-                                    vp.style.backgroundPosition = 'center';
-                                } else {
+                            if (coverImg) {
+                                // 🟢 CRITICAL FIX: Force explicit dimensions instantly so it never collapses!
+                                coverImg.style.minHeight = '220px';
+                                coverImg.style.minWidth = '220px';
+                                coverImg.style.opacity = '1'; 
+                                
+                                // Handle failures gracefully by falling back to the icon
+                                coverImg.onerror = function() {
+                                    if (!this.src.includes('flaticon')) {
+                                        this.src = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
+                                    }
                                     vp.style.backgroundImage = 'none';
-                                }
-                            };
-                            
-                            // Trigger the fetch!
-                            coverImg.src = currentCoverUrl;
-
+                                };
+                                
+                                // Handle successful loads to set the blurred background
+                                coverImg.onload = function() {
+                                    if (!this.src.includes('flaticon')) {
+                                        vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${this.src}')`;
+                                        vp.style.backgroundSize = 'cover';
+                                        vp.style.backgroundPosition = 'center';
+                                    } else {
+                                        vp.style.backgroundImage = 'none';
+                                    }
+                                };
+                                
+                                // Fire request!
+                                coverImg.src = currentCoverUrl;
+                            }
                         } else {
                             coverContainer.style.display = 'none';
                             vp.style.backgroundImage = 'none';
