@@ -4859,23 +4859,67 @@ HTML_DASHBOARD = """
         }
         .cinema-viewport.fullscreen-subtitle .subtitle-overlay { bottom: 13%; }
 
-        /* 🟢 NEW: Dedicated Audio Lyrics Scroller */
+        /* 🟢 NEW: Dedicated Audio Lyrics Scroller (Responsive Window/Fullscreen) */
         .lyrics-scroller {
-            position: absolute; top: 68%; bottom: 12%; left: 5%; right: 5%;
-            overflow-y: auto; text-align: center; z-index: 10;
+            position: absolute; top: 55%; bottom: 15%; left: 5%; right: 5%;
+            overflow: hidden; text-align: center; z-index: 10;
             display: none; scroll-behavior: smooth;
             -ms-overflow-style: none; scrollbar-width: none;
-            mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
-            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
-            pointer-events: none; /* Let touches pass through to video/center controls if needed */
+            mask-image: none; -webkit-mask-image: none;
+            pointer-events: none;
         }
         .lyrics-scroller::-webkit-scrollbar { display: none; }
+        
         .lrc-line {
+            display: none; /* Hide inactive lines in windowed mode */
             font-size: clamp(14px, 2vw, 18px); font-weight: 600; color: rgba(255,255,255,0.3);
             margin: 12px 0; transition: all 0.3s ease; text-shadow: none;
         }
         .lrc-line.active {
-            color: #ffffff; transform: scale(1.15); font-weight: 800; text-shadow: 0 0 10px rgba(255,255,255,0.8);
+            display: block; /* Show only the current active line */
+            color: #ffffff; transform: scale(1.2); font-weight: 800; text-shadow: 0 0 15px rgba(255,255,255,0.8);
+        }
+
+        /* 🟢 FULLSCREEN OVERRIDES FOR LYRICS */
+        .cinema-viewport:fullscreen .lyrics-scroller,
+        .cinema-viewport:-webkit-full-screen .lyrics-scroller,
+        .cinema-viewport.ios-fullscreen .lyrics-scroller {
+            top: 68%; bottom: 12%;
+            overflow-y: auto;
+            mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
+        }
+        .cinema-viewport:fullscreen .lrc-line,
+        .cinema-viewport:-webkit-full-screen .lrc-line,
+        .cinema-viewport.ios-fullscreen .lrc-line {
+            display: block; /* Show all lines in fullscreen */
+            transform: scale(1);
+        }
+        .cinema-viewport:fullscreen .lrc-line.active,
+        .cinema-viewport:-webkit-full-screen .lrc-line.active,
+        .cinema-viewport.ios-fullscreen .lrc-line.active {
+            transform: scale(1.15);
+        }
+
+        /* 🟢 ALBUM COVER & TRACK INFO RESPONSIVE LAYOUT */
+        #album-cover-art { display: none !important; } /* Hidden in windowed */
+        
+        .cinema-viewport:fullscreen #album-cover-art,
+        .cinema-viewport:-webkit-full-screen #album-cover-art,
+        .cinema-viewport.ios-fullscreen #album-cover-art {
+            display: block !important; /* Visible in fullscreen */
+        }
+
+        #album-track-info {
+            position: absolute;
+            top: 40%; transform: translateY(-50%); /* Centered vertically in windowed mode */
+            width: 100%; margin: 0; text-align: center;
+        }
+        
+        .cinema-viewport:fullscreen #album-track-info,
+        .cinema-viewport:-webkit-full-screen #album-track-info,
+        .cinema-viewport.ios-fullscreen #album-track-info {
+            top: auto; bottom: -2%; transform: none; /* Move back to the bottom under cover in fullscreen */
         }
 
         /* Center Skip Buttons (Liquid Glass UI) */
@@ -8448,18 +8492,18 @@ HTML_DASHBOARD = """
                         coverContainer.style.top = '5%';
                         coverContainer.style.left = '0';
                         coverContainer.style.width = '100%';
-                        coverContainer.style.height = '60%'; // 🟢 FIX: Restrict cover art to the top 60% of screen
+                        coverContainer.style.height = '60%'; 
                         coverContainer.style.transform = 'none';
                         coverContainer.style.display = 'flex';
                         coverContainer.style.flexDirection = 'column';
                         coverContainer.style.alignItems = 'center';
                         coverContainer.style.justifyContent = 'center';
                         coverContainer.style.zIndex = '1';
-                        coverContainer.style.pointerEvents = 'none'; // 🟢 FIX: Let clicks pass through to controls
+                        coverContainer.style.pointerEvents = 'none'; 
                         
                         const coverImg = document.createElement('img');
                         coverImg.id = 'album-cover-art';
-                        coverImg.style.maxHeight = '70%'; // 🟢 FIX: Scales nicely inside the new 60% container
+                        coverImg.style.maxHeight = '80%'; 
                         coverImg.style.maxWidth = '80%';
                         coverImg.style.objectFit = 'contain';
                         coverImg.style.borderRadius = '20px';
@@ -8467,11 +8511,11 @@ HTML_DASHBOARD = """
                         
                         const trackInfo = document.createElement('div');
                         trackInfo.id = 'album-track-info';
-                        trackInfo.style.marginTop = '15px'; // 🟢 Tighter spacing
+                        // 🟢 FIX: Cleaned up inline positioning. The responsive CSS block now handles 
+                        // the exact placement of the text based on Full Screen vs Windowed Mode!
                         trackInfo.style.color = '#fff';
                         trackInfo.style.fontSize = '20px';
                         trackInfo.style.fontWeight = '800';
-                        trackInfo.style.textAlign = 'center';
                         trackInfo.style.textShadow = '0 5px 15px rgba(0,0,0,0.9)';
                         
                         coverContainer.appendChild(coverImg);
