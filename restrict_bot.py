@@ -4866,24 +4866,26 @@ HTML_DASHBOARD = """
 
         /* 🟢 NEW: Apple Music Style Auto-Scrolling Lyrics */
         .lyrics-scroller {
-            position: absolute; left: 5%; right: 5%; bottom: 10%; top: 40%; /* Sits elegantly below the album art */
+            position: absolute; left: 5%; right: 5%; bottom: 12%; top: 68%; /* 🟢 FIX: Pushed down entirely below the album art */
             overflow-y: hidden; scroll-behavior: smooth;
             -ms-overflow-style: none; scrollbar-width: none;
-            mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
-            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
-            z-index: 15; pointer-events: none; text-align: center; /* 🟢 FIX: Lowered Z-index & Disabled Touch */
+            mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%); /* Sweeter fade for a smaller area */
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
+            z-index: 15; pointer-events: none; text-align: center;
         }
         .lyrics-scroller::-webkit-scrollbar { display: none; }
         .lrc-line {
-            font-size: 18px; font-weight: 700; color: rgba(255,255,255,0.4);
-            margin: 18px 0; transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            cursor: default; padding: 0 10px; filter: blur(0.5px); /* 🟢 FIX: Removed pointer cursor */
+            font-size: 18px; font-weight: 700; color: rgba(255,255,255,0.3); /* 🟢 FIX: Dimmer inactive text */
+            margin: 12px 0; /* 🟢 FIX: Tighter margin for smaller lyrics box */
+            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: default; padding: 0 10px; filter: blur(1px); /* 🟢 FIX: Slightly blurrier inactive lines */
             display: block; width: 100%;
         }
         .lrc-line:hover { color: rgba(255,255,255,0.7); }
         .lrc-line.active {
-            font-size: 24px; color: #fff; text-shadow: 0 0 20px var(--glow);
-            transform: scale(1.05); opacity: 1; filter: blur(0);
+            font-size: 24px; color: #ffffff !important; /* 🟢 FIX: Pure full white */
+            text-shadow: 0 0 10px rgba(255,255,255,0.9), 0 0 20px rgba(255,255,255,0.6) !important; /* 🟢 FIX: Bright white glow instead of theme glow */
+            transform: scale(1.15) !important; opacity: 1 !important; filter: blur(0) !important; /* 🟢 FIX: Larger scale and sharp focus */
         }
 
         /* Center Skip Buttons (Liquid Glass UI) */
