@@ -9270,13 +9270,23 @@ HTML_DASHBOARD = """
 
             // 🟢 BLOCK 1: Fetch Core Demographic & Time Data via Backend Proxy
             try {
-                // Route through our own Python backend to bypass Mobile ISP / CORS Blocks
                 const proxyUrl = `/api/proxy/country?iso=${isoCode || ''}&name=${encodeURIComponent(countryName)}`;
                 const res = await fetch(proxyUrl);
                 
-                if (!res.ok) throw new Error("Backend Proxy returned HTTP " + res.status);
+                if (!res.ok) {
+                    const errText = await res.text();
+                    throw new Error(`HTTP ${res.status}: ${errText.substring(0, 50)}`);
+                }
                 
-                const data = (await res.json())[0];
+                const rawJson = await res.json();
+                
+                // 🟢 BULLETPROOF FIX: Safely handle both Array [ {data} ] and Object {data} responses
+                const data = Array.isArray(rawJson) ? rawJson[0] : rawJson;
+                
+                if (!data || !data.flags) {
+                    throw new Error("API returned an unexpected JSON structure.");
+                }
+                
                 countryData = data; 
                 
                 document.getElementById('c-flag').src = data.flags?.svg || data.flags?.png || '';
@@ -12568,18 +12578,18 @@ async def _api_proxy_country(request):
     name = request.query.get("name", "").strip()
     import aiohttp
     try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         async with aiohttp.ClientSession() as session:
             if iso and iso != "-99":
                 url = f"https://restcountries.com/v3.1/alpha/{iso}"
             else:
                 from urllib.parse import quote
                 url = f"https://restcountries.com/v3.1/name/{quote(name)}"
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return web.json_response(data)
-                else:
-                    return web.Response(status=resp.status, text=await resp.text())
+            
+            async with session.get(url, headers=headers) as resp:
+                # Exact raw passthrough to prevent Python JSON conversion bugs
+                text = await resp.text()
+                return web.Response(status=resp.status, text=text, content_type="application/json")
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
@@ -12588,17 +12598,15 @@ async def _api_proxy_wiki(request):
     import aiohttp
     from urllib.parse import quote
     try:
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         async with aiohttp.ClientSession() as session:
             url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{quote(q)}"
-            async with session.get(url) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    return web.json_response(data)
-                else:
-                    return web.Response(status=resp.status, text=await resp.text())
+            async with session.get(url, headers=headers) as resp:
+                text = await resp.text()
+                return web.Response(status=resp.status, text=text, content_type="application/json")
     except Exception as e:
         return web.Response(status=500, text=str(e))
-                
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
