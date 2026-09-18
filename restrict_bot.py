@@ -4859,6 +4859,25 @@ HTML_DASHBOARD = """
         }
         .cinema-viewport.fullscreen-subtitle .subtitle-overlay { bottom: 13%; }
 
+        /* 🟢 NEW: Dedicated Audio Lyrics Scroller */
+        .lyrics-scroller {
+            position: absolute; top: 15%; bottom: 15%; left: 5%; right: 5%;
+            overflow-y: auto; text-align: center; z-index: 10;
+            display: none; scroll-behavior: smooth;
+            -ms-overflow-style: none; scrollbar-width: none;
+            mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+            pointer-events: none; /* Let touches pass through to video/center controls if needed */
+        }
+        .lyrics-scroller::-webkit-scrollbar { display: none; }
+        .lrc-line {
+            font-size: clamp(16px, 2.5vw, 24px); font-weight: 700; color: rgba(255,255,255,0.4);
+            margin: 15px 0; transition: all 0.3s ease; text-shadow: 0 2px 10px rgba(0,0,0,0.8);
+        }
+        .lrc-line.active {
+            color: var(--accent); transform: scale(1.1); text-shadow: 0 0 15px var(--glow);
+        }
+
         /* Center Skip Buttons (Liquid Glass UI) */
         .center-controls {
             position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 5vw;
@@ -5291,6 +5310,7 @@ HTML_DASHBOARD = """
                     <canvas id="webgl-canvas"></canvas>
                     <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline preload="auto"></video>
                     <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
+                    <div id="lyrics-scroller" class="lyrics-scroller"></div> <!-- 🟢 NEW: Lyrics Layer -->
 
                     <!-- Video Title Bar -->
                     <div class="cinema-title-bar" id="cinema-title">No Media Loaded</div>
@@ -7644,6 +7664,56 @@ HTML_DASHBOARD = """
             return cues.sort((a, b) => a.start - b.start);
         }
 
+        // 🟢 NEW: Dedicated Lyrics Fetcher & Parser
+        async function fetchSmartLyrics(zipIdx = '') {
+            const scroller = document.getElementById('lyrics-scroller');
+            const overlay = document.getElementById('subtitle-overlay');
+            if (scroller) { scroller.innerHTML = ''; scroller.style.display = 'none'; }
+            if (overlay) overlay.innerHTML = '';
+            
+            subtitleCues = [];
+            activeSubtitleIndex = 'off';
+            
+            try {
+                let zipParam = zipIdx ? `&zip_idx=${zipIdx}` : '';
+                if (!zipParam && window.globalPlaylist && window.globalPlaylist.length > 0) {
+                    const track = window.globalPlaylist[window.currentPlayIndex];
+                    if (track) zipParam = `&zip_idx=${track.original_index}`;
+                }
+
+                const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=metadata_lyrics${zipParam}`;
+                const res = await fetch(url);
+                if (!res.ok) return;
+                
+                const text = await res.text();
+                if (!text || text.trim().length === 0) return;
+                
+                const lines = text.split('\n');
+                const lrcCues = [];
+                const timeRegex = /\[(\d{2}):(\d{2}\.\d{2,3})\](.*)/;
+                
+                for (let line of lines) {
+                    const match = line.match(timeRegex);
+                    if (match) {
+                        const min = parseInt(match[1], 10);
+                        const sec = parseFloat(match[2]);
+                        const textContent = match[3].trim();
+                        if (textContent) lrcCues.push({ start: min * 60 + sec, text: textContent, isLrc: true });
+                    } else if (line.trim() !== '' && !line.startsWith('[')) {
+                        lrcCues.push({ start: -1, text: line.trim(), isLrc: true }); // Unsynced
+                    }
+                }
+                
+                if (lrcCues.length > 0) {
+                    for (let i = 0; i < lrcCues.length - 1; i++) lrcCues[i].end = lrcCues[i+1].start;
+                    lrcCues[lrcCues.length - 1].end = 999999;
+                    subtitleCues = lrcCues;
+                    activeSubtitleIndex = 'metadata_lyrics';
+                    renderCurrentSubtitle();
+                }
+            } catch(e) { console.warn("Smart lyrics fetch failed:", e); }
+        }
+
         function renderCurrentSubtitle(forceTime = null) {
             const video = document.getElementById('hidden-video');
             const overlay = document.getElementById('subtitle-overlay');
@@ -7677,26 +7747,30 @@ HTML_DASHBOARD = """
                     if (scroller.dataset.rendered !== activeSubtitleIndex) {
                         scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line" id="lrc-${i}">${c.text}</div>`).join('');
                         scroller.dataset.rendered = activeSubtitleIndex;
-                        applySubtitleStyle();
                     }
                     
                     let activeIdx = -1;
-                    for (let i = 0; i < subtitleCues.length; i++) {
-                        if (adjustedTime >= subtitleCues[i].start && adjustedTime < subtitleCues[i].end) {
-                            activeIdx = i; break;
+                    if (subtitleCues[0].start !== -1) { // Only scroll if synced
+                        for (let i = 0; i < subtitleCues.length; i++) {
+                            if (adjustedTime >= subtitleCues[i].start && adjustedTime < subtitleCues[i].end) {
+                                activeIdx = i; break;
+                            }
                         }
-                    }
-                    
-                    if (activeIdx !== -1) {
-                        const activeEl = document.getElementById(`lrc-${activeIdx}`);
-                        if (activeEl && !activeEl.classList.contains('active')) {
+                        
+                        if (activeIdx !== -1) {
+                            const activeEl = document.getElementById(`lrc-${activeIdx}`);
+                            if (activeEl && !activeEl.classList.contains('active')) {
+                                document.querySelectorAll('.lrc-line.active').forEach(el => el.classList.remove('active'));
+                                activeEl.classList.add('active');
+                                scroller.scrollTo({
+                                    top: activeEl.offsetTop - scroller.clientHeight / 2 + activeEl.clientHeight / 2,
+                                    behavior: 'smooth'
+                                });
+                            }
+                        } else if (adjustedTime < subtitleCues[0].start) {
                             document.querySelectorAll('.lrc-line.active').forEach(el => el.classList.remove('active'));
-                            activeEl.classList.add('active');
-                            activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            scroller.scrollTo({ top: 0, behavior: 'smooth' });
                         }
-                    } else if (adjustedTime < subtitleCues[0].start) {
-                        document.querySelectorAll('.lrc-line.active').forEach(el => el.classList.remove('active'));
-                        scroller.scrollTo({ top: 0, behavior: 'smooth' });
                     }
                 }
                 return;
@@ -7761,7 +7835,13 @@ HTML_DASHBOARD = """
 
             subtitleAbortController = new AbortController();
             try {
-                const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}`;
+                let zipParam = '';
+                if (window.globalPlaylist && window.globalPlaylist.length > 0) {
+                    const track = window.globalPlaylist[window.currentPlayIndex];
+                    if (track) zipParam = `&zip_idx=${track.original_index}`;
+                }
+                
+                const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=${encodeURIComponent(activeSubtitleIndex)}${zipParam}`;
                 const response = await fetch(url, { signal: subtitleAbortController.signal, cache: 'force-cache' });
                 if (!response.ok) throw new Error(`Subtitle server returned ${response.status}`);
 
@@ -8332,19 +8412,22 @@ HTML_DASHBOARD = """
                         coverContainer = document.createElement('div');
                         coverContainer.id = 'album-cover-container';
                         coverContainer.style.position = 'absolute';
-                        coverContainer.style.top = '45%';
-                        coverContainer.style.left = '50%';
-                        coverContainer.style.transform = 'translate(-50%, -50%)';
+                        coverContainer.style.top = '0';
+                        coverContainer.style.left = '0';
+                        coverContainer.style.width = '100%';
+                        coverContainer.style.height = '100%';
+                        coverContainer.style.transform = 'none';
                         coverContainer.style.display = 'flex';
                         coverContainer.style.flexDirection = 'column';
                         coverContainer.style.alignItems = 'center';
+                        coverContainer.style.justifyContent = 'center';
                         coverContainer.style.zIndex = '1';
-                        coverContainer.style.width = '85%';
+                        coverContainer.style.pointerEvents = 'none'; // 🟢 FIX: Let clicks pass through to controls
                         
                         const coverImg = document.createElement('img');
                         coverImg.id = 'album-cover-art';
-                        coverImg.style.maxHeight = '45vh';
-                        coverImg.style.maxWidth = '100%';
+                        coverImg.style.maxHeight = '50%'; // 🟢 FIX: Constrain height to avoid overlap
+                        coverImg.style.maxWidth = '80%';
                         coverImg.style.objectFit = 'contain';
                         coverImg.style.borderRadius = '20px';
                         coverImg.style.boxShadow = '0 30px 60px rgba(0,0,0,0.9)';
@@ -8396,8 +8479,9 @@ HTML_DASHBOARD = """
                             const zipLink = (typeof activeMediaLink !== 'undefined' && activeMediaLink) ? activeMediaLink : link;
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(zipLink)}&zip_idx=${track.original_index}`;
                         } else {
-                            trackInfo.innerHTML = '';
-                            if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
+                            let singleName = pdata.file_name || 'Media Stream';
+                            trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">NOW PLAYING</span><br>${singleName}`;
+                            if (titleEl) titleEl.innerText = singleName;
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
                         }
 
@@ -11573,6 +11657,7 @@ async def _api_subtitles_handler(request):
         user_id = 0
     link = request.query.get("link", "").strip()
     sub_idx = request.query.get("sub_idx", "0").strip()
+    zip_idx = request.query.get("zip_idx", "").strip() # 🟢 FIX: Fixes NameError crash
     if not link:
         return web.Response(status=400, text="Invalid Link")
 
@@ -11616,7 +11701,7 @@ async def _api_subtitles_handler(request):
     if sub_idx == "metadata_lyrics":
         cmd = [
             "ffprobe", "-v", "error",
-            "-show_entries", "format_tags=lyrics,LYRICS,Lyrics",
+            "-show_entries", "format_tags=lyrics,LYRICS,Lyrics,UNSYNCEDLYRICS,SYLT",
             "-of", "default=noprint_wrappers=1:nokey=1",
             actual_url
         ]
@@ -11624,7 +11709,14 @@ async def _api_subtitles_handler(request):
         try:
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             stdout, _ = await proc.communicate()
-            body = stdout
+            # 🟢 FIX: Decode and unescape literal FFprobe string newlines
+            raw_text = stdout.decode('utf-8', errors='ignore')
+            raw_text = raw_text.replace('\\r\\n', '\n').replace('\\n', '\n')
+            body = raw_text.encode('utf-8')
+            
+            if not body.strip():
+                return web.Response(status=404, text="No lyrics found")
+                
             SUBTITLE_CACHE[cache_key] = (bytes(body), time.time() + SUBTITLE_CACHE_TTL)
             return web.Response(body=body, status=200, headers={
                 "Content-Type": "text/vtt; charset=utf-8",
