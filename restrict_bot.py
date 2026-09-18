@@ -7688,9 +7688,10 @@ HTML_DASHBOARD = """
                 const text = await res.text();
                 if (!text || text.trim().length === 0) return;
                 
-                const lines = text.split('\n');
+                // 🟢 FIX: Double-escaped backslashes for Python string compatibility!
+                const lines = text.split('\\n');
                 const lrcCues = [];
-                const timeRegex = /\[(\d{2}):(\d{2}\.\d{2,3})\](.*)/;
+                const timeRegex = /\\[(\\d{2}):(\\d{2}\\.\\d{2,3})\\](.*)/;
                 
                 for (let line of lines) {
                     const match = line.match(timeRegex);
