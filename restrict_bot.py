@@ -10162,7 +10162,8 @@ def _guess_browser_compatibility(mime_type, filename, streams):
     """Conservative browser-compatibility check used by the native player path."""
     mime = (mime_type or "").lower().split(";", 1)[0]
     ext = Path(str(filename or "")).suffix.lower()
-    videos = [s for s in (streams or []) if s.get("codec_type") == "video"]
+    # 🟢 FIX: Ignore cover art so audio files aren't mistakenly treated as videos
+    videos = [s for s in (streams or []) if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
     audios = [s for s in (streams or []) if s.get("codec_type") == "audio"]
     vc = str(videos[0].get("codec_name") if videos else "").lower()
     ac = str(audios[0].get("codec_name") if audios else "").lower()
@@ -10175,9 +10176,9 @@ def _guess_browser_compatibility(mime_type, filename, streams):
     # is something the browser can consume.
     if not videos:
         if mime in {
-            "audio/mpeg", "audio/mp4", "audio/aac", "audio/ogg",
-            "audio/webm", "audio/wav", "audio/flac", "audio/opus"
-        }:
+            "audio/mpeg", "audio/mp4", "audio/m4a", "audio/aac", "audio/ogg",
+            "audio/webm", "audio/wav", "audio/flac", "audio/opus", "audio/x-m4a"
+        } or ext in {".m4a", ".mp3", ".aac", ".ogg", ".wav", ".flac", ".opus", ".mka", ".alac"}:
             return ac not in {"dts", "truehd", "ac3", "eac3"}
         return ac in {
             "mp3", "aac", "flac", "opus", "vorbis",
@@ -10644,12 +10645,12 @@ async def _api_stream_handler(request):
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
             if msg_range:
                 actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
-            is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus")) or "audio" in mime_type
+            is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac")) or "audio" in mime_type
         else:
             actual_url = await resolve_direct_link(link)
             filename = _guess_filename_from_url(actual_url, "direct_media").lower()
             lower = actual_url.lower().split('?', 1)[0]
-            is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac|wma|opus)$", lower))
+            is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac|wma|opus|dsf|ape|mka|alac)$", lower))
             mime_type = "audio/mpeg" if filename.endswith('.mp3') else (
                 "audio/mp4" if filename.endswith(('.m4a','.aac')) else (
                     "audio/ogg" if filename.endswith('.ogg') else (
@@ -10795,7 +10796,7 @@ async def _api_stream_handler(request):
     is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
 
     stream_headers = {
-        "Content-Type": "video/mp4",
+        "Content-Type": "audio/mp4" if is_audio else "video/mp4",
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-store",
     }
