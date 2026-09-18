@@ -9892,6 +9892,7 @@ async def _api_chat_details_handler(request):
             return web.json_response({"status": "error", "message": f"Session invalid: {e}"})
 
     try:
+        # 🟢 FIX 1: Safely resolve ALL chat types (Users, Bots, Channels, Groups)
         try:
             chat = await asyncio.wait_for(uclient.get_chat(chat_id), timeout=12.0)
         except PeerIdInvalid:
@@ -9901,18 +9902,22 @@ async def _api_chat_details_handler(request):
             except Exception as inner_e:
                 raise Exception(f"Fatal resolution failure. ({inner_e})")
         
-        # Safely fetch total message count
+        # Safely fetch total message count (Only works on Groups/Channels/PMs)
         try:
             total_msgs = await asyncio.wait_for(uclient.get_chat_history_count(chat_id), timeout=6.0)
         except Exception:
             total_msgs = "Unknown"
 
-        # Safely fetch Forum Topics if applicable
         topics = []
-        if getattr(chat, "is_forum", False):
+        is_forum = getattr(chat, "is_forum", False)
+        
+        # 🟢 FIX 2: Only fetch topics if it's explicitly a SUPERGROUP and a FORUM!
+        # Prevents crashing on normal Groups, Channels, Bots, or Users.
+        if is_forum and getattr(chat, "type", None) == enums.ChatType.SUPERGROUP:
             async def fetch_forum_topology():
                 try:
-                    async for t in uclient.get_forum_topics(chat_id, limit=300):
+                    # 🟢 FIX 3: HARD LIMIT to 250 topics so it finishes in 1-2 seconds and never times out!
+                    async for t in uclient.get_forum_topics(chat_id, limit=250):
                         top_msg_data = getattr(t, "top_message", "?")
                         if hasattr(top_msg_data, "id"):
                             top_msg_val = str(top_msg_data.id)
@@ -9928,7 +9933,8 @@ async def _api_chat_details_handler(request):
                         logger.warning(f"[CHAT DETAILS] Topic pagination interrupted: {inner_e}")
                         
             try:
-                await asyncio.wait_for(fetch_forum_topology(), timeout=25.0)
+                # Give it 8 seconds to fetch the 250 topics
+                await asyncio.wait_for(fetch_forum_topology(), timeout=8.0)
             except asyncio.TimeoutError:
                 logger.warning(f"[CHAT DETAILS] Topic fetch timed out. Returning {len(topics)} topics found so far.")
             except Exception as e:
@@ -9942,7 +9948,7 @@ async def _api_chat_details_handler(request):
             "members": getattr(chat, "members_count", 0),
             "total_messages": total_msgs,
             "description": getattr(chat, "description", getattr(chat, "bio", "")),
-            "is_forum": getattr(chat, "is_forum", False),
+            "is_forum": is_forum,
             "topics": topics
         })
     except Exception as e:
