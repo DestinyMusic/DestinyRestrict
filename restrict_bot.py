@@ -7723,13 +7723,16 @@ HTML_DASHBOARD = """
         async function fetchSmartLyrics(zipIdx = '') {
             const scroller = document.getElementById('lyrics-scroller');
             const overlay = document.getElementById('subtitle-overlay');
-            if (scroller) { scroller.innerHTML = ''; scroller.style.display = 'none'; }
+            if (scroller) { 
+                scroller.innerHTML = ''; 
+                scroller.style.display = 'none'; 
+                scroller.dataset.rendered = ''; // 🟢 FIX: Force browser to rebuild DOM for new tracks
+            }
             if (overlay) overlay.innerHTML = '';
             
             subtitleCues = [];
             activeSubtitleIndex = 'off';
 
-            // 🟢 FIX: Instantly cancel previous lyric downloads if the user skips tracks rapidly!
             if (lyricsAbortController) {
                 lyricsAbortController.abort();
                 lyricsAbortController = null;
@@ -7737,18 +7740,19 @@ HTML_DASHBOARD = """
             lyricsAbortController = new AbortController();
             
             try {
-                // 🟢 FIX: Ensure Track 0 isn't accidentally treated as 'empty'
                 let zipParam = (zipIdx !== '') ? `&zip_idx=${zipIdx}` : '';
                 if (!zipParam && window.globalPlaylist && window.globalPlaylist.length > 0) {
                     const track = window.globalPlaylist[window.currentPlayIndex];
-                    if (track) zipParam = `&zip_idx=${track.original_index}`;
+                    if (track) {
+                        zipParam = `&zip_idx=${track.original_index}`;
+                        zipIdx = track.original_index; // 🟢 Keep zipIdx synced for the unique ID
+                    }
                 }
 
                 const url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=metadata_lyrics${zipParam}`;
                 const res = await fetch(url, { signal: lyricsAbortController.signal });
                 if (!res.ok) return;
                 
-                // 🟢 FIX: Double-escaped backslashes for Python string compatibility!
                 const text = await res.text();
                 if (!text || text.trim().length === 0) return;
                 
@@ -7761,13 +7765,9 @@ HTML_DASHBOARD = """
                     if (match) {
                         const min = parseInt(match[1], 10);
                         const sec = parseFloat(match[2]);
-                        
-                        // 🟢 FIX: Strip out all internal Syllable/TTML timing tags (e.g., <00:48.432>) and extra brackets
                         let textContent = match[3].replace(/<[^>]+>/g, '').replace(/\\[\\d{2}:\\d{2}\\.\\d{2,3}\\]/g, '').trim();
-                        
                         if (textContent) lrcCues.push({ start: min * 60 + sec, text: textContent, isLrc: true });
                     } else if (line.trim() !== '' && !line.startsWith('[')) {
-                        // Clean up unsynced lines too just in case
                         let textContent = line.replace(/<[^>]+>/g, '').trim();
                         if (textContent) lrcCues.push({ start: -1, text: textContent, isLrc: true });
                     }
@@ -7777,7 +7777,7 @@ HTML_DASHBOARD = """
                     for (let i = 0; i < lrcCues.length - 1; i++) lrcCues[i].end = lrcCues[i+1].start;
                     lrcCues[lrcCues.length - 1].end = 999999;
                     subtitleCues = lrcCues;
-                    activeSubtitleIndex = 'metadata_lyrics';
+                    activeSubtitleIndex = `metadata_lyrics_${zipIdx}`; // 🟢 FIX: Unique ID per track (Prevents cache collision!)
                     renderCurrentSubtitle();
                 }
             } catch(e) { 
@@ -8378,11 +8378,24 @@ HTML_DASHBOARD = """
                 extAudio.load();
             }
 
-            // 2. Clear subtitles
-            document.getElementById('subtitle-overlay').innerHTML = '';
-            if (subtitleAbortController) {
+            // 2. Clear subtitles & lyrics
+            const subOverlay = document.getElementById('subtitle-overlay');
+            if (subOverlay) subOverlay.innerHTML = '';
+            
+            const scroller = document.getElementById('lyrics-scroller');
+            if (scroller) { 
+                scroller.innerHTML = ''; 
+                scroller.style.display = 'none'; 
+                scroller.dataset.rendered = ''; 
+            }
+            
+            if (typeof subtitleAbortController !== 'undefined' && subtitleAbortController) {
                 subtitleAbortController.abort();
                 subtitleAbortController = null;
+            }
+            if (typeof lyricsAbortController !== 'undefined' && lyricsAbortController) {
+                lyricsAbortController.abort();
+                lyricsAbortController = null;
             }
             
             // 3. Reset internal player state
