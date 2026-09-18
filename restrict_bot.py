@@ -9208,6 +9208,57 @@ HTML_DASHBOARD = """
             }
         }
 
+        // 1. ADDED: Search Functionality
+        function searchGlobeCountry() {
+            const input = document.getElementById('globe-search').value.trim().toLowerCase();
+            if (!input) return;
+            
+            let found = null;
+            if (globalGeoData && globalGeoData.length > 0) {
+                found = globalGeoData.find(c => {
+                    const name = (c.properties.ADMIN || "").toLowerCase();
+                    const iso2 = (c.properties.ISO_A2 || "").toLowerCase();
+                    return name.includes(input) || iso2 === input;
+                });
+            }
+            
+            if (found) {
+                fetchCountryAnalytics(found.properties.ISO_A2, found.properties.ADMIN);
+            } else {
+                // Direct API search fallback if not found on the 3D map
+                fetchCountryAnalytics(null, document.getElementById('globe-search').value.trim());
+            }
+        }
+
+        // 2. ADDED: Live Time Calculator (Fixes the ReferenceError Crash)
+        function updateLiveCountryTime(tzString) {
+            try {
+                let offsetMs = 0;
+                if (tzString && tzString.startsWith("UTC")) {
+                    let modifier = tzString.replace("UTC", "").trim();
+                    if (modifier) {
+                        let sign = modifier.charAt(0) === '-' ? -1 : 1;
+                        let parts = modifier.substring(1).split(':');
+                        let hours = parseInt(parts[0], 10) || 0;
+                        let mins = parts.length > 1 ? parseInt(parts[1], 10) : 0;
+                        offsetMs = sign * ((hours * 3600) + (mins * 60)) * 1000;
+                    }
+                }
+                
+                const now = new Date();
+                const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+                const localTime = new Date(utcTime + offsetMs);
+                
+                const hh = String(localTime.getHours()).padStart(2, '0');
+                const mm = String(localTime.getMinutes()).padStart(2, '0');
+                const ss = String(localTime.getSeconds()).padStart(2, '0');
+                
+                document.getElementById('c-time').innerText = `${hh}:${mm}:${ss}`;
+            } catch (e) {
+                document.getElementById('c-time').innerText = "--:--:--";
+            }
+        }
+
         async function fetchCountryAnalytics(isoCode, countryName) {
             document.getElementById('country-data-panel').style.display = 'block';
             document.getElementById('c-name').innerText = "Scanning Data...";
