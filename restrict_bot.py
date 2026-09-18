@@ -8551,18 +8551,21 @@ HTML_DASHBOARD = """
                         if (window.globalPlaylist && window.globalPlaylist.length > 0) {
                             const track = window.globalPlaylist[window.currentPlayIndex];
                             currentZipIdx = track.original_index;
+                            
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">TRACK ${window.currentPlayIndex + 1} OF ${window.globalPlaylist.length}</span><br>${track.display_name}`;
                             if (titleEl) titleEl.innerText = `[${window.currentPlayIndex + 1}/${window.globalPlaylist.length}] ${track.display_name}`;
                             
-                            // ZIPs: Always attempt to extract cover for the specific track
-                            currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}&zip_idx=${track.original_index}`;
+                            // 🟢 FIX FOR ZIPS: Use 'activeMediaLink' so the server knows which ZIP file to look inside
+                            const zipLink = (typeof activeMediaLink !== 'undefined' && activeMediaLink) ? activeMediaLink : link;
+                            currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(zipLink)}&zip_idx=${track.original_index}`;
+                            
                         } else {
                             // Single Track
                             let titleText = pdata.file_name || 'Media Stream';
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">NOW PLAYING</span><br>${titleText}`;
                             if (titleEl) titleEl.innerText = titleText;
                             
-                            // Single tracks: Always try to extract cover for audio files so album art never fails
+                            // 🟢 FIX FOR SINGLE TRACKS: Use 'link' to point directly to the individual media file
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
                         }
 
