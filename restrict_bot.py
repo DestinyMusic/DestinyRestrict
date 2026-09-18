@@ -4555,9 +4555,9 @@ HTML_DASHBOARD = """
     <meta name="apple-mobile-web-app-title" content="TG Portal">
     <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2111/2111646.png">
     
-    <!-- 🟢 NEW: 3D GLOBE ENGINE LIBRARIES -->
-    <script src="https://unpkg.com/three"></script>
-    <script src="https://unpkg.com/globe.gl"></script>
+    <!-- 🟢 NEW: 3D GLOBE ENGINE LIBRARIES (Pinned for Stability) -->
+    <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
+    <script src="https://unpkg.com/globe.gl@2.32.0/dist/globe.gl.min.js"></script>
 
     <style>
         :root { 
@@ -8833,71 +8833,73 @@ HTML_DASHBOARD = """
             const container = document.getElementById('globe-container');
             container.innerHTML = '<div style="color:var(--accent); text-align:center; margin-top: 25%; font-weight: bold; font-size: 18px;">⏳ Connecting to Satellites...<br><span style="font-size:12px; color:var(--subtext);">Loading Topographical Map Data</span></div>';
 
-            // Fetch Country Borders
-            fetch('https://raw.githubusercontent.com/vasturiano/globe.gl/master/example/datasets/ne_110m_admin_0_countries.geojson')
-                .then(res => res.json())
-                .then(countries => {
-                    container.innerHTML = ''; 
+            // 🟢 FIX: Use setTimeout to ensure container width is calculated properly before injecting Canvas
+            setTimeout(() => {
+                fetch('https://unpkg.com/three-globe/example/datasets/ne_110m_admin_0_countries.geojson')
+                    .then(res => res.json())
+                    .then(countries => {
+                        container.innerHTML = ''; 
 
-                    myGlobe = Globe()(container)
-                        // 🟢 FIX: Ultra-HD Satellite Map with Ocean Topography, Seas, and Geo Features!
-                        .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
-                        .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
-                        .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
-                        .polygonsData(countries.features)
-                        .polygonAltitude(0.005)
-                        .polygonCapColor(() => 'rgba(255, 255, 255, 0.05)') // Very light tint so satellite map is visible
-                        .polygonSideColor(() => 'rgba(0, 0, 0, 0.2)')
-                        .polygonStrokeColor(() => '#38bdf8')
-                        .polygonLabel(({ properties: d }) => `
-                            <div style="background: rgba(0,0,0,0.85); border: 1px solid var(--accent); padding: 8px 12px; border-radius: 12px; color: white; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
-                                <b>${d.ADMIN || d.NAME}</b>
-                                <div style="font-size: 10px; color: var(--subtext); margin-top: 2px;">Click to scan nation</div>
-                            </div>
-                        `)
-                        .onPolygonHover(hoverD => {
-                            myGlobe
-                            .polygonAltitude(d => d === hoverD ? 0.04 : 0.005)
-                            .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(255, 255, 255, 0.05)');
-                        })
-                        .onPolygonClick(({ properties: d }) => {
-                            const name = d.ADMIN || d.NAME;
-                            const iso2 = d.ISO_A2 !== "-99" ? d.ISO_A2 : null;
-                            const iso3 = d.ISO_A3 !== "-99" ? d.ISO_A3 : null;
-                            loadCountryData(name, iso2, iso3, false);
+                        myGlobe = Globe()(container)
+                            // 🟢 FIX: Ultra-HD Satellite Map with Ocean Topography, Seas, and Geo Features!
+                            .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+                            .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
+                            .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
+                            .polygonsData(countries.features)
+                            .polygonAltitude(0.005)
+                            .polygonCapColor(() => 'rgba(255, 255, 255, 0.05)') // Very light tint so satellite map is visible
+                            .polygonSideColor(() => 'rgba(0, 0, 0, 0.2)')
+                            .polygonStrokeColor(() => '#38bdf8')
+                            .polygonLabel(({ properties: d }) => `
+                                <div style="background: rgba(0,0,0,0.85); border: 1px solid var(--accent); padding: 8px 12px; border-radius: 12px; color: white; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
+                                    <b>${d.ADMIN || d.NAME}</b>
+                                    <div style="font-size: 10px; color: var(--subtext); margin-top: 2px;">Click to scan nation</div>
+                                </div>
+                            `)
+                            .onPolygonHover(hoverD => {
+                                myGlobe
+                                .polygonAltitude(d => d === hoverD ? 0.04 : 0.005)
+                                .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(255, 255, 255, 0.05)');
+                            })
+                            .onPolygonClick(({ properties: d }) => {
+                                const name = d.ADMIN || d.NAME;
+                                const iso2 = d.ISO_A2 !== "-99" ? d.ISO_A2 : null;
+                                const iso3 = d.ISO_A3 !== "-99" ? d.ISO_A3 : null;
+                                loadCountryData(name, iso2, iso3, false);
+                            });
+
+                        myGlobe.controls().autoRotate = true;
+                        myGlobe.controls().autoRotateSpeed = 1.0;
+                        
+                        const isMobile = window.innerWidth < 768;
+                        myGlobe.pointOfView({ altitude: isMobile ? 3.0 : 2.2 });
+
+                        window.addEventListener('resize', () => {
+                            if(document.getElementById('view-globe').classList.contains('active')) {
+                                myGlobe.width(container.clientWidth);
+                                myGlobe.height(container.clientHeight);
+                            }
                         });
 
-                    myGlobe.controls().autoRotate = true;
-                    myGlobe.controls().autoRotateSpeed = 1.0;
-                    
-                    const isMobile = window.innerWidth < 768;
-                    myGlobe.pointOfView({ altitude: isMobile ? 3.0 : 2.2 });
-
-                    window.addEventListener('resize', () => {
-                        if(document.getElementById('view-globe').classList.contains('active')) {
-                            myGlobe.width(container.clientWidth);
-                            myGlobe.height(container.clientHeight);
-                        }
+                        // 🟢 FIX: Fetch and Overlay Thousands of Capital Cities & Populated Places!
+                        fetch('https://unpkg.com/three-globe/example/datasets/ne_110m_populated_places_simple.geojson')
+                            .then(res => res.json())
+                            .then(places => {
+                                myGlobe.labelsData(places.features)
+                                    .labelLat(d => d.properties.latitude)
+                                    .labelLng(d => d.properties.longitude)
+                                    .labelText(d => d.properties.name)
+                                    .labelSize(d => d.properties.megacity ? 1.5 : 0.6)
+                                    .labelDotRadius(d => d.properties.megacity ? 0.4 : 0.2)
+                                    .labelColor(() => 'rgba(255, 255, 255, 0.9)')
+                                    .labelResolution(2)
+                                    .labelAltitude(0.01);
+                            });
+                    })
+                    .catch(err => {
+                        container.innerHTML = `<div style="color:var(--danger); text-align:center; margin-top: 25%;">❌ Satellite connection failed. Error: ${err.message}</div>`;
                     });
-
-                    // 🟢 FIX: Fetch and Overlay Thousands of Capital Cities & Populated Places!
-                    fetch('https://raw.githubusercontent.com/vasturiano/globe.gl/master/example/datasets/ne_110m_populated_places_simple.geojson')
-                        .then(res => res.json())
-                        .then(places => {
-                            myGlobe.labelsData(places.features)
-                                .labelLat(d => d.properties.latitude)
-                                .labelLng(d => d.properties.longitude)
-                                .labelText(d => d.properties.name)
-                                .labelSize(d => d.properties.megacity ? 1.5 : 0.6)
-                                .labelDotRadius(d => d.properties.megacity ? 0.4 : 0.2)
-                                .labelColor(() => 'rgba(255, 255, 255, 0.9)')
-                                .labelResolution(2)
-                                .labelAltitude(0.01);
-                        });
-                })
-                .catch(err => {
-                    container.innerHTML = '<div style="color:var(--danger); text-align:center; margin-top: 25%;">❌ Satellite connection failed. Refresh page.</div>';
-                });
+            }, 50); // Small 50ms delay lets display:block apply before calculating container width
         }
 
         async function searchCountryManual() {
@@ -8941,10 +8943,13 @@ HTML_DASHBOARD = """
 
                 const country = data[0]; 
                 
-                if (isManualSearch && myGlobe && country.latlng) {
-                    const isMobile = window.innerWidth < 768;
-                    myGlobe.pointOfView({ lat: country.latlng[0], lng: country.latlng[1], altitude: isMobile ? 3.0 : 2.2 }, 1000);
-                }
+                // 🟢 SHIELD: Protect the camera pointOfView from throwing if globe failed to load
+                try {
+                    if (myGlobe && country.latlng) {
+                        const isMobile = window.innerWidth < 768;
+                        myGlobe.pointOfView({ lat: country.latlng[0], lng: country.latlng[1], altitude: isMobile ? 3.0 : 2.2 }, 1000);
+                    }
+                } catch(camErr) { console.warn("Camera jump skipped", camErr); }
 
                 let wikiSummary = "<i style='color:var(--subtext);'>Accessing local intelligence failed. No recent developments available in the active database.</i>";
                 try {
@@ -9048,7 +9053,7 @@ HTML_DASHBOARD = """
                 `;
 
             } catch (e) {
-                panel.innerHTML = `<div style="color: var(--danger); text-align:center; padding: 40px;"><b>❌ Target Lock Failed.</b><br><span style="font-size:12px;">Satellite could not retrieve secure data for '${rawName}'. Try searching manually.</span></div>`;
+                panel.innerHTML = `<div style="color: var(--danger); text-align:center; padding: 40px;"><b>❌ Target Lock Failed.</b><br><span style="font-size:12px;">Satellite could not retrieve secure data for '${rawName}'. Reason: ${e.message}</span></div>`;
                 console.error(e);
             }
         }
