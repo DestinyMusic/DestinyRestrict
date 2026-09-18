@@ -8502,8 +8502,15 @@ HTML_DASHBOARD = """
                         
                         let text = "";
                         try {
-                            // 1. Check for external .lrc / .vtt file matching the track name inside the ZIP
-                            if (zipIdx !== '' && window.rawZipEntries) {
+                            // 1. FIRST PRIORITY: Extract internal metadata lyrics via FFprobe directly from the track!
+                            let url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=metadata_lyrics`;
+                            if (zipIdx !== '') url += `&zip_idx=${zipIdx}`;
+                            
+                            const resInternal = await fetch(url, { signal: window.subtitleAbortController.signal });
+                            if (resInternal.ok) text = await resInternal.text();
+                            
+                            // 2. SECOND PRIORITY: Check for external .lrc / .vtt file matching the track name inside the ZIP
+                            if ((!text || text.trim().length === 0) && zipIdx !== '' && window.rawZipEntries) {
                                 const track = window.rawZipEntries.find(t => t.original_index === zipIdx);
                                 if (track) {
                                     const baseName = track.display_name.substring(0, track.display_name.lastIndexOf('.'));
@@ -8516,18 +8523,10 @@ HTML_DASHBOARD = """
                                         lrcUrl = lrcUrl.replace(`zip_idx=${zipIdx}`, `zip_idx=${lrcTrack.original_index}`);
                                         if (!lrcUrl.includes('zip_idx')) lrcUrl += `&zip_idx=${lrcTrack.original_index}`;
                                         
-                                        const res = await fetch(lrcUrl, { signal: window.subtitleAbortController.signal });
-                                        if (res.ok) text = await res.text();
+                                        const resExternal = await fetch(lrcUrl, { signal: window.subtitleAbortController.signal });
+                                        if (resExternal.ok) text = await resExternal.text();
                                     }
                                 }
-                            }
-                            
-                            // 2. Fallback to extracting internal metadata lyrics via FFprobe
-                            if (!text) {
-                                let url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}&sub_idx=metadata_lyrics`;
-                                if (zipIdx !== '') url += `&zip_idx=${zipIdx}`;
-                                const res = await fetch(url, { signal: window.subtitleAbortController.signal });
-                                if (res.ok) text = await res.text();
                             }
                             
                             if (text && text.trim().length > 0) {
@@ -11190,6 +11189,7 @@ async def _api_media_probe_handler(request):
                     duration_val = tg_duration
                     logger.info(f"🔎 [PROBE TG] Found Telegram native duration: {duration_val}s")
 
+            pdata = {} # 🟢 FIX: Initialize pdata to prevent UnboundLocalError when FFprobe fails on ZIPs
             try:
                 pdata = await _run_ffprobe_json(probe_input, fast=True)
                 streams = pdata.get("streams", []) or []
