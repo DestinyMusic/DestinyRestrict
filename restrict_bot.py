@@ -7240,19 +7240,20 @@ HTML_DASHBOARD = """
             let pos = (clientX - rect.left) / rect.width;
             pos = Math.max(0, Math.min(1, pos));
             
-            const video = document.getElementById('hidden-video');
-            let dur = video?.duration || 0;
-
-            // 🟢 THE FIX: If playing via FFmpeg Pipe, the browser duration is a lie. Force the real duration.
-            if (playerRequiresTranscode && playerTotalDuration > 0) {
-                dur = playerTotalDuration;
-            } else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) {
-                dur = playerTotalDuration;
+            let dur = 0;
+            if (window.globalPlaylist && window.globalPlaylist.length > 0) {
+                dur = window.totalAlbumDuration || 0;
+            } else {
+                const video = document.getElementById('hidden-video');
+                dur = video?.duration || 0;
+                if (typeof playerRequiresTranscode !== 'undefined' && playerRequiresTranscode && typeof playerTotalDuration !== 'undefined' && playerTotalDuration > 0) {
+                    dur = playerTotalDuration;
+                } else if (typeof playerTotalDuration !== 'undefined' && playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) {
+                    dur = playerTotalDuration;
+                }
             }
             
             if (dur === 0 || dur === Infinity) return { pos: 0, target: 0, dur: 0 };
-            
-            console.log(`[DEBUG SCRUB] Click Pos: ${(pos*100).toFixed(2)}% | Calc Target: ${pos * dur}s | Total Dur: ${dur}s`);
             return { pos, target: pos * dur, dur };
         }
 
@@ -7312,9 +7313,46 @@ HTML_DASHBOARD = """
             if (dur === 0) return;
             wakeHUD();
             
-            console.log(`[DEBUG COMMIT] Triggering seek command to exact time: ${target}s`);
-            globalTargetTime = target; // 🟢 Save intended destination instantly
-            
+            // 🟢 ALBUM CROSS-TRACK SEEKING
+            if (window.globalPlaylist && window.globalPlaylist.length > 0) {
+                let targetTrackIndex = 0;
+                for (let i = 0; i < window.globalPlaylist.length; i++) {
+                    const t = window.globalPlaylist[i];
+                    if (target >= t.startTime && target <= t.startTime + t.duration) {
+                        targetTrackIndex = i;
+                        break;
+                    }
+                }
+                
+                const track = window.globalPlaylist[targetTrackIndex];
+                const localTarget = target - track.startTime;
+                
+                if (targetTrackIndex !== window.currentPlayIndex) {
+                    window.currentPlayIndex = targetTrackIndex;
+                    if (window.updateAlbumText) window.updateAlbumText();
+                    
+                    playerTimelineOffset = localTarget;
+                    isTranscodeSeeking = false;
+                    
+                    const nextUrl = playerDirectCompatible ? buildNativeUrl() : buildStreamUrl(localTarget);
+                    setVideoSource(nextUrl, localTarget, true);
+                    return;
+                } else {
+                    globalTargetTime = localTarget;
+                    const video = document.getElementById('hidden-video');
+                    if (playerRequiresTranscode) {
+                        isTranscodeSeeking = true;
+                        restartStreamAt(localTarget);
+                    } else {
+                        if (video) video.currentTime = localTarget;
+                        renderCurrentSubtitle(localTarget);
+                        if (!playerFallbackAttempted) armPlaybackWatchdog();
+                    }
+                    return;
+                }
+            }
+
+            globalTargetTime = target; 
             const video = document.getElementById('hidden-video');
             if (playerRequiresTranscode) {
                 isTranscodeSeeking = true;
@@ -7322,7 +7360,7 @@ HTML_DASHBOARD = """
             } else {
                 if (video) video.currentTime = target;
                 renderCurrentSubtitle(target);
-                if (!playerFallbackAttempted) armPlaybackWatchdog(); // 🟢 Rearm watchdog for deep seek
+                if (!playerFallbackAttempted) armPlaybackWatchdog(); 
             }
         }
 
@@ -8226,9 +8264,25 @@ HTML_DASHBOARD = """
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
                 playerTotalDuration = Number(pdata.duration) || 0;
                 
-                // 🟢 PLAYLIST INITIALIZATION
+                // 🟢 PLAYLIST INITIALIZATION & GLOBAL TIMELINE MATH
                 window.globalPlaylist = plistData.playlist || [];
                 window.currentPlayIndex = 0;
+                
+                if (window.globalPlaylist.length > 0 && playerTotalDuration > 0) {
+                    const firstTrackSize = window.globalPlaylist[0].size || 1;
+                    const bytesPerSecond = firstTrackSize / playerTotalDuration;
+                    
+                    let cumulativeTime = 0;
+                    window.globalPlaylist.forEach((track) => {
+                        let estDur = track.size / bytesPerSecond;
+                        track.startTime = cumulativeTime;
+                        track.duration = estDur;
+                        cumulativeTime += estDur;
+                    });
+                    window.totalAlbumDuration = cumulativeTime;
+                } else {
+                    window.totalAlbumDuration = playerTotalDuration;
+                }
 
                 // 🟢 BUILD ALBUM ART & TRACK INFO GUI
                 if (vp) {
@@ -8381,25 +8435,29 @@ HTML_DASHBOARD = """
             if (dur > 0 && video.buffered.length > 0) {
                 let maxBuffered = 0;
                 const curTime = video.currentTime;
-                
-                // Safely find the buffered range that encompasses the current playback time
                 for (let i = 0; i < video.buffered.length; i++) {
                     if (video.buffered.start(i) <= curTime && video.buffered.end(i) >= curTime) {
                         maxBuffered = video.buffered.end(i);
                         break;
                     }
                 }
-                
-                // Fallback to absolute furthest chunk loaded if no exact range matched
-                if (maxBuffered === 0) {
-                    maxBuffered = video.buffered.end(video.buffered.length - 1);
-                }
-                
+                if (maxBuffered === 0) maxBuffered = video.buffered.end(video.buffered.length - 1);
                 if (typeof playerRequiresTranscode !== 'undefined' && playerRequiresTranscode && typeof playerTimelineOffset !== 'undefined') {
                     maxBuffered += playerTimelineOffset;
                 }
                 
-                const pct = Math.min(100, (maxBuffered / dur) * 100);
+                // 🟢 GLOBAL TIMELINE SHIFT
+                let displayMaxBuffered = maxBuffered;
+                let displayDur = dur;
+                if (window.globalPlaylist && window.globalPlaylist.length > 0) {
+                    const track = window.globalPlaylist[window.currentPlayIndex];
+                    if (track) {
+                        displayMaxBuffered = (track.startTime || 0) + maxBuffered;
+                        displayDur = window.totalAlbumDuration || dur;
+                    }
+                }
+                
+                const pct = Math.min(100, (displayMaxBuffered / displayDur) * 100);
                 bufferBar.style.width = `${pct}%`;
             }
         }
@@ -8593,13 +8651,12 @@ HTML_DASHBOARD = """
 
             vidElem.addEventListener('timeupdate', () => {
                 clearTimeout(stallTimer); 
-                
                 updateBufferBar(); 
 
                 // 🟢 FAST SYNC: Continuous drift correction for External Audio tracks
                 if (extAudio && extAudio.src && !vidElem.paused && !vidElem.seeking) {
                     const drift = Math.abs(extAudio.currentTime - vidElem.currentTime);
-                    if (drift > 0.15) { // 🟢 Snaps back instantly if drifting beyond 150ms
+                    if (drift > 0.15) { 
                         extAudio.currentTime = vidElem.currentTime;
                     }
                 }
@@ -8607,22 +8664,33 @@ HTML_DASHBOARD = """
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
 
-                // 🟢 FFmpeg Duration Sync
                 if (playerRequiresTranscode) {
                     cur = playerTimelineOffset + cur;
-                    if (playerTotalDuration > 0) {
-                        dur = playerTotalDuration;
-                    }
+                    if (playerTotalDuration > 0) dur = playerTotalDuration;
                 } else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) {
                     dur = playerTotalDuration;
                 }
                 cur = Math.min(cur, dur);
 
                 if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
-                    globalTargetTime = cur; // 🟢 Constantly save our actual position
+                    globalTargetTime = cur; 
                 }
 
-                const percent = dur ? Math.max(0, Math.min(100, cur / dur * 100)) : 0;
+                // 🟢 CONTINUOUS ALBUM TIMELINE LOGIC
+                let displayCur = cur;
+                let displayDur = dur;
+
+                if (window.globalPlaylist && window.globalPlaylist.length > 0) {
+                    const track = window.globalPlaylist[window.currentPlayIndex];
+                    if (track) {
+                        displayCur = (track.startTime || 0) + cur;
+                        displayDur = window.totalAlbumDuration || dur;
+                    }
+                }
+                
+                displayCur = Math.min(displayCur, displayDur);
+
+                const percent = displayDur ? Math.max(0, Math.min(100, displayCur / displayDur * 100)) : 0;
                 const time = document.getElementById('hud-time');
                 
                 if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
@@ -8637,7 +8705,7 @@ HTML_DASHBOARD = """
                         const hh = h > 0 ? `${String(h).padStart(2, '0')}:` : '';
                         return `${hh}${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
                     };
-                    if (time) time.innerText = `${fmt(cur)} / ${fmt(dur)}`;
+                    if (time) time.innerText = `${fmt(displayCur)} / ${fmt(displayDur)}`;
                 }
                 renderCurrentSubtitle(cur);
             });
