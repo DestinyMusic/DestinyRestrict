@@ -9168,6 +9168,8 @@ HTML_DASHBOARD = """
 
                 myGlobe = Globe()
                     (container)
+                    .width(container.clientWidth)  /* 🟢 FIX: Forces globe to center horizontally */
+                    .height(container.clientHeight) /* 🟢 FIX: Forces globe to center vertically */
                     .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
                     .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
                     .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
@@ -9214,92 +9216,79 @@ HTML_DASHBOARD = """
             // Stop globe rotation while viewing
             if (myGlobe) myGlobe.controls().autoRotate = false;
 
+            let countryData = null;
+
+            // 🟢 BLOCK 1: Fetch Core Demographic & Time Data
             try {
-                // 1. Fetch Geopolitical Stats (RestCountries API)
-                // If standard ISO fails (like for Somaliland), fallback to name search
-                let res = await fetch(`https://restcountries.com/v3.1/alpha/${isoCode}`);
-                if (!res.ok) res = await fetch(`https://restcountries.com/v3.1/name/${countryName}?fullText=true`);
+                // If ISO_A2 is "-99" (missing in Natural Earth dataset), use the name fallback
+                let res;
+                if (isoCode && isoCode !== "-99") {
+                    res = await fetch(`https://restcountries.com/v3.1/alpha/${isoCode}`);
+                }
+                
+                // Fallback to name search if ISO fails
+                if (!res || !res.ok) {
+                    res = await fetch(`https://restcountries.com/v3.1/name/${encodeURIComponent(countryName)}`);
+                }
+                
+                if (!res.ok) throw new Error("RestCountries API returned " + res.status);
                 
                 const data = (await res.json())[0];
+                countryData = data; // Save for Wikipedia query
                 
-                document.getElementById('c-flag').src = data.flags.svg || data.flags.png;
-                document.getElementById('c-name').innerText = data.name.common;
+                document.getElementById('c-flag').src = data.flags.svg || data.flags.png || '';
+                document.getElementById('c-name').innerText = data.name.common || countryName;
                 document.getElementById('c-cap').innerText = data.capital ? data.capital[0] : 'N/A';
-                document.getElementById('c-reg').innerText = `${data.region} (${data.subregion || ''})`;
-                document.getElementById('c-pop').innerText = data.population.toLocaleString();
+                document.getElementById('c-reg').innerText = `${data.region || ''} (${data.subregion || ''})`.replace(' ()', '');
+                document.getElementById('c-pop').innerText = data.population ? data.population.toLocaleString() : 'N/A';
                 document.getElementById('c-lang').innerText = data.languages ? Object.values(data.languages).join(', ') : 'Unknown';
                 document.getElementById('c-curr').innerText = data.currencies ? Object.values(data.currencies).map(c => `${c.name} (${c.symbol})`).join(', ') : 'Unknown';
 
-                // 2. Compute Live Local Time
+                // Compute Live Local Time
                 clearInterval(liveClockInterval);
                 if (data.timezones && data.timezones.length > 0) {
-                    const primaryTz = data.timezones[0]; // e.g. "UTC+05:30"
+                    const primaryTz = data.timezones[0];
                     updateLiveCountryTime(primaryTz);
                     liveClockInterval = setInterval(() => updateLiveCountryTime(primaryTz), 1000);
                 } else {
                     document.getElementById('c-time').innerText = "Time Unknown";
                 }
 
-                // 3. Fetch Wikipedia Summary & Why it is famous
-                const wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(data.name.common)}`);
+            } catch (err) {
+                console.error("RestCountries API failed:", err);
+                document.getElementById('c-name').innerText = countryName;
+                document.getElementById('c-cap').innerText = "Error";
+                document.getElementById('c-pop').innerText = "Error";
+                document.getElementById('c-wiki').innerHTML = "Failed to load demographic data.";
+                return; // 🔴 Stop here if the main demographics fail
+            }
+
+            // 🟢 BLOCK 2: Fetch Wikipedia (Isolated so it doesn't break Block 1)
+            try {
+                // Use the official common name if we found it, otherwise use the map's default name
+                const wikiQuery = countryData ? countryData.name.common : countryName;
+                const wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(wikiQuery)}`);
+                
                 if (wikiRes.ok) {
                     const wikiData = await wikiRes.json();
-                    document.getElementById('c-wiki').innerHTML = `
-                        <p>${wikiData.extract}</p>
-                        <a href="${wikiData.content_urls.desktop.page}" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: bold; font-size: 11px; text-transform: uppercase; border: 1px solid var(--accent); padding: 5px 10px; border-radius: 6px; display: inline-block; margin-top: 10px;">Read Full Wikipedia Article</a>
-                    `;
+                    if (wikiData.type !== "disambiguation" && wikiData.extract) {
+                        // Ensure we have a valid URL fallback
+                        const pageUrl = (wikiData.content_urls && wikiData.content_urls.desktop) ? wikiData.content_urls.desktop.page : `https://en.wikipedia.org/wiki/${encodeURIComponent(wikiQuery)}`;
+                        document.getElementById('c-wiki').innerHTML = `
+                            <p>${wikiData.extract}</p>
+                            <a href="${pageUrl}" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: bold; font-size: 11px; text-transform: uppercase; border: 1px solid var(--accent); padding: 5px 10px; border-radius: 6px; display: inline-block; margin-top: 10px;">Read Full Wikipedia Article</a>
+                        `;
+                    } else {
+                        document.getElementById('c-wiki').innerText = "Wikipedia summary requires disambiguation.";
+                    }
                 } else {
-                    document.getElementById('c-wiki').innerText = "Detailed historical records currently unavailable.";
+                    document.getElementById('c-wiki').innerText = "Detailed Wikipedia historical records currently unavailable.";
                 }
-
             } catch (err) {
-                console.error("Analytics fetch failed:", err);
-                document.getElementById('c-name').innerText = countryName;
-                document.getElementById('c-wiki').innerText = "Failed to synchronize with global databases.";
+                console.error("Wiki API failed:", err);
+                document.getElementById('c-wiki').innerText = "Detailed Wikipedia historical records currently unavailable.";
             }
         }
-
-        function updateLiveCountryTime(tzString) {
-            let offsetHours = 0, offsetMins = 0;
-            if (tzString !== "UTC" && tzString !== "UTC+00:00") {
-                const sign = tzString.includes("-") ? -1 : 1;
-                const timePart = tzString.split(/[+-]/)[1];
-                if (timePart) {
-                    const parts = timePart.split(":");
-                    offsetHours = parseInt(parts[0]) * sign;
-                    offsetMins = parseInt(parts[1] || 0) * sign;
-                }
-            }
-            
-            const now = new Date();
-            const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
-            const targetTime = new Date(utcTime + (3600000 * offsetHours) + (60000 * offsetMins));
-            
-            document.getElementById('c-time').innerText = targetTime.toLocaleTimeString('en-US', { 
-                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true 
-            });
-        }
-
-        function searchGlobeCountry() {
-            const query = document.getElementById('globe-search').value.toLowerCase().trim();
-            if(!query || globalGeoData.length === 0) return;
-            
-            const target = globalGeoData.find(c => 
-                c.properties.ADMIN.toLowerCase().includes(query) || 
-                c.properties.ISO_A2.toLowerCase() === query ||
-                c.properties.ISO_A3.toLowerCase() === query
-            );
-            
-            if (target) {
-                fetchCountryAnalytics(target.properties.ISO_A2, target.properties.ADMIN);
-                
-                // Optional: Attempt to center globe on clicked country if the GeoJSON has Lat/Lon tags
-                // Most standard GeoJSONs don't natively include center points, so we rely on the user visually spinning it.
-                if (myGlobe) myGlobe.controls().autoRotate = false;
-            } else {
-                alert("Country not found. Try entering the exact name or ISO code (e.g. IN, JP, US).");
-            }
-        }        
     </script>
 </body>
 </html>
