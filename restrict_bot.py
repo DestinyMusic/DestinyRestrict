@@ -6649,7 +6649,9 @@ HTML_DASHBOARD = """
                     document.getElementById('tg-login-step3').style.display = 'none';
                     document.getElementById('tg-logout-btn').style.display = 'block';
                     
-                    if (!chatsLoaded) {
+                    // 🟢 FIX: Stop spamming get_dialogs on every heartbeat!
+                    // ONLY fetch the chat list if the user is actually looking at the Chats tab!
+                    if (!chatsLoaded && document.getElementById('view-chats').classList.contains('active')) {
                         fetchChatsList();
                         chatsLoaded = true;
                     }
@@ -10695,15 +10697,16 @@ async def _probe_tg_client(client, chat_id, msg_id):
         await get_client_msg(client, chat_id, msg_id)
         return client
     except Exception as e:
-        # 🟢 FIX: Broaden error catching. Any failure on the first try might mean 
-        # the bot's local SQLite DB is missing the peer. Force an update!
-        if getattr(client, "bot_token", None):
+        err_str = str(e).lower()
+        # 🟢 FIX: Only trigger the fallback scan if the error is explicitly a Peer ID or Channel resolution issue.
+        # This prevents unnecessary API spam if the file simply doesn't exist.
+        if getattr(client, "bot_token", None) and any(err in err_str for err in ["peer_id_invalid", "channel_invalid", "channel_private", "keyerror"]):
             try:
-                logger.debug(f"Worker {getattr(client, 'name', 'bot')} missing peer {chat_id}. Forcing dialog scan...")
-                # Scan only the most recent 20 dialogs to keep it blazing fast
-                async for _ in client.get_dialogs(limit=20):
+                logger.debug(f"Worker {getattr(client, 'name', 'bot')} missing peer {chat_id}. Forcing quick dialog scan...")
+                # Only scan the absolute most recent dialogs.
+                async for _ in client.get_dialogs(limit=5):
                     pass
-                # Try one last time now that the cache is warm
+                # Retry fetching the message
                 await get_client_msg(client, chat_id, msg_id)
                 logger.info(f"✅ Worker {getattr(client, 'name', 'bot')} successfully resolved {chat_id} after scan.")
                 return client
@@ -10770,6 +10773,12 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
             TG_ACCESS_CACHE[key] = (pool, time.time() + TG_ACCESS_CACHE_TTL)
             return pool, False
 
+        # 🟢 FIX: If the user has worker bots configured, DO NOT fallback to the user session for streaming!
+        # The user session should ONLY be used if the user hasn't provided any bot tokens.
+        if user_worker_bots:
+             logger.warning(f"All worker bots failed to access {chat_id}. Blocking fallback to prevent User Session FloodWaits.")
+             return [], False
+
         if fallback_client is not None and getattr(fallback_client, "is_connected", False):
             user_client = fallback_client
         else:
@@ -10781,7 +10790,6 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
                 return [user_client], True
 
         return [], False
-
 
 async def _invalidate_tg_access(user_id, chat_id, msg_id, client=None):
     key = (user_id, chat_id, int(msg_id))
@@ -12164,7 +12172,7 @@ async def init_worker_bots(user_id=None):
                     api_hash=API_HASH,
                     bot_token=token.strip(),
                     workers=4,
-                    no_updates=False, # 🟢 FIX: Let bots receive updates so they instantly detect new channels!
+                    no_updates=True, # 🟢 REVERT: Must be True to save RAM and prevent background update floods.
                     ipv6=False
                 )
                 await bot_client.start()
