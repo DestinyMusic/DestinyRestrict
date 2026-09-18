@@ -10694,7 +10694,19 @@ async def _probe_tg_client(client, chat_id, msg_id):
     try:
         await get_client_msg(client, chat_id, msg_id)
         return client
-    except Exception:
+    except Exception as e:
+        # 🟢 FIX: If the worker bot doesn't know the channel yet (PeerIdInvalid),
+        # force it to quickly fetch its chat list to learn the access_hash!
+        err_str = str(e)
+        if getattr(client, "bot_token", None) and ("Peer" in err_str or "Channel" in err_str or "KeyError" in err_str):
+            try:
+                async for _ in client.get_dialogs(limit=50):
+                    pass
+                # Retry fetching the message now that the channel is cached!
+                await get_client_msg(client, chat_id, msg_id)
+                return client
+            except Exception:
+                pass
         return None
 
 
@@ -10743,7 +10755,8 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
         pool = []
         if candidates:
             results = await asyncio.gather(
-                *[asyncio.wait_for(_probe_tg_client(c, chat_id, msg_id), timeout=4) for c in candidates],
+                # 🟢 FIX: Increased timeout from 4 to 12s to give bots time to scan their chat list!
+                *[asyncio.wait_for(_probe_tg_client(c, chat_id, msg_id), timeout=12.0) for c in candidates],
                 return_exceptions=True,
             )
             for result in results:
@@ -12148,7 +12161,7 @@ async def init_worker_bots(user_id=None):
                     api_hash=API_HASH,
                     bot_token=token.strip(),
                     workers=4,
-                    no_updates=True,
+                    no_updates=False, # 🟢 FIX: Let bots receive updates so they instantly detect new channels!
                     ipv6=False
                 )
                 await bot_client.start()
