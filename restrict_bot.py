@@ -4546,6 +4546,9 @@ HTML_DASHBOARD = """
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;800;900&display=swap" rel="stylesheet">
 
+    <!-- 🟢 NEW: 3D Interactive WebGL Globe -->
+    <script src="https://unpkg.com/globe.gl"></script>
+    
     <!-- PWA Web App Meta Tags -->
     <link rel="manifest" href="/manifest.json">
     <meta name="theme-color" content="#000000">
@@ -5185,6 +5188,7 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('downloads', 'Downloads')">📥 Downloads</div>
             <div class="menu-item" onclick="switchView('watchers', 'Watchers')">📡 Watchers</div>
             <div class="menu-item" onclick="switchView('chats', 'Chats & IDs')">💬 Chats & IDs</div>
+            <div class="menu-item" onclick="switchView('globe', 'World Explorer')">🌎 World Explorer</div>
             <div class="menu-item" onclick="switchView('network', 'Live Network')">🌍 Live Network</div>
             <div class="menu-item" onclick="switchView('speedtest', 'Speedtest')">🚀 Speedtest</div>
             <div class="menu-item" onclick="switchView('sos', 'System SOS')">🖥 System SOS</div>
@@ -5688,6 +5692,49 @@ HTML_DASHBOARD = """
 
                     <div id="web-chats-list">
                         <div style="color: #64748b;">Loading dialogs...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 🟢 NEW: 3D WORLD GLOBE EXPLORER -->
+            <div id="view-globe" class="view-section">
+                <div class="section-title">
+                    <span>Interactive World Explorer</span>
+                </div>
+                
+                <div class="card" style="margin-bottom: 20px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                    <input type="text" id="globe-search" placeholder="🔍 Search any country (e.g. India, Japan, France)..." style="flex: 1; padding: 14px 20px; border-radius: 14px; border: 1px solid var(--card-border); background: color-mix(in srgb, var(--bg) 60%, transparent); color: #fff; font-size: 14px; outline: none; backdrop-filter: blur(10px);">
+                    <button class="primary-btn" style="width: auto; padding: 0 25px;" onclick="searchGlobeCountry()">Search</button>
+                </div>
+
+                <div style="display: flex; gap: 20px; flex-wrap: wrap;">
+                    <!-- The 3D Canvas -->
+                    <div class="card" style="flex: 1; min-width: 320px; padding: 0; overflow: hidden; height: 65vh; position: relative; border-radius: 20px; display: flex; align-items: center; justify-content: center; background: #000;">
+                        <div id="globe-loading" style="position: absolute; z-index: 5; color: var(--accent); font-weight: bold; font-size: 16px; text-transform: uppercase; letter-spacing: 2px;">⏳ Booting Global Satellites...</div>
+                        <div id="globe-viz" style="width: 100%; height: 100%;"></div>
+                    </div>
+
+                    <!-- The Information Panel -->
+                    <div id="country-data-panel" class="card" style="flex: 1; min-width: 320px; max-height: 65vh; overflow-y: auto; display: none; padding: 30px;">
+                        <div style="text-align: center; margin-bottom: 20px;">
+                            <img id="c-flag" src="" style="width: 120px; border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); margin-bottom: 15px;">
+                            <h2 id="c-name" style="margin: 0 0 5px 0; color: #fff; font-size: 28px; text-shadow: 0 0 15px var(--glow);">Country Name</h2>
+                            <div id="c-time" style="color: var(--accent); font-weight: 900; font-size: 24px; font-family: monospace; letter-spacing: 1px; margin-top: 10px;">--:--:--</div>
+                            <div style="font-size: 11px; color: var(--subtext); text-transform: uppercase; font-weight: bold; margin-top: 4px;">Live Local Time</div>
+                        </div>
+
+                        <div style="background: rgba(0,0,0,0.3); border: 1px solid rgba(255,255,255,0.05); border-radius: 16px; padding: 20px; margin-bottom: 20px;">
+                            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
+                                <div><span style="color: var(--subtext); font-size: 11px; text-transform: uppercase;">Capital</span><div id="c-cap" style="color: #fff; font-size: 14px; font-weight: 700;">-</div></div>
+                                <div><span style="color: var(--subtext); font-size: 11px; text-transform: uppercase;">Region</span><div id="c-reg" style="color: #fff; font-size: 14px; font-weight: 700;">-</div></div>
+                                <div><span style="color: var(--subtext); font-size: 11px; text-transform: uppercase;">Population</span><div id="c-pop" style="color: #10b981; font-size: 14px; font-weight: 700;">-</div></div>
+                                <div><span style="color: var(--subtext); font-size: 11px; text-transform: uppercase;">Currencies</span><div id="c-curr" style="color: #f59e0b; font-size: 14px; font-weight: 700;">-</div></div>
+                            </div>
+                            <div style="margin-top: 15px;"><span style="color: var(--subtext); font-size: 11px; text-transform: uppercase;">Languages</span><div id="c-lang" style="color: #fff; font-size: 14px; font-weight: 700;">-</div></div>
+                        </div>
+
+                        <h4 style="color: #fff; margin: 0 0 12px 0; font-size: 15px; border-bottom: 1px solid var(--card-border); padding-bottom: 8px;">📖 History & Current Details</h4>
+                        <div id="c-wiki" style="font-size: 13px; color: #cbd5e1; line-height: 1.6; text-align: justify;">Select a country on the globe to analyze data.</div>
                     </div>
                 </div>
             </div>
@@ -6238,7 +6285,7 @@ HTML_DASHBOARD = """
             if (viewId === 'network') fetchNetworkStats();
             if (viewId === 'sos') loadSosStats();
             if (viewId === 'settings') loadWorkerTokens();
-
+            if (viewId === 'globe') setTimeout(initWorldGlobe, 300); // 🟢 Boot Globe when tab opens
         }
         
         async function fetchNetworkStats() {
@@ -9095,6 +9142,164 @@ HTML_DASHBOARD = """
                 alert("Debug Script Error: " + err.message);
             }
         }
+
+        // ======================================================================
+        // 🌍 3D WORLD GLOBE & GEOPOLITICAL API ENGINE
+        // ======================================================================
+        let myGlobe = null;
+        let globalGeoData = [];
+        let liveClockInterval = null;
+
+        async function initWorldGlobe() {
+            if (myGlobe) return; // Prevent duplicate instances
+            const container = document.getElementById('globe-viz');
+            
+            // Note: This URL points to standard International GeoJSON borders.
+            // If you require highly specific disputed borders (e.g. Survey of India official map boundaries including PoK/Aksai Chin), 
+            // you must replace this link with a custom self-hosted GeoJSON file mapped to your requirements.
+            const GEOJSON_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson';
+
+            try {
+                const res = await fetch(GEOJSON_URL);
+                const countries = await res.json();
+                globalGeoData = countries.features;
+
+                document.getElementById('globe-loading').style.display = 'none';
+
+                myGlobe = Globe()
+                    (container)
+                    .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+                    .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
+                    .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
+                    .lineHoverPrecision(0)
+                    .polygonsData(globalGeoData)
+                    .polygonAltitude(0.01)
+                    .polygonCapColor(() => 'rgba(56, 189, 248, 0.15)')
+                    .polygonSideColor(() => 'rgba(0, 0, 0, 0.4)')
+                    .polygonStrokeColor(() => '#38bdf8')
+                    .polygonLabel(({ properties: d }) => `
+                        <div style="background: rgba(0,0,0,0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--accent); color: white; font-family: 'Nunito', sans-serif; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
+                            <b style="font-size:14px; text-transform:uppercase; letter-spacing:1px;">${d.ADMIN}</b>
+                            <div style="font-size:10px; color:#94a3b8; margin-top:3px;">Click to Analyze Data</div>
+                        </div>
+                    `)
+                    .onPolygonHover(hoverD => myGlobe
+                        .polygonAltitude(d => d === hoverD ? 0.06 : 0.01)
+                        .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.7)' : 'rgba(56, 189, 248, 0.15)')
+                    )
+                    .onPolygonClick(({ properties: d }) => {
+                        fetchCountryAnalytics(d.ISO_A2, d.ADMIN);
+                    });
+
+                // Auto-Rotate
+                myGlobe.controls().autoRotate = true;
+                myGlobe.controls().autoRotateSpeed = 0.5;
+
+                // Make responsive
+                window.addEventListener('resize', () => {
+                    if (myGlobe) myGlobe.width(container.clientWidth).height(container.clientHeight);
+                });
+
+            } catch (err) {
+                console.error("Globe Boot Error:", err);
+                document.getElementById('globe-loading').innerText = "⚠️ Server connection to satellites failed.";
+            }
+        }
+
+        async function fetchCountryAnalytics(isoCode, countryName) {
+            document.getElementById('country-data-panel').style.display = 'block';
+            document.getElementById('c-name').innerText = "Scanning Data...";
+            document.getElementById('c-wiki').innerHTML = '<span style="color:var(--accent);">Fetching geopolitical & historical records...</span>';
+            
+            // Stop globe rotation while viewing
+            if (myGlobe) myGlobe.controls().autoRotate = false;
+
+            try {
+                // 1. Fetch Geopolitical Stats (RestCountries API)
+                // If standard ISO fails (like for Somaliland), fallback to name search
+                let res = await fetch(`https://restcountries.com/v3.1/alpha/${isoCode}`);
+                if (!res.ok) res = await fetch(`https://restcountries.com/v3.1/name/${countryName}?fullText=true`);
+                
+                const data = (await res.json())[0];
+                
+                document.getElementById('c-flag').src = data.flags.svg || data.flags.png;
+                document.getElementById('c-name').innerText = data.name.common;
+                document.getElementById('c-cap').innerText = data.capital ? data.capital[0] : 'N/A';
+                document.getElementById('c-reg').innerText = `${data.region} (${data.subregion || ''})`;
+                document.getElementById('c-pop').innerText = data.population.toLocaleString();
+                document.getElementById('c-lang').innerText = data.languages ? Object.values(data.languages).join(', ') : 'Unknown';
+                document.getElementById('c-curr').innerText = data.currencies ? Object.values(data.currencies).map(c => `${c.name} (${c.symbol})`).join(', ') : 'Unknown';
+
+                // 2. Compute Live Local Time
+                clearInterval(liveClockInterval);
+                if (data.timezones && data.timezones.length > 0) {
+                    const primaryTz = data.timezones[0]; // e.g. "UTC+05:30"
+                    updateLiveCountryTime(primaryTz);
+                    liveClockInterval = setInterval(() => updateLiveCountryTime(primaryTz), 1000);
+                } else {
+                    document.getElementById('c-time').innerText = "Time Unknown";
+                }
+
+                // 3. Fetch Wikipedia Summary & Why it is famous
+                const wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(data.name.common)}`);
+                if (wikiRes.ok) {
+                    const wikiData = await wikiRes.json();
+                    document.getElementById('c-wiki').innerHTML = `
+                        <p>${wikiData.extract}</p>
+                        <a href="${wikiData.content_urls.desktop.page}" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: bold; font-size: 11px; text-transform: uppercase; border: 1px solid var(--accent); padding: 5px 10px; border-radius: 6px; display: inline-block; margin-top: 10px;">Read Full Wikipedia Article</a>
+                    `;
+                } else {
+                    document.getElementById('c-wiki').innerText = "Detailed historical records currently unavailable.";
+                }
+
+            } catch (err) {
+                console.error("Analytics fetch failed:", err);
+                document.getElementById('c-name').innerText = countryName;
+                document.getElementById('c-wiki').innerText = "Failed to synchronize with global databases.";
+            }
+        }
+
+        function updateLiveCountryTime(tzString) {
+            let offsetHours = 0, offsetMins = 0;
+            if (tzString !== "UTC" && tzString !== "UTC+00:00") {
+                const sign = tzString.includes("-") ? -1 : 1;
+                const timePart = tzString.split(/[+-]/)[1];
+                if (timePart) {
+                    const parts = timePart.split(":");
+                    offsetHours = parseInt(parts[0]) * sign;
+                    offsetMins = parseInt(parts[1] || 0) * sign;
+                }
+            }
+            
+            const now = new Date();
+            const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+            const targetTime = new Date(utcTime + (3600000 * offsetHours) + (60000 * offsetMins));
+            
+            document.getElementById('c-time').innerText = targetTime.toLocaleTimeString('en-US', { 
+                hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: true 
+            });
+        }
+
+        function searchGlobeCountry() {
+            const query = document.getElementById('globe-search').value.toLowerCase().trim();
+            if(!query || globalGeoData.length === 0) return;
+            
+            const target = globalGeoData.find(c => 
+                c.properties.ADMIN.toLowerCase().includes(query) || 
+                c.properties.ISO_A2.toLowerCase() === query ||
+                c.properties.ISO_A3.toLowerCase() === query
+            );
+            
+            if (target) {
+                fetchCountryAnalytics(target.properties.ISO_A2, target.properties.ADMIN);
+                
+                // Optional: Attempt to center globe on clicked country if the GeoJSON has Lat/Lon tags
+                // Most standard GeoJSONs don't natively include center points, so we rely on the user visually spinning it.
+                if (myGlobe) myGlobe.controls().autoRotate = false;
+            } else {
+                alert("Country not found. Try entering the exact name or ISO code (e.g. IN, JP, US).");
+            }
+        }        
     </script>
 </body>
 </html>
