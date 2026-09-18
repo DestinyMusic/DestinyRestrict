@@ -9262,40 +9262,53 @@ HTML_DASHBOARD = """
         async function fetchCountryAnalytics(isoCode, countryName) {
             document.getElementById('country-data-panel').style.display = 'block';
             document.getElementById('c-name').innerText = "Scanning Data...";
-            document.getElementById('c-wiki').innerHTML = '<span style="color:var(--accent);">Fetching geopolitical & historical records...</span>';
             
-            // Stop globe rotation while viewing
+            // 🛠️ DEBUG START: Print network steps to the screen
+            const wikiDiv = document.getElementById('c-wiki');
+            wikiDiv.innerHTML = `<span style="color:#f59e0b; font-family:monospace; font-size: 11px;">
+                [1] Started fetch for: ${countryName} (ISO: ${isoCode})<br>
+            </span>`;
+            
             if (myGlobe) myGlobe.controls().autoRotate = false;
 
             let countryData = null;
 
             // 🟢 BLOCK 1: Fetch Core Demographic & Time Data
             try {
-                // If ISO_A2 is "-99" (missing in Natural Earth dataset), use the name fallback
                 let res;
+                let urlUsed = "";
+                
                 if (isoCode && isoCode !== "-99") {
-                    res = await fetch(`https://restcountries.com/v3.1/alpha/${isoCode}`);
+                    urlUsed = `https://restcountries.com/v3.1/alpha/${isoCode}`;
+                    wikiDiv.innerHTML += `<span style="color:#f59e0b; font-family:monospace; font-size: 11px;">[2] Requesting: ${urlUsed}...<br></span>`;
+                    res = await fetch(urlUsed);
                 }
                 
-                // Fallback to name search if ISO fails
                 if (!res || !res.ok) {
-                    res = await fetch(`https://restcountries.com/v3.1/name/${encodeURIComponent(countryName)}`);
+                    urlUsed = `https://restcountries.com/v3.1/name/${encodeURIComponent(countryName)}`;
+                    wikiDiv.innerHTML += `<span style="color:#f59e0b; font-family:monospace; font-size: 11px;">[3] Fallback Request: ${urlUsed}...<br></span>`;
+                    res = await fetch(urlUsed);
                 }
                 
-                if (!res.ok) throw new Error("RestCountries API returned " + res.status);
+                if (!res.ok) throw new Error(`HTTP Error ${res.status} from RestCountries`);
                 
+                wikiDiv.innerHTML += `<span style="color:#10b981; font-family:monospace; font-size: 11px;">[4] Response OK! Parsing JSON...<br></span>`;
                 const data = (await res.json())[0];
-                countryData = data; // Save for Wikipedia query
+                countryData = data; 
                 
-                document.getElementById('c-flag').src = data.flags.svg || data.flags.png || '';
-                document.getElementById('c-name').innerText = data.name.common || countryName;
+                document.getElementById('c-flag').src = data.flags?.svg || data.flags?.png || '';
+                document.getElementById('c-name').innerText = data.name?.common || countryName;
                 document.getElementById('c-cap').innerText = data.capital ? data.capital[0] : 'N/A';
                 document.getElementById('c-reg').innerText = `${data.region || ''} (${data.subregion || ''})`.replace(' ()', '');
                 document.getElementById('c-pop').innerText = data.population ? data.population.toLocaleString() : 'N/A';
                 document.getElementById('c-lang').innerText = data.languages ? Object.values(data.languages).join(', ') : 'Unknown';
                 document.getElementById('c-curr').innerText = data.currencies ? Object.values(data.currencies).map(c => `${c.name} (${c.symbol})`).join(', ') : 'Unknown';
 
-                // Compute Live Local Time
+                // Check if the missing math function is actually loaded
+                if (typeof updateLiveCountryTime !== "function") {
+                    throw new Error("CRITICAL: updateLiveCountryTime() function is STILL missing! Browser is using cached HTML.");
+                }
+
                 clearInterval(liveClockInterval);
                 if (data.timezones && data.timezones.length > 0) {
                     const primaryTz = data.timezones[0];
@@ -9310,34 +9323,39 @@ HTML_DASHBOARD = """
                 document.getElementById('c-name').innerText = countryName;
                 document.getElementById('c-cap').innerText = "Error";
                 document.getElementById('c-pop').innerText = "Error";
-                document.getElementById('c-wiki').innerHTML = "Failed to load demographic data.";
-                return; // 🔴 Stop here if the main demographics fail
+                
+                // 🚨 FORCE THE EXACT ERROR TO PRINT ON SCREEN
+                wikiDiv.innerHTML += `
+                    <br><div style="background: rgba(239,68,68,0.2); border: 1px solid #ef4444; padding: 10px; border-radius: 8px;">
+                        <span style="color:#ef4444; font-weight:bold; font-size:14px;">🚨 JAVASCRIPT CRASH DETECTED</span><br><br>
+                        <span style="color:#fff; font-family:monospace; font-size:12px;">${err.message}</span>
+                    </div>
+                `;
+                return; // Stop here if it fails
             }
 
-            // 🟢 BLOCK 2: Fetch Wikipedia (Isolated so it doesn't break Block 1)
+            // 🟢 BLOCK 2: Fetch Wikipedia 
             try {
-                // Use the official common name if we found it, otherwise use the map's default name
+                wikiDiv.innerHTML = '<span style="color:var(--accent);">Fetching Wikipedia history...</span>';
                 const wikiQuery = countryData ? countryData.name.common : countryName;
                 const wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(wikiQuery)}`);
                 
                 if (wikiRes.ok) {
                     const wikiData = await wikiRes.json();
                     if (wikiData.type !== "disambiguation" && wikiData.extract) {
-                        // Ensure we have a valid URL fallback
                         const pageUrl = (wikiData.content_urls && wikiData.content_urls.desktop) ? wikiData.content_urls.desktop.page : `https://en.wikipedia.org/wiki/${encodeURIComponent(wikiQuery)}`;
-                        document.getElementById('c-wiki').innerHTML = `
+                        wikiDiv.innerHTML = `
                             <p>${wikiData.extract}</p>
                             <a href="${pageUrl}" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: bold; font-size: 11px; text-transform: uppercase; border: 1px solid var(--accent); padding: 5px 10px; border-radius: 6px; display: inline-block; margin-top: 10px;">Read Full Wikipedia Article</a>
                         `;
                     } else {
-                        document.getElementById('c-wiki').innerText = "Wikipedia summary requires disambiguation.";
+                        wikiDiv.innerText = "Wikipedia summary requires disambiguation.";
                     }
                 } else {
-                    document.getElementById('c-wiki').innerText = "Detailed Wikipedia historical records currently unavailable.";
+                    wikiDiv.innerText = "Detailed Wikipedia historical records currently unavailable.";
                 }
             } catch (err) {
-                console.error("Wiki API failed:", err);
-                document.getElementById('c-wiki').innerText = "Detailed Wikipedia historical records currently unavailable.";
+                wikiDiv.innerText = "Detailed Wikipedia historical records currently unavailable.";
             }
         }
     </script>
