@@ -10748,11 +10748,25 @@ async def _api_stream_handler(request):
         else:
             cmd += ["-map", "0:a:0?"]
         cmd += ["-vn", "-sn"]
-        if copy_audio:
-            cmd += ["-c:a", "copy"]
+        
+        # 🟢 FIX: Never use MP4 container for audio-only streams. Browsers wait for video frames and hang.
+        # Also, explicitly map compatible codecs to their native containers to prevent FFmpeg crashes.
+        if copy_audio and audio_codec == "mp3":
+            cmd += ["-c:a", "copy", "-f", "mp3", "pipe:1"]
+            mime_type = "audio/mpeg"
+        elif copy_audio and audio_codec in {"opus", "vorbis", "ogg"}:
+            cmd += ["-c:a", "copy", "-f", "ogg", "pipe:1"]
+            mime_type = "audio/ogg"
+        elif copy_audio and audio_codec == "flac":
+            cmd += ["-c:a", "copy", "-f", "flac", "pipe:1"]
+            mime_type = "audio/flac"
+        elif copy_audio and audio_codec == "aac":
+            cmd += ["-c:a", "copy", "-f", "adts", "pipe:1"]
+            mime_type = "audio/aac"
         else:
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
-        cmd += ["-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+            # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
+            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-f", "adts", "pipe:1"]
+            mime_type = "audio/aac"
     else:
         cmd += ["-map", "0:v:0?"]
         if audio_idx is not None and str(audio_idx).strip():
@@ -10796,7 +10810,7 @@ async def _api_stream_handler(request):
     is_apple = ("safari" in user_agent and "chrome" not in user_agent and "android" not in user_agent) or "applecoremedia" in user_agent or "macintosh" in user_agent or "iphone" in user_agent or "ipad" in user_agent
 
     stream_headers = {
-        "Content-Type": "audio/mp4" if is_audio else "video/mp4",
+        "Content-Type": mime_type if is_audio else "video/mp4",
         "Access-Control-Allow-Origin": "*",
         "Cache-Control": "no-store",
     }
