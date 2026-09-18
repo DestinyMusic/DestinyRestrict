@@ -7956,18 +7956,30 @@ HTML_DASHBOARD = """
                 quality,
                 transcode: playerRequiresTranscode ? '1' : '0'
             });
-            if (window.forceX264Flag) params.set('force_x264', '1'); // 🟢 FIX: Tell Backend to Transcode HEVC
+            if (window.forceX264Flag) params.set('force_x264', '1'); 
             if (audioIdx !== '') params.set('audio_idx', audioIdx);
             if (audioCodec) params.set('audio_codec', audioCodec);
             if (Number.isFinite(startTime) && startTime > 0) params.set('start', String(startTime));
+            
+            // 🟢 INJECT TRACK INDEX FOR ZIP PLAYLISTS
+            if (window.globalPlaylist && window.globalPlaylist.length > 0) {
+                const track = window.globalPlaylist[window.currentPlayIndex];
+                if (track) params.set('zip_idx', String(track.original_index));
+            }
             return `/api/stream?${params.toString()}`;
         }
 
         function buildNativeUrl() {
-            if (playerSourceKind === 'tg') {
-                return `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`;
+            let base = playerSourceKind === 'tg' 
+                ? `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`
+                : `/api/direct_stream?user_id=${encodeURIComponent(currentUser)}&url=${encodeURIComponent(activeMediaLink)}`;
+                
+            // 🟢 INJECT TRACK INDEX FOR ZIP PLAYLISTS
+            if (window.globalPlaylist && window.globalPlaylist.length > 0) {
+                const track = window.globalPlaylist[window.currentPlayIndex];
+                if (track) base += `&zip_idx=${track.original_index}`;
             }
-            return `/api/direct_stream?user_id=${encodeURIComponent(currentUser)}&url=${encodeURIComponent(activeMediaLink)}`;
+            return base;
         }
 
         function openExternalPlayer(appType) {
@@ -8175,8 +8187,8 @@ HTML_DASHBOARD = """
         }
 
         async function loadTheaterMedia() {
-            window.forceX264Flag = false; // 🟢 Reset transcoder flag
-            window.errorRetryCount = 0;   // 🟢 Reset error tracker
+            window.forceX264Flag = false; 
+            window.errorRetryCount = 0;   
             const input = document.getElementById('theater-stream-url');
             const link = input?.value.trim() || '';
             if (!link) return alert('Provide a valid Telegram or HTTP media link!');
@@ -8200,62 +8212,91 @@ HTML_DASHBOARD = """
             sSelect.innerHTML = ''; addOption(sSelect, 'off', 'Off');
 
             try {
-                const nativeUrl = buildNativeUrl();
-                playerNativeUrl = nativeUrl;
-
-                // Start the native byte-range request immediately instead of waiting
-                // for ffprobe. This removes probe latency from the critical playback path.
-                // The watchdog/probe can still redirect to FFmpeg for incompatible media.
-                const probePromise = fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' })
-                    .then(r => r.json());
-
+                // 🟢 FETCH PROBE & PLAYLIST SIMULTANEOUSLY
+                const probePromise = fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' }).then(r => r.json());
+                const playlistPromise = fetch(`/api/playlist?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' }).then(r => r.json()).catch(() => ({playlist:[]}));
+                
                 playerDirectCompatible = true;
                 playerRequiresTranscode = false;
-                globalTargetTime = 0; // 🟢 Reset for new media
-                if (playerSourceKind === 'tg' || /\.(?:mp4|m4v|webm|mp3|m4a|aac|ogg|wav|flac|opus)(?:\?|$)/i.test(link) || /(?:drive\.google\.com\/file\/|gofile\.io\/d\/|buzzheavier\.com\/)/i.test(link)) {
-                    armPlaybackWatchdog();
-                    await setVideoSource(nativeUrl, 0, true);
-                }
-
-                const probeRes = await probePromise;
-                const pdata = probeRes;
+                globalTargetTime = 0; 
+                
+                const [pdata, plistData] = await Promise.all([probePromise, playlistPromise]);
                 if (pdata.status !== 'success') throw new Error(pdata.message || 'Media probe failed');
 
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
                 playerTotalDuration = Number(pdata.duration) || 0;
-                if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
+                
+                // 🟢 PLAYLIST INITIALIZATION
+                window.globalPlaylist = plistData.playlist || [];
+                window.currentPlayIndex = 0;
 
-                // 🟢 NEW: RENDER ALBUM COVER ART
-                const vpNode = document.getElementById('cinema-viewport');
-                if (vpNode) {
-                    if (pdata.has_cover) {
-                        const coverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
-                        let coverImg = document.getElementById('album-cover-art');
-                        if (!coverImg) {
-                            coverImg = document.createElement('img');
-                            coverImg.id = 'album-cover-art';
-                            coverImg.style.position = 'absolute';
-                            coverImg.style.top = '50%';
-                            coverImg.style.left = '50%';
-                            coverImg.style.transform = 'translate(-50%, -50%)';
-                            coverImg.style.maxHeight = '70%';
-                            coverImg.style.maxWidth = '80%';
-                            coverImg.style.objectFit = 'contain';
-                            coverImg.style.borderRadius = '16px';
-                            coverImg.style.boxShadow = '0 20px 50px rgba(0,0,0,0.9)';
-                            coverImg.style.zIndex = '1';
-                            vpNode.appendChild(coverImg);
+                // 🟢 BUILD ALBUM ART & TRACK INFO GUI
+                if (vp) {
+                    let coverContainer = document.getElementById('album-cover-container');
+                    if (!coverContainer) {
+                        coverContainer = document.createElement('div');
+                        coverContainer.id = 'album-cover-container';
+                        coverContainer.style.position = 'absolute';
+                        coverContainer.style.top = '45%';
+                        coverContainer.style.left = '50%';
+                        coverContainer.style.transform = 'translate(-50%, -50%)';
+                        coverContainer.style.display = 'flex';
+                        coverContainer.style.flexDirection = 'column';
+                        coverContainer.style.alignItems = 'center';
+                        coverContainer.style.zIndex = '1';
+                        coverContainer.style.width = '85%';
+                        
+                        const coverImg = document.createElement('img');
+                        coverImg.id = 'album-cover-art';
+                        coverImg.style.maxHeight = '45vh';
+                        coverImg.style.maxWidth = '100%';
+                        coverImg.style.objectFit = 'contain';
+                        coverImg.style.borderRadius = '20px';
+                        coverImg.style.boxShadow = '0 30px 60px rgba(0,0,0,0.9)';
+                        
+                        const trackInfo = document.createElement('div');
+                        trackInfo.id = 'album-track-info';
+                        trackInfo.style.marginTop = '25px';
+                        trackInfo.style.color = '#fff';
+                        trackInfo.style.fontSize = '20px';
+                        trackInfo.style.fontWeight = '800';
+                        trackInfo.style.textAlign = 'center';
+                        trackInfo.style.textShadow = '0 5px 15px rgba(0,0,0,0.9)';
+                        
+                        coverContainer.appendChild(coverImg);
+                        coverContainer.appendChild(trackInfo);
+                        vp.appendChild(coverContainer);
+                    }
+                    
+                    const coverImg = document.getElementById('album-cover-art');
+                    const trackInfo = document.getElementById('album-track-info');
+                    
+                    function updateAlbumText() {
+                        if (window.globalPlaylist && window.globalPlaylist.length > 0) {
+                            const track = window.globalPlaylist[window.currentPlayIndex];
+                            trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">TRACK ${window.currentPlayIndex + 1} OF ${window.globalPlaylist.length}</span><br>${track.display_name}`;
+                            if (titleEl) titleEl.innerText = `[${window.currentPlayIndex + 1}/${window.globalPlaylist.length}] ${track.display_name}`;
+                        } else {
+                            trackInfo.innerHTML = '';
+                            if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
                         }
-                        coverImg.src = coverUrl;
-                        coverImg.style.display = 'block';
-                        // Add Cinematic Blurred Background
-                        vpNode.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${coverUrl}')`;
-                        vpNode.style.backgroundSize = 'cover';
-                        vpNode.style.backgroundPosition = 'center';
+                    }
+                    window.updateAlbumText = updateAlbumText;
+                    updateAlbumText();
+                    
+                    if (pdata.has_cover || window.globalPlaylist.length > 0) {
+                        coverContainer.style.display = 'flex';
+                        coverImg.src = pdata.has_cover ? `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}` : 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
+                        if (pdata.has_cover) {
+                            vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${coverImg.src}')`;
+                            vp.style.backgroundSize = 'cover';
+                            vp.style.backgroundPosition = 'center';
+                        } else {
+                            vp.style.backgroundImage = 'none';
+                        }
                     } else {
-                        const coverImg = document.getElementById('album-cover-art');
-                        if (coverImg) coverImg.style.display = 'none';
-                        vpNode.style.backgroundImage = 'none';
+                        coverContainer.style.display = 'none';
+                        vp.style.backgroundImage = 'none';
                     }
                 }
 
@@ -8288,26 +8329,21 @@ HTML_DASHBOARD = """
 
                 playerRequiresTranscode = !playerDirectCompatible;
                 playerTimelineOffset = 0;
+
+                const nativeUrl = buildNativeUrl();
+                playerNativeUrl = nativeUrl;
                 const ffmpegUrl = buildStreamUrl(0);
 
                 if (playerDirectCompatible) {
-                    console.log('⚡ Route: native/range proxy', playerSourceKind);
                     disarmPlaybackWatchdog();
-                    // If optimistic native playback already started, keep it.
-                    // Otherwise this is the fallback native load.
-                    const videoNow = document.getElementById('hidden-video');
-                    if (!videoNow || videoNow.src !== window.location.origin + nativeUrl) {
-                        await setVideoSource(nativeUrl, 0, true);
-                    }
+                    await setVideoSource(nativeUrl, 0, true);
                 } else {
-                    console.log('🛡️ Route: FFmpeg compatibility pipeline');
                     await setVideoSource(ffmpegUrl, 0, true);
                 }
 
                 if (!gl) initWebGL();
                 wakeHUD();
                 
-                // 🟢 Re-render Glass Dropdowns so the new Audio/Sub tracks appear beautifully!
                 setTimeout(initCustomSelects, 50);
             } catch (err) {
                 console.error('Media load failed:', err);
@@ -8491,10 +8527,26 @@ HTML_DASHBOARD = """
 
             vidElem.addEventListener('ended', async () => {
                 wakeHUD();
+                
+                // 🟢 PLAYLIST AUTO-NEXT LOGIC
+                if (window.globalPlaylist && window.globalPlaylist.length > 0 && window.currentPlayIndex < window.globalPlaylist.length - 1) {
+                    window.currentPlayIndex++;
+                    if (window.updateAlbumText) window.updateAlbumText();
+                    
+                    console.log("[PLAYLIST] Playing Next Track...");
+                    playerTimelineOffset = 0;
+                    isTranscodeSeeking = false;
+                    
+                    // Re-calculate the URL for the next track index
+                    const nextUrl = playerDirectCompatible ? buildNativeUrl() : buildStreamUrl(0);
+                    try { await setVideoSource(nextUrl, 0, true); } catch (_) {}
+                    return;
+                }
+
+                // Normal Stall/Reconnect Logic for single files
                 if (playerRequiresTranscode && playerTotalDuration > 0 && globalTargetTime < playerTotalDuration - 5) {
                     console.log("[DEBUG] Stream ended prematurely. Reconnecting...");
                     
-                    // 🟢 FIX: Prevent endless loop if video actually failed!
                     if (window.endedRetryCount > 3) {
                         const titleEl = document.getElementById('cinema-title');
                         if (titleEl) titleEl.innerText = '⚠️ Stream interrupted too many times.';
@@ -10052,6 +10104,7 @@ async def _api_direct_stream_handler(request):
     mime_type = None
 
     # [STORED ZIP RESOLUTION] - Maps HTTP bytes to absolute payload boundaries
+    zip_idx = request.query.get("zip_idx", "")
     if is_zip:
         try:
             async with session.head(resolved, allow_redirects=True) as h_resp:
@@ -10063,11 +10116,19 @@ async def _api_direct_stream_handler(request):
                     async with session.get(resolved, headers=headers) as r:
                         return await r.read()
                         
-                entry = await resolve_zip_entry(zip_read_http, raw_size)
-                if entry and entry["method"] == 0:
-                    virtual_size = entry["size"]
-                    virtual_data_offset = entry["data_offset"]
-                    mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
+                playlist = await get_zip_playlist(zip_read_http, raw_size)
+                if playlist:
+                    target_entry = playlist[0]
+                    if zip_idx.isdigit():
+                        for track in playlist:
+                            if track["original_index"] == int(zip_idx):
+                                target_entry = track
+                                break
+                    entry = await resolve_specific_zip_entry(zip_read_http, target_entry)
+                    if entry:
+                        virtual_size = entry["size"]
+                        virtual_data_offset = entry["data_offset"]
+                        mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
         except Exception as e:
             logger.warning(f"Direct ZIP resolution failed: {e}")
 
@@ -11229,6 +11290,7 @@ async def _api_tg_stream_handler(request):
 
         virtual_size = global_offset
         virtual_data_offset = 0
+        zip_idx = request.query.get("zip_idx", "")
         is_zip = filename.endswith(".zip") or ".zip." in filename
         if is_zip:
             async def zip_read(off, length):
@@ -11239,11 +11301,20 @@ async def _api_tg_stream_handler(request):
                         break
                 return bytes(buf[:length])
 
-            entry = await resolve_zip_entry(zip_read, virtual_size)
-            if entry and entry["method"] == 0:
-                virtual_size = entry["size"]
-                virtual_data_offset = entry["data_offset"]
-                mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
+            playlist = await get_zip_playlist(zip_read, virtual_size)
+            if playlist:
+                target_entry = playlist[0]
+                if zip_idx.isdigit():
+                    for track in playlist:
+                        if track["original_index"] == int(zip_idx):
+                            target_entry = track
+                            break
+                entry = await resolve_specific_zip_entry(zip_read, target_entry)
+                if entry:
+                    virtual_size = entry["size"]
+                    virtual_data_offset = entry["data_offset"]
+                    mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
+                    filename = entry["name"]
 
         if virtual_size <= 0:
             return web.Response(status=502, text="Invalid virtual media size")
@@ -11479,39 +11550,58 @@ def parse_local_header(buf):
     if uncomp == 0xFFFFFFFF or comp == 0xFFFFFFFF: uncomp, comp, _ = _zip64_sizes(extra, uncomp, comp)
     return {"method": method, "name": name, "data_offset": 30 + name_len + extra_len, "size": uncomp, "comp_size": comp, "has_descriptor": bool(flag & 0x08)}
 
-def _parse_central_directory(tail, tail_base, zip_size):
+def _parse_central_directory_full(tail, tail_base, zip_size):
     eocd = tail.rfind(b"PK\x05\x06")
-    if eocd < 0: return None
+    if eocd < 0: return []
     cd_offset = _u32(tail, eocd + 16)
+    cd_records = _u16(tail, eocd + 10)
     z64loc = tail.rfind(b"PK\x06\x07")
     if cd_offset == 0xFFFFFFFF and z64loc >= 0:
         rel = _u64(tail, z64loc + 8) - tail_base
-        if 0 <= rel < len(tail) and tail[rel:rel + 4] == b"PK\x06\x06": cd_offset = _u64(tail, rel + 48)
+        if 0 <= rel < len(tail) and tail[rel:rel + 4] == b"PK\x06\x06": 
+            cd_offset = _u64(tail, rel + 48)
+            cd_records = _u64(tail, rel + 32)
     rel_cd = cd_offset - tail_base
-    if rel_cd < 0 or rel_cd + 46 > len(tail) or tail[rel_cd:rel_cd + 4] != b"PK\x01\x02": return None
-    b, o = tail, rel_cd
-    method, comp, uncomp = _u16(b, o + 10), _u32(b, o + 20), _u32(b, o + 24)
-    name_len, extra_len, local_offset = _u16(b, o + 28), _u16(b, o + 30), _u32(b, o + 42)
-    name = b[o + 46:o + 46 + name_len].decode("utf-8", "ignore")
-    extra = b[o + 46 + name_len:o + 46 + name_len + extra_len]
-    if uncomp == 0xFFFFFFFF or comp == 0xFFFFFFFF or local_offset == 0xFFFFFFFF: uncomp, comp, local_offset = _zip64_sizes(extra, uncomp, comp, need_offset=True, offset=local_offset)
-    return {"method": method, "name": name, "size": uncomp, "comp_size": comp, "local_offset": local_offset}
+    if rel_cd < 0 or rel_cd >= len(tail): return []
+    
+    entries = []
+    o = rel_cd
+    for _ in range(cd_records):
+        if o + 46 > len(tail) or tail[o:o+4] != b"PK\x01\x02": break
+        method, comp, uncomp = _u16(tail, o + 10), _u32(tail, o + 20), _u32(tail, o + 24)
+        name_len, extra_len, comment_len = _u16(tail, o + 28), _u16(tail, o + 30), _u16(tail, o + 32)
+        local_offset = _u32(tail, o + 42)
+        name = tail[o + 46:o + 46 + name_len].decode("utf-8", "ignore")
+        extra = tail[o + 46 + name_len:o + 46 + name_len + extra_len]
+        if uncomp == 0xFFFFFFFF or comp == 0xFFFFFFFF or local_offset == 0xFFFFFFFF: 
+            uncomp, comp, local_offset = _zip64_sizes(extra, uncomp, comp, need_offset=True, offset=local_offset)
+        
+        entries.append({"method": method, "name": name, "size": uncomp, "comp_size": comp, "local_offset": local_offset})
+        o += 46 + name_len + extra_len + comment_len
+    return entries
 
-async def resolve_zip_entry(read_fn, zip_size):
+async def get_zip_playlist(read_fn, zip_size):
     try:
-        head = await read_fn(0, min(65536, zip_size))
-        lh = parse_local_header(head)
-        if lh and lh["method"] == 0 and lh["size"] > 0 and not lh["has_descriptor"] and lh["data_offset"] + lh["size"] <= zip_size: return lh
         tail_len = min(262144, zip_size)
         tail = await read_fn(zip_size - tail_len, tail_len)
-        cd = _parse_central_directory(tail, zip_size - tail_len, zip_size)
-        if not cd or cd["method"] != 0 or cd["size"] <= 0: return lh
-        lh_buf = await read_fn(cd["local_offset"], min(4096, zip_size - cd["local_offset"]))
-        lh2 = parse_local_header(lh_buf)
-        if not lh2: return None
-        data_offset = cd["local_offset"] + lh2["data_offset"]
-        if data_offset + cd["size"] > zip_size: return None
-        return {"method": 0, "name": cd["name"], "data_offset": data_offset, "size": cd["size"], "comp_size": cd["comp_size"], "has_descriptor": False}
+        entries = _parse_central_directory_full(tail, zip_size - tail_len, zip_size)
+        valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
+        playlist = []
+        for idx, e in enumerate(entries):
+            if e["name"].lower().endswith(valid_exts) and e["method"] == 0:
+                e["original_index"] = idx
+                e["display_name"] = e["name"].split("/")[-1].split("\\")[-1]
+                playlist.append(e)
+        return playlist
+    except Exception: return []
+
+async def resolve_specific_zip_entry(read_fn, entry):
+    try:
+        lh_buf = await read_fn(entry["local_offset"], min(4096, entry["size"] + 4096))
+        lh = parse_local_header(lh_buf)
+        if not lh: return None
+        data_offset = entry["local_offset"] + lh["data_offset"]
+        return {"method": 0, "name": entry["name"], "data_offset": data_offset, "size": entry["size"], "comp_size": entry["comp_size"]}
     except Exception: return None
 
 CLIENT_MSG_CACHE = {}
@@ -11767,7 +11857,83 @@ async def _api_bg_proxy(request):
                 return web.Response(body=body, headers={"Content-Type": "image/jpeg", "Cache-Control": "public, max-age=8640000"})
     except Exception:
         return web.Response(status=500)
-        
+
+async def _api_playlist_handler(request):
+    """Extracts playlist array from ZIPs and Split ZIPs for continuous album playback."""
+    try: user_id = int(request.query.get("user_id", 0))
+    except: user_id = 0
+    link = request.query.get("link", "").strip()
+    if not link: return web.json_response({"status": "error"})
+    
+    is_tg = _is_tg_link(link)
+    playlist = []
+    try:
+        if is_tg:
+            parsed = _parse_source_link(link)
+            chat_id = parsed.get("chat_id")
+            msg_id = parsed.get("msg_id")
+            pool, _ = await _get_working_tg_pool(user_id, chat_id, msg_id)
+            primary_client = pool[0]
+            
+            msg = await get_client_msg(primary_client, chat_id, msg_id)
+            media = msg.document or msg.video or msg.audio
+            filename = str(getattr(media, "file_name", "")).lower()
+            
+            is_zip = filename.endswith(".zip") or ".zip." in filename
+            if not is_zip: return web.json_response({"status": "success", "playlist": []})
+            
+            parts_map = []
+            global_offset = 0
+            match = re.search(r'\.(\d{2,3})$', filename)
+            if match and int(match.group(1)) == 1:
+                current_id = msg_id
+                while True:
+                    try:
+                        m = await get_client_msg(primary_client, chat_id, current_id)
+                        doc = m.document or m.video or m.audio
+                        if not doc: break
+                        psz = int(doc.file_size or 0)
+                        parts_map.append({"msg_id": m.id, "start": global_offset, "end": global_offset + psz, "size": psz})
+                        global_offset += psz
+                        current_id += 1
+                        next_m = await get_client_msg(primary_client, chat_id, current_id)
+                        next_doc = next_m.document or next_m.video or next_m.audio
+                        if not next_doc or not re.search(r'\.\d{2,3}$', next_doc.file_name or ""): break
+                    except Exception: break
+            else:
+                part_size = int(getattr(media, "file_size", 0) or 0)
+                parts_map.append({"msg_id": msg_id, "start": 0, "end": part_size, "size": part_size})
+                global_offset = part_size
+                
+            async def zip_read_tg(off, length):
+                buf = bytearray()
+                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length, concurrency=6):
+                    buf.extend(chunk)
+                    if len(buf) >= length: break
+                return bytes(buf[:length])
+                
+            playlist = await get_zip_playlist(zip_read_tg, global_offset)
+        else:
+            actual_url = await resolve_direct_link(link)
+            filename = _guess_filename_from_url(actual_url).lower()
+            is_zip = filename.endswith(".zip") or ".zip." in filename
+            if not is_zip: return web.json_response({"status": "success", "playlist": []})
+            
+            session = await _get_direct_http_session()
+            async with session.head(actual_url, allow_redirects=True) as h_resp:
+                raw_size = int(h_resp.headers.get("Content-Length", 0))
+                
+            async def zip_read_http(off, length):
+                headers = {"Range": f"bytes={off}-{off+length-1}", "User-Agent": "Mozilla/5.0"}
+                async with session.get(actual_url, headers=headers) as r:
+                    return await r.read()
+                    
+            playlist = await get_zip_playlist(zip_read_http, raw_size)
+            
+        return web.json_response({"status": "success", "playlist": playlist})
+    except Exception as e:
+        return web.json_response({"status": "error", "message": str(e)})
+                
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -11809,6 +11975,8 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_post("/api/mediainfo", _api_mediainfo_web_handler)
     app_web.router.add_get("/api/settings/tokens", _api_get_worker_tokens)
     app_web.router.add_post("/api/settings/tokens", _api_save_worker_tokens)
+    app_web.router.add_get("/api/playlist", _api_playlist_handler) # 🟢 ADD THIS LINE
+    app_web.router.add_get("/api/stream", _api_stream_handler)        
     
     # 🟢 ADD THIS NEW ROUTE FOR THE STOP BUTTON
     async def _api_kill_stream(request):
