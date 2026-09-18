@@ -9154,7 +9154,8 @@ HTML_DASHBOARD = """
             if (myGlobe) return; 
             const container = document.getElementById('globe-viz');
             
-            // Keep the 50m High-Res dataset so Mauritius and Andaman stay!
+            // 🟢 UPGRADE 1: 50m High-Resolution Dataset!
+            // This includes Mauritius, Andaman, Maldives, Seychelles, and tiny borders.
             const GEOJSON_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson';
 
             try {
@@ -9168,39 +9169,33 @@ HTML_DASHBOARD = """
                     (container)
                     .width(container.clientWidth)
                     .height(container.clientHeight)
-                    // 🚀 PERFORMANCE FIX 1: Removed bumpImageUrl to stop heavy GPU shadow calculations
+                    // 🟢 UPGRADE 2: High-Res Satellite Topography (Shows Mountains, Rivers, Oceans, Deserts)
                     .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
+                    .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
                     .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
                     .lineHoverPrecision(0)
                     .polygonsData(globalGeoData)
-                    // 🚀 PERFORMANCE FIX 2: Flatten borders so the GPU doesn't draw millions of tiny 3D walls
-                    .polygonAltitude(0.001)
-                    .polygonCapColor(() => 'rgba(56, 189, 248, 0.15)')
-                    .polygonSideColor(() => 'transparent') 
-                    .polygonStrokeColor(() => 'rgba(56, 189, 248, 0.8)')
-                    // 🚀 PERFORMANCE FIX 3: Disable tweening animations for polygons to save RAM
-                    .polygonsTransitionDuration(0)
+                    .polygonAltitude(0.01)
+                    .polygonCapColor(() => 'rgba(56, 189, 248, 0.1)') // Made slightly more transparent so you can see the terrain underneath!
+                    .polygonSideColor(() => 'rgba(0, 0, 0, 0.5)')
+                    .polygonStrokeColor(() => '#38bdf8')
                     .polygonLabel(({ properties: d }) => `
                         <div style="background: rgba(0,0,0,0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--accent); color: white; font-family: 'Nunito', sans-serif; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
                             <b style="font-size:14px; text-transform:uppercase; letter-spacing:1px;">${d.ADMIN}</b>
-                            <div style="font-size:10px; color:#94a3b8; margin-top:3px;">Tap to Analyze</div>
+                            <div style="font-size:10px; color:#94a3b8; margin-top:3px;">Click to Analyze</div>
                         </div>
                     `)
-                    // 🚀 PERFORMANCE FIX 4: Only change color on touch, DO NOT change altitude (geometry rebuilds cause severe drag lag)
                     .onPolygonHover(hoverD => myGlobe
-                        .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.6)' : 'rgba(56, 189, 248, 0.15)')
+                        .polygonAltitude(d => d === hoverD ? 0.06 : 0.01)
+                        .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.6)' : 'rgba(56, 189, 248, 0.1)')
                     )
                     .onPolygonClick(({ properties: d }) => {
                         fetchCountryAnalytics(d.ISO_A2, d.ADMIN);
                     });
 
-                // Auto-Rotate & Controls
+                // Auto-Rotate
                 myGlobe.controls().autoRotate = true;
                 myGlobe.controls().autoRotateSpeed = 0.5;
-                
-                // 🚀 PERFORMANCE FIX 5: Add inertia damping for buttery smooth mobile swiping
-                myGlobe.controls().enableDamping = true;
-                myGlobe.controls().dampingFactor = 0.05;
 
                 // Responsive
                 window.addEventListener('resize', () => {
