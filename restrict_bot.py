@@ -8149,6 +8149,12 @@ HTML_DASHBOARD = """
             if (titleEl) titleEl.innerText = 'No Media Loaded';
             if (btn) { btn.innerText = 'Load & Play'; btn.disabled = false; }
             
+            // 🟢 Clear Cover Art
+            const vpNode = document.getElementById('cinema-viewport');
+            if (vpNode) vpNode.style.backgroundImage = 'none';
+            const coverImg = document.getElementById('album-cover-art');
+            if (coverImg) coverImg.style.display = 'none';
+            
             // Clear the 3D WebGL projection surface
             if (typeof gl !== 'undefined' && gl) {
                 try {
@@ -8218,6 +8224,40 @@ HTML_DASHBOARD = """
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
                 playerTotalDuration = Number(pdata.duration) || 0;
                 if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
+
+                // 🟢 NEW: RENDER ALBUM COVER ART
+                const vpNode = document.getElementById('cinema-viewport');
+                if (vpNode) {
+                    if (pdata.has_cover) {
+                        const coverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
+                        let coverImg = document.getElementById('album-cover-art');
+                        if (!coverImg) {
+                            coverImg = document.createElement('img');
+                            coverImg.id = 'album-cover-art';
+                            coverImg.style.position = 'absolute';
+                            coverImg.style.top = '50%';
+                            coverImg.style.left = '50%';
+                            coverImg.style.transform = 'translate(-50%, -50%)';
+                            coverImg.style.maxHeight = '70%';
+                            coverImg.style.maxWidth = '80%';
+                            coverImg.style.objectFit = 'contain';
+                            coverImg.style.borderRadius = '16px';
+                            coverImg.style.boxShadow = '0 20px 50px rgba(0,0,0,0.9)';
+                            coverImg.style.zIndex = '1';
+                            vpNode.appendChild(coverImg);
+                        }
+                        coverImg.src = coverUrl;
+                        coverImg.style.display = 'block';
+                        // Add Cinematic Blurred Background
+                        vpNode.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${coverUrl}')`;
+                        vpNode.style.backgroundSize = 'cover';
+                        vpNode.style.backgroundPosition = 'center';
+                    } else {
+                        const coverImg = document.getElementById('album-cover-art');
+                        if (coverImg) coverImg.style.display = 'none';
+                        vpNode.style.backgroundImage = 'none';
+                    }
+                }
 
                 qSelect.innerHTML = '';
                 (pdata.qualities?.length ? pdata.qualities : ['Original']).forEach(q => addOption(qSelect, q, q));
@@ -10511,7 +10551,9 @@ async def _api_media_probe_handler(request):
             if duration_val <= 0 and tg_duration > 0:
                 duration_val = tg_duration
 
-            videos = [s for s in streams if s.get("codec_type") == "video"]
+            # 🟢 FIX: Separate Video streams from Cover Art streams!
+            videos = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
+            covers = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") in {"mjpeg", "png", "bmp", "webp"}]
             audios = [s for s in streams if s.get("codec_type") == "audio"]
             subs = [s for s in streams if s.get("codec_type") == "subtitle"]
             filename_lower = str(real_file_name).lower()
@@ -10580,6 +10622,7 @@ async def _api_media_probe_handler(request):
                 "mime_type": mime_type,
                 "requires_transcode": not browser_compatible,
                 "browser_compatible": browser_compatible,
+                "has_cover": len(covers) > 0, # 🟢 NEW: Send flag to Javascript player
                 "video_codec": video_codec,
                 "audio_codec": audio_codec,
                 "video_width": int(videos[0].get("width") or 0) if videos else 0,
@@ -10600,6 +10643,49 @@ async def _api_media_probe_handler(request):
             logger.exception("Media probe failed")
             return web.json_response({"status": "error", "message": str(exc)}, status=502)
 
+async def _api_cover_handler(request):
+    """Extracts embedded Album Art/Cover Art from audio files on the fly."""
+    try:
+        user_id = int(request.query.get("user_id", 0))
+    except:
+        user_id = 0
+    link = request.query.get("link", "").strip()
+    if not link:
+        return web.Response(status=400, text="No link provided")
+
+    is_tg = _is_tg_link(link)
+    actual_url = link
+
+    try:
+        if is_tg:
+            parsed = _parse_source_link(link)
+            chat_id = parsed.get("chat_id")
+            msg_id = parsed.get("msg_id")
+            actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
+        else:
+            actual_url = await resolve_direct_link(link)
+
+        # Grabs the exact cover frame directly from the media container
+        cmd = [
+            "ffmpeg", "-hide_banner", "-loglevel", "error",
+            "-i", actual_url,
+            "-map", "0:v:0",
+            "-vframes", "1", "-c:v", "mjpeg", "-f", "image2", "pipe:1"
+        ]
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        
+        if proc.returncode == 0 and stdout:
+            return web.Response(body=stdout, content_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+        else:
+            return web.Response(status=404, text="No cover found")
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
 
 async def _api_stream_handler(request):
     """Adaptive stream pipeline: native redirect first, minimal FFmpeg fallback."""
@@ -11714,6 +11800,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_post("/api/watcher/cancel", _api_cancel_watcher)
     app_web.router.add_post("/api/spectrogram", _api_spectrogram_web_handler)
     app_web.router.add_get("/api/media_probe", _api_media_probe_handler)
+    app_web.router.add_get("/api/cover", _api_cover_handler) # 🟢 NEW: Cover Art API
     app_web.router.add_get("/api/stream", _api_stream_handler)
     app_web.router.add_get("/api/direct_stream", _api_direct_stream_handler)
     app_web.router.add_get("/api/subtitles", _api_subtitles_handler)
