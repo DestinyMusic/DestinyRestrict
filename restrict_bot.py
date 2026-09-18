@@ -4860,9 +4860,31 @@ HTML_DASHBOARD = """
             border-radius: 7px;
             padding: 4px 10px;
             text-shadow: 0 2px 4px rgba(0,0,0,0.95);
-            text-align: center; /* 🟢 FIX: This ensures the text itself is perfectly centered when it breaks into 2 lines */
+            text-align: center; 
         }
         .cinema-viewport.fullscreen-subtitle .subtitle-overlay { bottom: 13%; }
+
+        /* 🟢 NEW: Apple Music Style Auto-Scrolling Lyrics */
+        .lyrics-scroller {
+            position: absolute; left: 5%; right: 5%; bottom: 10%; top: 40%; /* Sits elegantly below the album art */
+            overflow-y: auto; scroll-behavior: smooth;
+            -ms-overflow-style: none; scrollbar-width: none;
+            mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+            z-index: 28; pointer-events: auto; text-align: center;
+        }
+        .lyrics-scroller::-webkit-scrollbar { display: none; }
+        .lrc-line {
+            font-size: 18px; font-weight: 700; color: rgba(255,255,255,0.4);
+            margin: 18px 0; transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+            cursor: pointer; padding: 0 10px; filter: blur(0.5px);
+            display: block; width: 100%;
+        }
+        .lrc-line:hover { color: rgba(255,255,255,0.7); }
+        .lrc-line.active {
+            font-size: 24px; color: #fff; text-shadow: 0 0 20px var(--glow);
+            transform: scale(1.05); opacity: 1; filter: blur(0);
+        }
 
         /* Center Skip Buttons (Liquid Glass UI) */
         .center-controls {
@@ -5298,6 +5320,9 @@ HTML_DASHBOARD = """
                     <canvas id="webgl-canvas"></canvas>
                     <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline preload="auto"></video>
                     <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
+                    
+                    <!-- 🟢 NEW: Scrolling Lyrics Engine Container -->
+                    <div id="lyrics-scroller" class="lyrics-scroller" style="display:none;"></div>
 
                     <!-- Video Title Bar -->
                     <div class="cinema-title-bar" id="cinema-title">No Media Loaded</div>
@@ -7642,7 +7667,7 @@ HTML_DASHBOARD = """
         function parseWebVTT(text) {
             if (!text) return [];
             const cues = [];
-            const lines = String(text).replace(/\\r/g, '').split('\\n');
+            const lines = String(text).replace(/\r/g, '').split('\n');
             let i = 0;
             
             while (i < lines.length) {
@@ -7650,8 +7675,7 @@ HTML_DASHBOARD = """
                     const timeParts = lines[i].split('-->');
                     const start = vttTimeToSeconds(timeParts[0]);
                     
-                    // 🟢 FIX: Parse end time AND extra VTT settings (like line:10%)
-                    const endMatch = timeParts[1].trim().match(/^(\\S+)(.*)/);
+                    const endMatch = timeParts[1].trim().match(/^(\S+)(.*)/);
                     const end = endMatch ? vttTimeToSeconds(endMatch[1]) : 0;
                     const settings = endMatch ? endMatch[2].trim() : '';
                     
@@ -7662,19 +7686,14 @@ HTML_DASHBOARD = """
                         i++;
                     }
                     
-                    let rawText = payload.join('\\n');
-                    
-                    // 🟢 DETECT SDH INTENT: Top-Screen detection from ASS tags or VTT settings
+                    let rawText = payload.join('\n');
                     let isTop = false;
                     if (rawText.includes('{\\an8}') || rawText.includes('{\\an7}') || rawText.includes('{\\an9}') || settings.includes('line:0') || settings.includes('line:10%')) {
                         isTop = true;
                     }
                     
-                    // Strip complex ASS brackets but KEEP basic HTML formatting (colors, bold, italics)
-                    let cleanText = rawText.replace(/\\{[^}]*\\}/g, '').trim();
-                    
-                    // Convert WebVTT color tags to HTML spans so the browser parses them correctly
-                    cleanText = cleanText.replace(/<c\\.([^>]+)>([^<]+)<\\/c>/gi, '<span style="color:$1;">$2</span>');
+                    let cleanText = rawText.replace(/\{[^}]*\}/g, '').trim();
+                    cleanText = cleanText.replace(/<c\.([^>]+)>([^<]+)<\/c>/gi, '<span style="color:$1;">$2</span>');
                     
                     if (cleanText && Number.isFinite(start) && Number.isFinite(end)) {
                         cues.push({ start, end, text: cleanText, isTop: isTop });
@@ -7686,26 +7705,110 @@ HTML_DASHBOARD = """
             return cues.sort((a, b) => a.start - b.start);
         }
 
+        // 🟢 NEW: LRC Lyrics Format Parser
+        function parseLRC(text) {
+            const cues = [];
+            const lines = String(text).replace(/\r/g, '').split('\n');
+            const lrcRegex = /\[(\d{2,}):(\d{2})(?:\.(\d{2,3}))?\]/g;
+            
+            lines.forEach(line => {
+                const matches = [...line.matchAll(lrcRegex)];
+                if (matches.length > 0) {
+                    const textContent = line.replace(/\[.*?\]/g, '').trim();
+                    if (textContent) {
+                        matches.forEach(m => {
+                            const min = parseInt(m[1], 10);
+                            const sec = parseInt(m[2], 10);
+                            const ms = m[3] ? parseInt(m[3].padEnd(3, '0'), 10) / 1000 : 0;
+                            const time = min * 60 + sec + ms;
+                            cues.push({ start: time, end: time + 10, text: textContent, isLrc: true });
+                        });
+                    }
+                }
+            });
+            cues.sort((a, b) => a.start - b.start);
+            for(let i=0; i<cues.length-1; i++) {
+                if(cues[i].end > cues[i+1].start) {
+                    cues[i].end = cues[i+1].start;
+                }
+            }
+            return cues;
+        }
+
+        // 🟢 NEW: Global Click-to-Seek from Lyrics
+        window.seekPlaybackTo = function(targetSec) {
+            const target = targetSec + subtitleSyncOffset;
+            const video = document.getElementById('hidden-video');
+            globalTargetTime = target;
+            if (playerRequiresTranscode) {
+                isTranscodeSeeking = true;
+                restartStreamAt(target);
+            } else {
+                if (video) video.currentTime = target;
+                renderCurrentSubtitle(target);
+                if (!playerFallbackAttempted) armPlaybackWatchdog();
+            }
+        };
+
         function renderCurrentSubtitle(forceTime = null) {
             const video = document.getElementById('hidden-video');
             const overlay = document.getElementById('subtitle-overlay');
-            if (!video || !overlay || activeSubtitleIndex === 'off') {
+            const scroller = document.getElementById('lyrics-scroller');
+            
+            if (!video || activeSubtitleIndex === 'off' || subtitleCues.length === 0) {
                 if (overlay) overlay.innerHTML = '';
+                if (scroller) scroller.style.display = 'none';
                 return;
             }
             
-            let t = 0;
-            if (forceTime !== null) {
-                t = forceTime;
-            } else {
-                let cur = video.currentTime || 0;
-                t = playerRequiresTranscode ? (playerTimelineOffset + cur) : cur;
+            let t = forceTime !== null ? forceTime : (playerRequiresTranscode ? (playerTimelineOffset + (video.currentTime||0)) : (video.currentTime||0));
+            const adjustedTime = t - subtitleSyncOffset;
+
+            // 🟢 DYNAMIC UI SWITCH: Use Apple Music Lyrics view if Audio track OR LRC file!
+            const isAudioMode = document.getElementById('webgl-canvas')?.style.display === 'none';
+            const useScroller = subtitleCues[0].isLrc || isAudioMode;
+
+            if (useScroller) {
+                if (overlay) overlay.style.display = 'none';
+                if (scroller) {
+                    scroller.style.display = 'block';
+                    
+                    // Render HTML lines only once per track
+                    if (scroller.dataset.rendered !== activeSubtitleIndex) {
+                        scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line" id="lrc-${i}" onclick="seekPlaybackTo(${c.start})">${c.text}</div>`).join('');
+                        scroller.dataset.rendered = activeSubtitleIndex;
+                        applySubtitleStyle(); // Sync colors & fonts instantly
+                    }
+                    
+                    // Find active lyric
+                    let activeIdx = -1;
+                    for (let i = 0; i < subtitleCues.length; i++) {
+                        if (adjustedTime >= subtitleCues[i].start && adjustedTime < subtitleCues[i].end) {
+                            activeIdx = i; break;
+                        }
+                    }
+                    
+                    if (activeIdx !== -1) {
+                        const activeEl = document.getElementById(`lrc-${activeIdx}`);
+                        if (activeEl && !activeEl.classList.contains('active')) {
+                            document.querySelectorAll('.lrc-line.active').forEach(el => el.classList.remove('active'));
+                            activeEl.classList.add('active');
+                            // Smooth scroll into vertical center
+                            activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        }
+                    } else if (adjustedTime < subtitleCues[0].start) {
+                        document.querySelectorAll('.lrc-line.active').forEach(el => el.classList.remove('active'));
+                        scroller.scrollTo({ top: 0, behavior: 'smooth' });
+                    }
+                }
+                return;
             }
 
-            // 🟢 Apply the manual sync offset slider
-            const adjustedTime = t - subtitleSyncOffset;
-            const hits = subtitleCues.filter(c => adjustedTime >= c.start && adjustedTime <= c.end);
+            // Normal Video WebVTT Subtitles
+            if (scroller) scroller.style.display = 'none';
+            if (overlay) overlay.style.display = 'flex';
             
+            const hits = subtitleCues.filter(c => adjustedTime >= c.start && adjustedTime <= c.end);
             if (!hits.length) {
                 overlay.innerHTML = '';
                 return;
@@ -7719,7 +7822,6 @@ HTML_DASHBOARD = """
                 htmlContent += `<div class="subtitle-text">${c.text}</div>`;
             });
             
-            // 3D Split-Screen (VR/SBS) Subtitle Duplication
             if (matrix3DOut === 'vr') {
                 overlay.style.left = '0';
                 overlay.style.right = '0';
@@ -7730,12 +7832,11 @@ HTML_DASHBOARD = """
                     </div>
                 `;
             } else {
-                overlay.style.left = '1%'; /* 🟢 FIX: Allows the subtitle slider to stretch to 99% of screen width */
+                overlay.style.left = '1%'; 
                 overlay.style.right = '1%';
                 overlay.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>`;
             }
             
-            // Flag the overlay so applySubtitleStyle knows where to put it
             overlay.dataset.isTop = hasTop ? 'true' : 'false';
             applySubtitleStyle();
         }
@@ -7743,9 +7844,12 @@ HTML_DASHBOARD = """
         async function applySubtitleSelection() {
             const subSelect = document.getElementById('pop-sub-select');
             const overlay = document.getElementById('subtitle-overlay');
+            const scroller = document.getElementById('lyrics-scroller');
             activeSubtitleIndex = subSelect?.value ?? 'off';
             subtitleCues = [];
+            
             if (overlay) overlay.innerHTML = '';
+            if (scroller) scroller.dataset.rendered = "false";
 
             if (subtitleAbortController) {
                 subtitleAbortController.abort();
@@ -7763,39 +7867,16 @@ HTML_DASHBOARD = """
                 const response = await fetch(url, { signal: subtitleAbortController.signal, cache: 'force-cache' });
                 if (!response.ok) throw new Error(`Subtitle server returned ${response.status}`);
 
-                // The server caches extracted WebVTT.  Read it progressively so the
-                // first cues can appear before the entire file has arrived.
-                const reader = response.body?.getReader();
-                if (!reader) {
-                    subtitleCues = parseWebVTT(await response.text());
-                    renderCurrentSubtitle();
-                    return;
+                // 🟢 FETCH FULL TEXT ONCE (Because Lyrics files are extremely small)
+                const text = await response.text();
+                
+                // Automatically detect LRC vs VTT formats natively
+                if (text.includes('[00:') || text.includes('[01:') || text.includes('[02:')) {
+                    subtitleCues = parseLRC(text);
+                } else {
+                    subtitleCues = parseWebVTT(text);
                 }
-
-                const decoder = new TextDecoder('utf-8');
-                let buffer = '';
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-
-                    const blocks = buffer.split(/\\n\\s*\\n/);
-                    buffer = blocks.pop() || '';
-                    for (const block of blocks) {
-                        const cues = parseWebVTT(block + '\\n\\n');
-                        if (cues.length) subtitleCues.push(...cues);
-                    }
-                    subtitleCues.sort((a, b) => a.start - b.start);
-                    renderCurrentSubtitle();
-                }
-
-                buffer += decoder.decode();
-                if (buffer.trim()) {
-                    const cues = parseWebVTT(buffer + '\\n\\n');
-                    if (cues.length) subtitleCues.push(...cues);
-                }
-                subtitleCues.sort((a, b) => a.start - b.start);
+                
                 renderCurrentSubtitle();
             } catch (err) {
                 if (err?.name !== 'AbortError') {
@@ -7815,7 +7896,7 @@ HTML_DASHBOARD = """
         }
 
         function applySubtitleStyle() {
-            const size = Number(document.getElementById('subtitle-size-select')?.value || 20); // 🟢 FIX: Fallback to 20px
+            const size = Number(document.getElementById('subtitle-size-select')?.value || 20); 
             const fg = document.getElementById('subtitle-color-input')?.value || '#ffffff';
             const bg = document.getElementById('subtitle-bg-input')?.value || '#000000';
             const alpha = Math.max(0, Math.min(100, Number(document.getElementById('subtitle-bg-alpha')?.value || 70))) / 100;
@@ -7824,14 +7905,13 @@ HTML_DASHBOARD = """
             const weight = document.getElementById('subtitle-weight-select')?.value || '600';
             
             const pos = document.getElementById('subtitle-pos-slider')?.value || 88;
-            const stretch = document.getElementById('subtitle-width-slider')?.value || 95; // 🟢 FIX: Fallback to 95% width
+            const stretch = document.getElementById('subtitle-width-slider')?.value || 95; 
             
             const overlay = document.getElementById('subtitle-overlay');
             const canvas = document.getElementById('webgl-canvas');
             
             if (overlay) {
                 if (canvas && canvas.style.display !== 'none') {
-                    // 🟢 FIX 2a: Lock subtitles dynamically to the mathematical BOTTOM edge of the video, NOT the viewport top!
                     const viewportHeight = overlay.parentElement.clientHeight;
                     const canvasHeight = parseFloat(canvas.style.height) || viewportHeight;
                     const topEdge = (viewportHeight - canvasHeight) / 2;
@@ -7856,12 +7936,15 @@ HTML_DASHBOARD = """
                 overlay.style.alignItems = 'center'; 
             }
 
-            // 🟢 FIX 2b: Dynamically shrink subtitle font size on narrow mobile portrait screens
             let responsiveSize = size;
+            let lyricSize = size + 4; // Lyrics look better slightly larger than standard subs
+            
             if (window.innerWidth < 600) {
-                responsiveSize = Math.max(12, size * 0.65); // Scale down 35% on mobile phones
+                responsiveSize = Math.max(12, size * 0.65); 
+                lyricSize = Math.max(16, (size + 4) * 0.75); 
             }
 
+            // Sync standard VTT Subs
             document.querySelectorAll('#subtitle-overlay .subtitle-text').forEach(text => {
                 text.style.fontSize = `${responsiveSize}px`;
                 text.style.color = fg;
@@ -7869,6 +7952,19 @@ HTML_DASHBOARD = """
                 text.style.fontFamily = font;
                 text.style.fontWeight = weight;
                 text.style.maxWidth = `${stretch}%`;
+            });
+
+            // 🟢 Sync Apple Music Lyrics Scroller
+            document.querySelectorAll('.lrc-line').forEach(text => {
+                text.style.fontFamily = font;
+                text.style.fontWeight = weight;
+                // We keep the inactive lines greyed out
+                text.style.color = 'rgba(255,255,255,0.4)';
+                text.style.fontSize = `${responsiveSize}px`;
+            });
+            document.querySelectorAll('.lrc-line.active').forEach(text => {
+                text.style.color = fg; // Apply user's selected color to the active line!
+                text.style.fontSize = `${lyricSize}px`;
             });
         }
 
@@ -7951,23 +8047,30 @@ HTML_DASHBOARD = """
 
         // Setup the subtitle syncing
         function syncExternalSubtitles(text) {
-            subtitleCues = parseWebVTT(text);
+            if (text.includes('[00:') || text.includes('[01:') || text.includes('[02:')) {
+                subtitleCues = parseLRC(text);
+            } else {
+                subtitleCues = parseWebVTT(text);
+            }
             activeSubtitleIndex = 'external';
             const subSelect = document.getElementById('pop-sub-select');
             if(subSelect) subSelect.value = 'off';
+            
+            const scroller = document.getElementById('lyrics-scroller');
+            if(scroller) scroller.dataset.rendered = "false";
             renderCurrentSubtitle();
         }
 
         // --- Subtitle Loaders ---
         async function loadExternalSubtitlesUrl() {
             const url = document.getElementById('ext-sub-url').value.trim();
-            if(!url) return alert("Please enter a .vtt subtitle URL.");
+            if(!url) return alert("Please enter a .vtt or .lrc subtitle URL.");
             try {
                 const res = await fetch(url);
                 if(!res.ok) throw new Error("HTTP " + res.status);
                 const text = await res.text();
                 syncExternalSubtitles(text);
-                alert("External Subtitles URL Loaded!");
+                alert("External Subtitles/Lyrics URL Loaded!");
             } catch (err) {
                 alert("Failed to load subtitles. (Check CORS or URL): " + err.message);
             }
@@ -7979,7 +8082,7 @@ HTML_DASHBOARD = """
             const reader = new FileReader();
             reader.onload = function(e) {
                 syncExternalSubtitles(e.target.result);
-                alert(`Local Subtitle File '${file.name}' Loaded!`);
+                alert(`Local Subtitle/Lyrics File '${file.name}' Loaded!`);
             };
             reader.readAsText(file);
         }
