@@ -8835,81 +8835,99 @@ HTML_DASHBOARD = """
             container.innerHTML = '<div style="color:var(--accent); text-align:center; margin-top: 40%; font-weight: bold; font-size: 18px;">⏳ Connecting to Satellites...<br><span style="font-size:12px; color:var(--subtext);">Loading Topographical Map Data</span></div>';
 
             setTimeout(() => {
-                fetch('https://cdn.jsdelivr.net/npm/globe.gl@2.32.0/example/datasets/ne_110m_admin_0_countries.geojson')
-                    .then(res => {
-                        if (!res.ok) throw new Error("Map data blocked by network.");
-                        return res.json();
-                    })
-                    .then(countries => {
-                        container.innerHTML = ''; 
+                // 🟢 FIX: Load compliant Indian World Map & Default World Map simultaneously
+                Promise.all([
+                    fetch('https://cdn.jsdelivr.net/npm/globe.gl@2.32.0/example/datasets/ne_110m_admin_0_countries.geojson').then(r => r.json()),
+                    fetch('https://raw.githubusercontent.com/geohacker/india/master/country/india.geojson').then(r => r.json()).catch(() => null)
+                ])
+                .then(([countries, indiaMap]) => {
+                    container.innerHTML = ''; 
 
-                        // 🟢 FIX: Explicitly pass width and height to force perfect centering!
-                        myGlobe = Globe()(container)
-                            .width(container.clientWidth)
-                            .height(container.clientHeight)
-                            .globeImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-blue-marble.jpg')
-                            .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
-                            .backgroundImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/night-sky.png')
-                            .polygonsData(countries.features)
-                            .polygonAltitude(0.005)
-                            .polygonCapColor(() => 'rgba(255, 255, 255, 0.05)')
-                            .polygonSideColor(() => 'rgba(0, 0, 0, 0.2)')
-                            .polygonStrokeColor(() => '#38bdf8')
-                            .polygonLabel(({ properties: d }) => {
-                                // 🟢 FIX: Strictly enforce English naming for the hover labels
-                                const englishName = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
-                                return `
-                                <div style="background: rgba(0,0,0,0.85); border: 1px solid var(--accent); padding: 8px 12px; border-radius: 12px; color: white; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
-                                    <b>${englishName}</b>
-                                    <div style="font-size: 10px; color: var(--subtext); margin-top: 2px;">Click to scan nation</div>
-                                </div>
-                                `;
-                            })
-                            .onPolygonHover(hoverD => {
-                                myGlobe
-                                .polygonAltitude(d => d === hoverD ? 0.04 : 0.005)
-                                .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(255, 255, 255, 0.05)');
-                            })
-                            .onPolygonClick(({ properties: d }) => {
-                                // 🟢 FIX: Strictly pass English names down to the API
-                                const name = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
-                                const iso2 = d.ISO_A2 !== "-99" ? d.ISO_A2 : null;
-                                const iso3 = d.ISO_A3 !== "-99" ? d.ISO_A3 : null;
-                                loadCountryData(name, iso2, iso3, false);
-                            });
+                    let mapFeatures = countries.features;
+                    // 🟢 INDIAN MAP COMPLIANCE: Inject correct Indian borders if the overlay loads
+                    if (indiaMap && indiaMap.features) {
+                        mapFeatures = mapFeatures.filter(f => !['IND'].includes(f.properties.ISO_A3));
+                        const indiaFeature = indiaMap.features[0];
+                        if (indiaFeature) {
+                            indiaFeature.properties = { NAME_EN: 'India', NAME: 'India', ISO_A2: 'IN', ISO_A3: 'IND' };
+                            mapFeatures.push(indiaFeature);
+                        }
+                    }
 
-                        myGlobe.controls().autoRotate = true;
-                        myGlobe.controls().autoRotateSpeed = 1.0;
-                        
-                        // 🟢 FIX: Centered starting position with proper altitude
-                        const isMobile = window.innerWidth < 768;
-                        myGlobe.pointOfView({ lat: 20, lng: 0, altitude: isMobile ? 2.5 : 2.0 });
-
-                        window.addEventListener('resize', () => {
-                            if(document.getElementById('view-globe').classList.contains('active') && myGlobe) {
-                                myGlobe.width(container.clientWidth);
-                                myGlobe.height(container.clientHeight);
-                            }
+                    // 🟢 FIX: Explicitly pass width and height to force perfect centering!
+                    myGlobe = Globe()(container)
+                        .width(container.clientWidth)
+                        .height(container.clientHeight)
+                        // 🟢 FIX: Replaced overexposed 'earth-blue-marble.jpg' with beautiful 'earth-dark.jpg'
+                        .globeImageUrl('https://unpkg.com/three-globe@2.31.1/example/img/earth-dark.jpg')
+                        .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
+                        .backgroundImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/night-sky.png')
+                        .polygonsData(mapFeatures)
+                        .polygonAltitude(0.005)
+                        // 🟢 FIX: Dimmed cap color significantly to stop blinding brightness
+                        .polygonCapColor(() => 'rgba(0, 0, 0, 0.4)')
+                        .polygonSideColor(() => 'rgba(0, 0, 0, 0.2)')
+                        .polygonStrokeColor(() => '#38bdf8')
+                        .polygonLabel(({ properties: d }) => {
+                            const englishName = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
+                            return `
+                            <div style="background: rgba(0,0,0,0.85); border: 1px solid var(--accent); padding: 8px 12px; border-radius: 12px; color: white; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
+                                <b>${englishName}</b>
+                                <div style="font-size: 10px; color: var(--subtext); margin-top: 2px;">Click to scan nation</div>
+                            </div>
+                            `;
+                        })
+                        .onPolygonHover(hoverD => {
+                            myGlobe
+                            .polygonAltitude(d => d === hoverD ? 0.04 : 0.005)
+                            .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(0, 0, 0, 0.4)');
+                        })
+                        .onPolygonClick(({ properties: d }) => {
+                            const name = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
+                            const iso2 = d.ISO_A2 !== "-99" ? d.ISO_A2 : null;
+                            const iso3 = d.ISO_A3 !== "-99" ? d.ISO_A3 : null;
+                            loadCountryData(name, iso2, iso3, false);
                         });
 
-                        fetch('https://cdn.jsdelivr.net/npm/globe.gl@2.32.0/example/datasets/ne_110m_populated_places_simple.geojson')
-                            .then(res => res.json())
-                            .then(places => {
-                                myGlobe.labelsData(places.features)
-                                    .labelLat(d => d.properties.latitude)
-                                    .labelLng(d => d.properties.longitude)
-                                    .labelText(d => d.properties.nameen || d.properties.nameascii || d.properties.name)
-                                    .labelSize(d => d.properties.megacity ? 1.5 : 0.6)
-                                    .labelDotRadius(d => d.properties.megacity ? 0.4 : 0.2)
-                                    .labelColor(() => 'rgba(255, 255, 255, 0.9)')
-                                    .labelResolution(2)
-                                    .labelAltitude(0.01);
-                            });
-                    })
-                    .catch(err => {
-                        container.innerHTML = `<div style="color:var(--danger); text-align:center; margin-top: 40%;">❌ Satellite connection failed. Error: ${err.message}<br><span style="font-size:12px;color:var(--subtext);">Try searching manually or check your network.</span></div>`;
+                    myGlobe.controls().autoRotate = true;
+                    myGlobe.controls().autoRotateSpeed = 1.0;
+                    
+                    const isMobile = window.innerWidth < 768;
+                    // 🟢 FIX: Centered starting POV to India (lng: 78)
+                    myGlobe.pointOfView({ lat: 20, lng: 78, altitude: isMobile ? 2.5 : 2.0 });
+
+                    window.addEventListener('resize', () => {
+                        if(document.getElementById('view-globe').classList.contains('active') && myGlobe) {
+                            myGlobe.width(container.clientWidth);
+                            myGlobe.height(container.clientHeight);
+                        }
                     });
-            }, 100); // 100ms delay to guarantee DOM is rendered before ThreeJS measures it
+
+                    // 🟢 FIX: Fetch ALL Country Centroids to display Country Names instead of just cities
+                    fetch('https://restcountries.com/v3.1/all')
+                        .then(res => res.json())
+                        .then(allCountries => {
+                            const labels = allCountries.filter(c => c.latlng).map(c => ({
+                                lat: c.latlng[0],
+                                lng: c.latlng[1],
+                                name: c.name.common
+                            }));
+                            myGlobe.labelsData(labels)
+                                .labelLat(d => d.lat)
+                                .labelLng(d => d.lng)
+                                .labelText(d => d.name)
+                                .labelSize(1.5)
+                                .labelDotRadius(0.3)
+                                .labelColor(() => 'rgba(255, 255, 255, 0.95)')
+                                .labelResolution(2)
+                                .labelAltitude(0.01);
+                        })
+                        .catch(err => console.warn("Country labels fetch failed", err));
+                })
+                .catch(err => {
+                    container.innerHTML = `<div style="color:var(--danger); text-align:center; margin-top: 40%;">❌ Satellite connection failed. Error: ${err.message}<br><span style="font-size:12px;color:var(--subtext);">Try searching manually or check your network.</span></div>`;
+                });
+            }, 100); 
         }
 
         async function searchCountryManual() {
@@ -8925,16 +8943,15 @@ HTML_DASHBOARD = """
             panel.innerHTML = '<div style="color:var(--accent); text-align:center; padding: 50px;"><b>⏳ Fetching Classified Data...</b><br><span style="font-size: 11px; color: var(--subtext);">Accessing Geopolitical & Economic Servers</span></div>';
 
             try {
-                let data = null;
-                
-                // 🟢 FIX: Intelligent fallback array. Tries absolute exact matches first, then fuzzy search.
+                // 🟢 FIX: Handle both Array and Object responses correctly to prevent Target Lock Failed
                 const fetchAPI = async (urls) => {
                     for (let url of urls) {
                         try {
                             const r = await fetch(url);
                             if (r.ok) {
                                 const json = await r.json();
-                                if (json && json.length > 0) return json;
+                                if (Array.isArray(json) && json.length > 0) return json;
+                                if (json && !Array.isArray(json) && json.name) return [json]; // Handle single object
                             }
                         } catch(e) {}
                     }
@@ -8945,6 +8962,7 @@ HTML_DASHBOARD = """
                 if (isManualSearch) {
                     searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}?fullText=true`);
                     searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
+                    searchUrls.push(`https://restcountries.com/v3.1/alpha/${encodeURIComponent(rawName)}`);
                 } else {
                     if (iso3 && iso3 !== "-99") searchUrls.push(`https://restcountries.com/v3.1/alpha/${iso3}`);
                     if (iso2 && iso2 !== "-99") searchUrls.push(`https://restcountries.com/v3.1/alpha/${iso2}`);
@@ -8952,101 +8970,105 @@ HTML_DASHBOARD = """
                     searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
                 }
 
-                data = await fetchAPI(searchUrls);
+                let data = await fetchAPI(searchUrls);
 
-                if (!data) {
-                    // Final desparation fallback: strip to first word
+                // 🟢 Fallback for missing/classified entries
+                if (!data && rawName.includes(" ")) {
                     const shortName = rawName.split(" ")[0];
                     data = await fetchAPI([`https://restcountries.com/v3.1/name/${encodeURIComponent(shortName)}`]);
-                    if (!data) throw new Error(`Target data for '${rawName}' classified or missing.`);
                 }
 
-                const country = data[0]; 
-                
-                // 🟢 STRICT ENGLISH NAME EXTRACTION
-                let englishName = country.name.common;
-                if (country.name.translations && country.name.translations.eng) {
-                    englishName = country.name.translations.eng.common || englishName;
-                }
-                
-                try {
-                    if (myGlobe && country.latlng) {
-                        const isMobile = window.innerWidth < 768;
-                        // Center exactly on the country, slightly zoomed in
-                        myGlobe.pointOfView({ lat: country.latlng[0], lng: country.latlng[1], altitude: isMobile ? 1.8 : 1.2 }, 1200);
+                let englishName = rawName;
+                let regionInfo = "Region Data Unavailable";
+                let flagUrl = "https://cdn-icons-png.flaticon.com/512/323/323315.png"; // Generic globe icon
+                let tzHtml = '<div style="color:var(--subtext); font-size:12px;">Timezone data unavailable.</div>';
+                let capitalText = 'Unknown';
+                let popText = 'Unknown';
+                let currencies = 'Unknown';
+                let languages = 'Unknown';
+
+                if (data && data[0]) {
+                    const country = data[0]; 
+                    englishName = country.name.common;
+                    if (country.name.translations && country.name.translations.eng) {
+                        englishName = country.name.translations.eng.common || englishName;
                     }
-                } catch(camErr) { console.warn("Camera jump skipped", camErr); }
+                    
+                    regionInfo = `${country.region || ''} ${country.subregion ? '• ' + country.subregion : ''}`;
+                    if (country.flags && country.flags.svg) flagUrl = country.flags.svg;
+                    
+                    try {
+                        if (myGlobe && country.latlng) {
+                            const isMobile = window.innerWidth < 768;
+                            myGlobe.pointOfView({ lat: country.latlng[0], lng: country.latlng[1], altitude: isMobile ? 1.8 : 1.2 }, 1200);
+                        }
+                    } catch(camErr) { console.warn("Camera jump skipped", camErr); }
 
+                    const localDate = new Date();
+                    const userTimeStr = localDate.toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
+                    
+                    if (country.timezones && country.timezones.length > 0) {
+                        tzHtml = country.timezones.map(tz => {
+                            let timeStr = "Unknown";
+                            try {
+                                if(tz === "UTC" || tz === "UTC+00:00") {
+                                    let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
+                                    timeStr = new Date(utcMs).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
+                                } else {
+                                    let match = tz.match(/UTC([+-])(\d{2}):(\d{2})/);
+                                    if(match) {
+                                        let sign = match[1] === '+' ? 1 : -1;
+                                        let hrs = parseInt(match[2]);
+                                        let mins = parseInt(match[3]);
+                                        let offsetMs = sign * ((hrs * 60) + mins) * 60000;
+                                        let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
+                                        timeStr = new Date(utcMs + offsetMs).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
+                                    }
+                                }
+                            } catch(err) { timeStr = "Calc Error"; }
+                            
+                            return `
+                            <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); padding: 12px; border-radius: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+                                <div>
+                                    <div style="color:var(--subtext); font-size: 10px; font-weight: 800; text-transform: uppercase;">Zone: ${tz}</div>
+                                    <div style="color:#fff; font-size: 16px; font-weight: 900; margin-top: 2px;">${timeStr}</div>
+                                </div>
+                                <div style="text-align: right; border-left: 1px solid rgba(255,255,255,0.1); padding-left: 15px;">
+                                    <div style="color:var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Your Time</div>
+                                    <div style="color:#cbd5e1; font-size: 16px; font-weight: 900; margin-top: 2px;">${userTimeStr}</div>
+                                </div>
+                            </div>`;
+                        }).join('');
+                    }
+
+                    if(country.currencies) currencies = Object.values(country.currencies).map(c => `${c.name} (${c.symbol})`).join(', ');
+                    if(country.languages) languages = Object.values(country.languages).join(', ');
+                    if(country.capital && country.capital.length > 0) capitalText = country.capital[0];
+                    if(country.population) popText = country.population.toLocaleString();
+                }
+
+                // 🟢 ALWAYS FETCH WIKIPEDIA (Provides a graceful fallback if RestCountries API is down!)
                 let wikiSummary = "<i style='color:var(--subtext);'>Accessing local intelligence failed. No recent developments available in the active database.</i>";
                 try {
                     let wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(englishName)}`);
-                    let wikiData = await wikiRes.json();
-                    
-                    if((wikiData.title === "Not found." || wikiData.type === "disambiguation") && rawName) {
-                        wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(rawName)}`);
-                        wikiData = await wikiRes.json();
+                    if (wikiRes.ok) {
+                        let wikiData = await wikiRes.json();
+                        if((wikiData.title === "Not found." || wikiData.type === "disambiguation") && rawName) {
+                            wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(rawName)}`);
+                            wikiData = await wikiRes.json();
+                        }
+                        if(wikiData.extract_html) wikiSummary = wikiData.extract_html;
                     }
-                    
-                    if(wikiData.extract_html) wikiSummary = wikiData.extract_html;
                 } catch(e) {}
 
-                const localDate = new Date();
-                const userTimeStr = localDate.toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
-                
-                let tzHtml = '';
-                if (country.timezones && country.timezones.length > 0) {
-                    tzHtml = country.timezones.map(tz => {
-                        let timeStr = "Unknown";
-                        try {
-                            if(tz === "UTC" || tz === "UTC+00:00") {
-                                let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
-                                timeStr = new Date(utcMs).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
-                            } else {
-                                let match = tz.match(/UTC([+-])(\d{2}):(\d{2})/);
-                                if(match) {
-                                    let sign = match[1] === '+' ? 1 : -1;
-                                    let hrs = parseInt(match[2]);
-                                    let mins = parseInt(match[3]);
-                                    let offsetMs = sign * ((hrs * 60) + mins) * 60000;
-                                    let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
-                                    timeStr = new Date(utcMs + offsetMs).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
-                                }
-                            }
-                        } catch(err) { timeStr = "Calc Error"; }
-                        
-                        return `
-                        <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); padding: 12px; border-radius: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                            <div>
-                                <div style="color:var(--subtext); font-size: 10px; font-weight: 800; text-transform: uppercase;">Zone: ${tz}</div>
-                                <div style="color:#fff; font-size: 16px; font-weight: 900; margin-top: 2px;">${timeStr}</div>
-                            </div>
-                            <div style="text-align: right; border-left: 1px solid rgba(255,255,255,0.1); padding-left: 15px;">
-                                <div style="color:var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Your Time</div>
-                                <div style="color:#cbd5e1; font-size: 16px; font-weight: 900; margin-top: 2px;">${userTimeStr}</div>
-                            </div>
-                        </div>`;
-                    }).join('');
-                }
-
-                let currencies = "None";
-                if(country.currencies) currencies = Object.values(country.currencies).map(c => `${c.name} (${c.symbol})`).join(', ');
-                
-                let languages = "None";
-                if(country.languages) languages = Object.values(country.languages).join(', ');
-
-                let capitalText = 'None';
-                if(country.capital && country.capital.length > 0) capitalText = country.capital[0];
-
-                let popText = 'Unknown';
-                if(country.population) popText = country.population.toLocaleString();
-
                 panel.innerHTML = `
+                    ${!data ? `<div style="background: rgba(245,158,11,0.1); border: 1px solid #f59e0b; color: #f59e0b; padding: 10px; border-radius: 10px; font-size: 11px; margin-bottom: 15px; text-align: center;">⚠️ Primary database unreachable. Displaying fallback Wikipedia intelligence for '${englishName}'.</div>` : ''}
                     <div style="display:flex; align-items:center; gap: 15px; margin-bottom: 25px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 20px;">
-                        <img src="${country.flags.svg}" style="width: 90px; height: 60px; object-fit: cover; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.2);">
+                        <img src="${flagUrl}" style="width: 90px; height: 60px; object-fit: cover; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.2);">
                         <div>
                             <h2 style="margin: 0 0 4px 0; color: #fff; font-size: 24px; text-shadow: 0 2px 10px rgba(0,0,0,0.8);">${englishName}</h2>
                             <div style="color: var(--accent); font-weight: 900; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">
-                                ${country.region} ${country.subregion ? '• ' + country.subregion : ''}
+                                ${regionInfo}
                             </div>
                         </div>
                     </div>
@@ -9086,7 +9108,7 @@ HTML_DASHBOARD = """
                 `;
 
             } catch (e) {
-                panel.innerHTML = `<div style="color: var(--danger); text-align:center; padding: 40px;"><b>❌ Target Lock Failed.</b><br><span style="font-size:12px;">Satellite could not retrieve secure data for '${rawName}'. Reason: ${e.message}</span></div>`;
+                panel.innerHTML = `<div style="color: var(--danger); text-align:center; padding: 40px;"><b>❌ Interface Error.</b><br><span style="font-size:12px;">Failed to render panel. Reason: ${e.message}</span></div>`;
                 console.error(e);
             }
         }
