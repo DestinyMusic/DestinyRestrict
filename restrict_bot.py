@@ -10698,20 +10698,21 @@ async def _probe_tg_client(client, chat_id, msg_id):
         return client
     except Exception as e:
         err_str = str(e).lower()
-        # 🟢 FIX: Only trigger the fallback scan if the error is explicitly a Peer ID or Channel resolution issue.
-        # This prevents unnecessary API spam if the file simply doesn't exist.
-        if getattr(client, "bot_token", None) and any(err in err_str for err in ["peer_id_invalid", "channel_invalid", "channel_private", "keyerror"]):
+        
+        # 🟢 FIX: Removed the bot_token restriction! Now, if there are no worker bots, 
+        # the User Session is also allowed to do a quick 5-chat scan to find newly forwarded channels.
+        if any(err in err_str for err in ["peer_id_invalid", "channel_invalid", "channel_private", "keyerror"]):
             try:
-                logger.debug(f"Worker {getattr(client, 'name', 'bot')} missing peer {chat_id}. Forcing quick dialog scan...")
-                # Only scan the absolute most recent dialogs.
+                logger.debug(f"Client {getattr(client, 'name', 'session')} missing peer {chat_id}. Forcing quick dialog scan...")
+                # Scan only the absolute most recent dialogs (Safe for User Sessions too)
                 async for _ in client.get_dialogs(limit=5):
                     pass
                 # Retry fetching the message
                 await get_client_msg(client, chat_id, msg_id)
-                logger.info(f"✅ Worker {getattr(client, 'name', 'bot')} successfully resolved {chat_id} after scan.")
+                logger.info(f"✅ Client {getattr(client, 'name', 'session')} successfully resolved {chat_id} after scan.")
                 return client
             except Exception as inner_e:
-                logger.debug(f"Worker {getattr(client, 'name', 'bot')} still failed after scan: {inner_e}")
+                logger.debug(f"Client {getattr(client, 'name', 'session')} still failed after scan: {inner_e}")
                 pass
         return None
 
@@ -13685,4 +13686,4 @@ if __name__ == "__main__":
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-        
+    
