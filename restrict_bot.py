@@ -9144,20 +9144,19 @@ HTML_DASHBOARD = """
         }
 
         // ======================================================================
-        // 🌍 3D WORLD GLOBE & GEOPOLITICAL API ENGINE
+        // 🌍 3D WORLD GLOBE (HIGH-RES UPGRADE) & GEO API ENGINE
         // ======================================================================
         let myGlobe = null;
         let globalGeoData = [];
         let liveClockInterval = null;
 
         async function initWorldGlobe() {
-            if (myGlobe) return; // Prevent duplicate instances
+            if (myGlobe) return; 
             const container = document.getElementById('globe-viz');
             
-            // Note: This URL points to standard International GeoJSON borders.
-            // If you require highly specific disputed borders (e.g. Survey of India official map boundaries including PoK/Aksai Chin), 
-            // you must replace this link with a custom self-hosted GeoJSON file mapped to your requirements.
-            const GEOJSON_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_110m_admin_0_countries.geojson';
+            // 🟢 UPGRADE 1: 50m High-Resolution Dataset!
+            // This includes Mauritius, Andaman, Maldives, Seychelles, and tiny borders.
+            const GEOJSON_URL = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson';
 
             try {
                 const res = await fetch(GEOJSON_URL);
@@ -9168,26 +9167,27 @@ HTML_DASHBOARD = """
 
                 myGlobe = Globe()
                     (container)
-                    .width(container.clientWidth)  /* 🟢 FIX: Forces globe to center horizontally */
-                    .height(container.clientHeight) /* 🟢 FIX: Forces globe to center vertically */
+                    .width(container.clientWidth)
+                    .height(container.clientHeight)
+                    // 🟢 UPGRADE 2: High-Res Satellite Topography (Shows Mountains, Rivers, Oceans, Deserts)
                     .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
                     .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
                     .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
                     .lineHoverPrecision(0)
                     .polygonsData(globalGeoData)
                     .polygonAltitude(0.01)
-                    .polygonCapColor(() => 'rgba(56, 189, 248, 0.15)')
-                    .polygonSideColor(() => 'rgba(0, 0, 0, 0.4)')
+                    .polygonCapColor(() => 'rgba(56, 189, 248, 0.1)') // Made slightly more transparent so you can see the terrain underneath!
+                    .polygonSideColor(() => 'rgba(0, 0, 0, 0.5)')
                     .polygonStrokeColor(() => '#38bdf8')
                     .polygonLabel(({ properties: d }) => `
                         <div style="background: rgba(0,0,0,0.85); padding: 8px 12px; border-radius: 8px; border: 1px solid var(--accent); color: white; font-family: 'Nunito', sans-serif; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
                             <b style="font-size:14px; text-transform:uppercase; letter-spacing:1px;">${d.ADMIN}</b>
-                            <div style="font-size:10px; color:#94a3b8; margin-top:3px;">Click to Analyze Data</div>
+                            <div style="font-size:10px; color:#94a3b8; margin-top:3px;">Click to Analyze</div>
                         </div>
                     `)
                     .onPolygonHover(hoverD => myGlobe
                         .polygonAltitude(d => d === hoverD ? 0.06 : 0.01)
-                        .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.7)' : 'rgba(56, 189, 248, 0.15)')
+                        .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.6)' : 'rgba(56, 189, 248, 0.1)')
                     )
                     .onPolygonClick(({ properties: d }) => {
                         fetchCountryAnalytics(d.ISO_A2, d.ADMIN);
@@ -9197,7 +9197,7 @@ HTML_DASHBOARD = """
                 myGlobe.controls().autoRotate = true;
                 myGlobe.controls().autoRotateSpeed = 0.5;
 
-                // Make responsive
+                // Responsive
                 window.addEventListener('resize', () => {
                     if (myGlobe) myGlobe.width(container.clientWidth).height(container.clientHeight);
                 });
@@ -9208,94 +9208,52 @@ HTML_DASHBOARD = """
             }
         }
 
-        // 1. ADDED: Search Functionality
-        function searchGlobeCountry() {
-            const input = document.getElementById('globe-search').value.trim().toLowerCase();
-            if (!input) return;
-            
-            let found = null;
-            if (globalGeoData && globalGeoData.length > 0) {
-                found = globalGeoData.find(c => {
-                    const name = (c.properties.ADMIN || "").toLowerCase();
-                    const iso2 = (c.properties.ISO_A2 || "").toLowerCase();
-                    return name.includes(input) || iso2 === input;
-                });
-            }
-            
-            if (found) {
-                fetchCountryAnalytics(found.properties.ISO_A2, found.properties.ADMIN);
-            } else {
-                // Direct API search fallback if not found on the 3D map
-                fetchCountryAnalytics(null, document.getElementById('globe-search').value.trim());
-            }
-        }
-
-        // 2. ADDED: Live Time Calculator (Fixes the ReferenceError Crash)
-        function updateLiveCountryTime(tzString) {
-            try {
-                let offsetMs = 0;
-                if (tzString && tzString.startsWith("UTC")) {
-                    let modifier = tzString.replace("UTC", "").trim();
-                    if (modifier) {
-                        let sign = modifier.charAt(0) === '-' ? -1 : 1;
-                        let parts = modifier.substring(1).split(':');
-                        let hours = parseInt(parts[0], 10) || 0;
-                        let mins = parts.length > 1 ? parseInt(parts[1], 10) : 0;
-                        offsetMs = sign * ((hours * 3600) + (mins * 60)) * 1000;
-                    }
-                }
-                
-                const now = new Date();
-                const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
-                const localTime = new Date(utcTime + offsetMs);
-                
-                const hh = String(localTime.getHours()).padStart(2, '0');
-                const mm = String(localTime.getMinutes()).padStart(2, '0');
-                const ss = String(localTime.getSeconds()).padStart(2, '0');
-                
-                document.getElementById('c-time').innerText = `${hh}:${mm}:${ss}`;
-            } catch (e) {
-                document.getElementById('c-time').innerText = "--:--:--";
-            }
-        }
-
         async function fetchCountryAnalytics(isoCode, countryName) {
             document.getElementById('country-data-panel').style.display = 'block';
             document.getElementById('c-name').innerText = "Scanning Data...";
-            document.getElementById('c-wiki').innerHTML = '<span style="color:var(--accent);">Fetching geopolitical records via Secure Backend Proxy...</span>';
+            document.getElementById('c-wiki').innerHTML = '<span style="color:var(--accent);">Fetching records via Global Proxy...</span>';
             
             if (myGlobe) myGlobe.controls().autoRotate = false;
 
             let countryData = null;
 
-            // 🟢 BLOCK 1: Fetch Core Demographic & Time Data via Backend Proxy
+            // 🟢 UPGRADE 3: The AllOrigins CORS Proxy Bypass
+            // This forces a 3rd party public server to fetch the data, completely bypassing your blocked Server IP and mobile network restrictions!
             try {
-                const proxyUrl = `/api/proxy/country?iso=${isoCode || ''}&name=${encodeURIComponent(countryName)}`;
+                let targetUrl = isoCode && isoCode !== "-99" 
+                    ? `https://restcountries.com/v3.1/alpha/${isoCode}` 
+                    : `https://restcountries.com/v3.1/name/${encodeURIComponent(countryName)}?fullText=true`;
+                
+                // Wrap the target URL in the AllOrigins proxy
+                const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
+                
                 const res = await fetch(proxyUrl);
+                if (!res.ok) throw new Error(`Proxy HTTP Error: ${res.status}`);
                 
-                const rawText = await res.text();
-                let rawJson;
-                try {
-                    rawJson = JSON.parse(rawText);
-                } catch (e) {
-                    throw new Error(`Invalid JSON from server: ${rawText.substring(0, 40)}...`);
-                }
-
-                if (!res.ok) {
-                    throw new Error(rawJson.error || `HTTP ${res.status}`);
-                }
+                const proxyData = await res.json();
                 
-                // 🟢 BULLETPROOF FIX: Extract data safely, whether it's an Array or an Object
+                // AllOrigins returns the data as a giant string inside the "contents" key
+                if (!proxyData.contents) throw new Error("Proxy failed to fetch data.");
+                
+                const rawJson = JSON.parse(proxyData.contents);
+                
+                // Safely extract the data whether it's an Array [0] or an Object {}
                 let data = null;
                 if (Array.isArray(rawJson) && rawJson.length > 0) {
                     data = rawJson[0];
-                } else if (typeof rawJson === 'object' && rawJson !== null && !Array.isArray(rawJson)) {
+                } else if (typeof rawJson === 'object' && rawJson !== null && !Array.isArray(rawJson) && rawJson.flags) {
                     data = rawJson;
+                } else if (rawJson.status === 404) {
+                    // Fallback to partial name search if strict search fails
+                    const fallbackUrl = `https://api.allorigins.win/get?url=${encodeURIComponent('https://restcountries.com/v3.1/name/' + countryName)}`;
+                    const fallbackRes = await fetch(fallbackUrl);
+                    const fallbackProxy = await fallbackRes.json();
+                    const fallbackJson = JSON.parse(fallbackProxy.contents);
+                    data = Array.isArray(fallbackJson) ? fallbackJson[0] : fallbackJson;
                 }
                 
                 if (!data || !data.flags) {
-                    console.error("Failed API Dump:", rawJson); // Logs to browser console for debugging
-                    throw new Error("API returned an unrecognizable structure.");
+                    throw new Error("No demographic data found for this region.");
                 }
                 
                 countryData = data; 
@@ -9318,21 +9276,26 @@ HTML_DASHBOARD = """
                 }
 
             } catch (err) {
-                console.error("Proxy API failed:", err);
+                console.error("Data fetch failed:", err);
                 document.getElementById('c-name').innerText = countryName;
                 document.getElementById('c-cap').innerText = "Error";
                 document.getElementById('c-pop').innerText = "Error";
-                document.getElementById('c-wiki').innerHTML = `<span style="color:#ef4444;">Network Error: Backend Proxy failed. ${err.message}</span>`;
+                document.getElementById('c-wiki').innerHTML = `<span style="color:#ef4444;">Network Error: ${err.message}</span>`;
                 return; 
             }
 
-            // 🟢 BLOCK 2: Fetch Wikipedia via Backend Proxy
+            // Fetch Wikipedia via AllOrigins Proxy
             try {
                 const wikiQuery = countryData ? countryData.name.common : countryName;
-                const wikiRes = await fetch(`/api/proxy/wiki?q=${encodeURIComponent(wikiQuery)}`);
+                const wikiTarget = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(wikiQuery)}`;
+                const wikiProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(wikiTarget)}`;
+                
+                const wikiRes = await fetch(wikiProxy);
                 
                 if (wikiRes.ok) {
-                    const wikiData = await wikiRes.json();
+                    const proxyData = await wikiRes.json();
+                    const wikiData = JSON.parse(proxyData.contents);
+                    
                     if (wikiData.type !== "disambiguation" && wikiData.extract) {
                         const pageUrl = (wikiData.content_urls && wikiData.content_urls.desktop) ? wikiData.content_urls.desktop.page : `https://en.wikipedia.org/wiki/${encodeURIComponent(wikiQuery)}`;
                         document.getElementById('c-wiki').innerHTML = `
