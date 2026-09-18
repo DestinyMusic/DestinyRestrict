@@ -5775,19 +5775,28 @@ HTML_DASHBOARD = """
             <!-- ========================================== -->
             <div id="view-globe" class="view-section">
                 <div class="section-title">Global Database & Timezones</div>
+                
+                <!-- 🟢 NEW: SEARCH BAR -->
+                <div class="input-group" style="margin-bottom: 20px;">
+                    <div style="display: flex; gap: 8px;">
+                        <input type="text" id="country-search-input" placeholder="Search any country (e.g. Japan, Brazil, India)..." style="flex: 1; border-radius: 16px; border: 2px solid var(--card-border); background: rgba(0,0,0,0.3); color: #fff; padding: 14px 16px;" onkeypress="if(event.key === 'Enter') searchCountryManual()">
+                        <button class="primary-btn" style="width: auto; padding: 0 20px; background: #8b5cf6;" onclick="searchCountryManual()">Search</button>
+                    </div>
+                </div>
+
                 <div style="display: flex; flex-wrap: wrap; gap: 20px;">
                     
-                    <!-- 3D Globe Projection Area -->
-                    <div id="globe-container" style="flex: 1 1 500px; height: 650px; border-radius: 24px; overflow: hidden; position: relative; border: 1px solid var(--card-border); box-shadow: 0 10px 40px rgba(0,0,0,0.5); background: #000;">
+                    <!-- 3D Globe Projection Area (Height optimized to remove the black gap) -->
+                    <div id="globe-container" style="flex: 1 1 400px; min-height: 350px; height: 45vh; border-radius: 24px; overflow: hidden; position: relative; border: 1px solid var(--card-border); box-shadow: 0 10px 40px rgba(0,0,0,0.5); background: #000;">
                         <!-- Globe.gl engine injects here -->
                     </div>
                     
                     <!-- Interactive Side Intelligence Panel -->
-                    <div class="card" style="flex: 1 1 350px; display: flex; flex-direction: column; max-height: 650px; overflow-y: auto; padding: 25px; scrollbar-width: thin;">
-                        <div id="country-empty" style="text-align:center; color: var(--subtext); margin-top: 100px;">
+                    <div class="card" style="flex: 1 1 350px; display: flex; flex-direction: column; max-height: 600px; overflow-y: auto; padding: 25px; scrollbar-width: thin;">
+                        <div id="country-empty" style="text-align:center; color: var(--subtext); margin-top: 10%;">
                             <div style="font-size: 60px; margin-bottom: 20px;">🌍</div>
                             <h3 style="color: #fff;">Spin the globe!</h3>
-                            <p style="font-size: 13px; line-height: 1.5;">Click on any country to fetch live Timezones, Geo-Political data, Economics, and Recent News.</p>
+                            <p style="font-size: 13px; line-height: 1.5;">Click a country or use the search bar above to fetch live Timezones, Geo-Political data, Economics, and Recent News.</p>
                         </div>
                         <div id="country-data" style="display: none;"></div>
                     </div>
@@ -8822,22 +8831,23 @@ HTML_DASHBOARD = """
             globeInitialized = true;
             
             const container = document.getElementById('globe-container');
-            container.innerHTML = '<div style="color:var(--accent); text-align:center; margin-top: 45%; font-weight: bold; font-size: 18px;">⏳ Connecting to Satellites...<br><span style="font-size:12px; color:var(--subtext);">Loading Topographical Map Data</span></div>';
+            container.innerHTML = '<div style="color:var(--accent); text-align:center; margin-top: 25%; font-weight: bold; font-size: 18px;">⏳ Connecting to Satellites...<br><span style="font-size:12px; color:var(--subtext);">Loading Topographical Map Data</span></div>';
 
-            // Fetch absolute GeoJSON bounds for the whole earth
+            // Fetch Country Borders
             fetch('https://raw.githubusercontent.com/vasturiano/globe.gl/master/example/datasets/ne_110m_admin_0_countries.geojson')
                 .then(res => res.json())
                 .then(countries => {
                     container.innerHTML = ''; 
 
                     myGlobe = Globe()(container)
-                        .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-night.jpg')
+                        // 🟢 FIX: Ultra-HD Satellite Map with Ocean Topography, Seas, and Geo Features!
+                        .globeImageUrl('https://unpkg.com/three-globe/example/img/earth-blue-marble.jpg')
                         .bumpImageUrl('https://unpkg.com/three-globe/example/img/earth-topology.png')
                         .backgroundImageUrl('https://unpkg.com/three-globe/example/img/night-sky.png')
                         .polygonsData(countries.features)
-                        .polygonAltitude(0.01)
-                        .polygonCapColor(() => 'rgba(56, 189, 248, 0.15)')
-                        .polygonSideColor(() => 'rgba(0, 0, 0, 0.5)')
+                        .polygonAltitude(0.005)
+                        .polygonCapColor(() => 'rgba(255, 255, 255, 0.05)') // Very light tint so satellite map is visible
+                        .polygonSideColor(() => 'rgba(0, 0, 0, 0.2)')
                         .polygonStrokeColor(() => '#38bdf8')
                         .polygonLabel(({ properties: d }) => `
                             <div style="background: rgba(0,0,0,0.85); border: 1px solid var(--accent); padding: 8px 12px; border-radius: 12px; color: white; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
@@ -8847,54 +8857,95 @@ HTML_DASHBOARD = """
                         `)
                         .onPolygonHover(hoverD => {
                             myGlobe
-                            .polygonAltitude(d => d === hoverD ? 0.08 : 0.01)
-                            .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.7)' : 'rgba(56, 189, 248, 0.15)');
+                            .polygonAltitude(d => d === hoverD ? 0.04 : 0.005)
+                            .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(255, 255, 255, 0.05)');
                         })
                         .onPolygonClick(({ properties: d }) => {
-                            // Extract standard ISO codes from Natural Earth map data
                             const name = d.ADMIN || d.NAME;
                             const iso2 = d.ISO_A2 !== "-99" ? d.ISO_A2 : null;
                             const iso3 = d.ISO_A3 !== "-99" ? d.ISO_A3 : null;
-                            loadCountryData(name, iso2, iso3);
+                            loadCountryData(name, iso2, iso3, false);
                         });
 
-                    // 3D Engine Controls
                     myGlobe.controls().autoRotate = true;
                     myGlobe.controls().autoRotateSpeed = 1.0;
-                    myGlobe.pointOfView({ altitude: 2.5 });
+                    
+                    const isMobile = window.innerWidth < 768;
+                    myGlobe.pointOfView({ altitude: isMobile ? 3.0 : 2.2 });
 
-                    // Responsive bounds
                     window.addEventListener('resize', () => {
                         if(document.getElementById('view-globe').classList.contains('active')) {
                             myGlobe.width(container.clientWidth);
                             myGlobe.height(container.clientHeight);
                         }
                     });
+
+                    // 🟢 FIX: Fetch and Overlay Thousands of Capital Cities & Populated Places!
+                    fetch('https://raw.githubusercontent.com/vasturiano/globe.gl/master/example/datasets/ne_110m_populated_places_simple.geojson')
+                        .then(res => res.json())
+                        .then(places => {
+                            myGlobe.labelsData(places.features)
+                                .labelLat(d => d.properties.latitude)
+                                .labelLng(d => d.properties.longitude)
+                                .labelText(d => d.properties.name)
+                                .labelSize(d => d.properties.megacity ? 1.5 : 0.6)
+                                .labelDotRadius(d => d.properties.megacity ? 0.4 : 0.2)
+                                .labelColor(() => 'rgba(255, 255, 255, 0.9)')
+                                .labelResolution(2)
+                                .labelAltitude(0.01);
+                        });
                 })
                 .catch(err => {
-                    container.innerHTML = '<div style="color:var(--danger); text-align:center; margin-top: 45%;">❌ Satellite connection failed. Refresh page.</div>';
+                    container.innerHTML = '<div style="color:var(--danger); text-align:center; margin-top: 25%;">❌ Satellite connection failed. Refresh page.</div>';
                 });
         }
 
-        async function loadCountryData(rawName, iso2, iso3) {
+        async function searchCountryManual() {
+            const query = document.getElementById('country-search-input').value.trim();
+            if(!query) return;
+            loadCountryData(query, null, null, true); 
+        }
+
+        async function loadCountryData(rawName, iso2, iso3, isManualSearch = false) {
             document.getElementById('country-empty').style.display = 'none';
             const panel = document.getElementById('country-data');
             panel.style.display = 'block';
             panel.innerHTML = '<div style="color:var(--accent); text-align:center; padding: 50px;"><b>⏳ Fetching Classified Data...</b><br><span style="font-size: 11px; color: var(--subtext);">Accessing Geopolitical & Economic Servers</span></div>';
 
             try {
-                // 1. Fetch REST Countries API using ISO code (extremely accurate) or fallback to name search
-                let restRes;
-                if (iso3 || iso2) {
-                    restRes = await fetch(`https://restcountries.com/v3.1/alpha/${iso3 || iso2}`);
-                } else {
-                    restRes = await fetch(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}?fullText=true`);
-                }
+                let data = null;
                 
-                if (!restRes.ok) throw new Error("Nation data not found in primary registry.");
-                const [country] = await restRes.json();
+                // 🟢 FIX: Bulletproof Fallback API Fetcher
+                const fetchAPI = async (url) => {
+                    try {
+                        const r = await fetch(url);
+                        if (r.ok) return await r.json();
+                    } catch(e) {}
+                    return null;
+                };
 
-                // 2. Fetch Wikipedia Summary for Pol/Eco/Geo analysis and recent history
+                if (isManualSearch) {
+                    data = await fetchAPI(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
+                } else {
+                    if (iso3 && iso3 !== "-99") data = await fetchAPI(`https://restcountries.com/v3.1/alpha/${iso3}`);
+                    if (!data && iso2 && iso2 !== "-99") data = await fetchAPI(`https://restcountries.com/v3.1/alpha/${iso2}`);
+                    if (!data) data = await fetchAPI(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
+                }
+
+                // If completely failed, try stripping the string to the first word (e.g. "Republic of India" -> "Republic")
+                if (!data || !Array.isArray(data) || data.length === 0) {
+                    const shortName = rawName.split(" ")[0];
+                    data = await fetchAPI(`https://restcountries.com/v3.1/name/${encodeURIComponent(shortName)}`);
+                    if (!data || !Array.isArray(data) || data.length === 0) throw new Error("Target data completely classified or missing.");
+                }
+
+                const country = data[0]; 
+                
+                if (isManualSearch && myGlobe && country.latlng) {
+                    const isMobile = window.innerWidth < 768;
+                    myGlobe.pointOfView({ lat: country.latlng[0], lng: country.latlng[1], altitude: isMobile ? 3.0 : 2.2 }, 1000);
+                }
+
                 let wikiSummary = "<i style='color:var(--subtext);'>Accessing local intelligence failed. No recent developments available in the active database.</i>";
                 try {
                     const wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(country.name.common)}`);
@@ -8902,7 +8953,6 @@ HTML_DASHBOARD = """
                     if(wikiData.extract_html) wikiSummary = wikiData.extract_html;
                 } catch(e) {}
 
-                // 3. Mathematical Timezone Engine (Calculates exact time vs User's Local Clock)
                 const localDate = new Date();
                 const userTimeStr = localDate.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
                 
@@ -8910,22 +8960,23 @@ HTML_DASHBOARD = """
                 if (country.timezones && country.timezones.length > 0) {
                     tzHtml = country.timezones.map(tz => {
                         let timeStr = "Unknown";
-                        if(tz === "UTC" || tz === "UTC+00:00") {
-                            // Convert local time back to exact UTC
-                            let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
-                            timeStr = new Date(utcMs).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                        } else {
-                            // Parse UTC offsets like UTC-05:30
-                            let match = tz.match(/UTC([+-])(\d{2}):(\d{2})/);
-                            if(match) {
-                                let sign = match[1] === '+' ? 1 : -1;
-                                let hrs = parseInt(match[2]);
-                                let mins = parseInt(match[3]);
-                                let offsetMs = sign * ((hrs * 60) + mins) * 60000;
+                        try {
+                            if(tz === "UTC" || tz === "UTC+00:00") {
                                 let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
-                                timeStr = new Date(utcMs + offsetMs).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                                timeStr = new Date(utcMs).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                            } else {
+                                let match = tz.match(/UTC([+-])(\d{2}):(\d{2})/);
+                                if(match) {
+                                    let sign = match[1] === '+' ? 1 : -1;
+                                    let hrs = parseInt(match[2]);
+                                    let mins = parseInt(match[3]);
+                                    let offsetMs = sign * ((hrs * 60) + mins) * 60000;
+                                    let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
+                                    timeStr = new Date(utcMs + offsetMs).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+                                }
                             }
-                        }
+                        } catch(err) { timeStr = "Calc Error"; }
+                        
                         return `
                         <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); padding: 12px; border-radius: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
                             <div>
@@ -8940,15 +8991,16 @@ HTML_DASHBOARD = """
                     }).join('');
                 }
 
-                // Format Currencies & Languages safely
                 let currencies = "None";
-                if(country.currencies) {
-                    currencies = Object.values(country.currencies).map(c => `${c.name} (${c.symbol})`).join(', ');
-                }
+                if(country.currencies) currencies = Object.values(country.currencies).map(c => `${c.name} (${c.symbol})`).join(', ');
                 let languages = "None";
-                if(country.languages) {
-                    languages = Object.values(country.languages).join(', ');
-                }
+                if(country.languages) languages = Object.values(country.languages).join(', ');
+
+                let capitalText = 'None';
+                if(country.capital && country.capital.length > 0) capitalText = country.capital[0];
+
+                let popText = 'Unknown';
+                if(country.population) popText = country.population.toLocaleString();
 
                 panel.innerHTML = `
                     <div style="display:flex; align-items:center; gap: 15px; margin-bottom: 25px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 20px;">
@@ -8970,11 +9022,11 @@ HTML_DASHBOARD = """
                     <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 25px;">
                         <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 14px; border: 1px solid var(--card-border);">
                             <div style="color: var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Capital City</div>
-                            <div style="color: #fff; font-size: 14px; font-weight: 900; margin-top: 4px;">${country.capital ? country.capital[0] : 'None'}</div>
+                            <div style="color: #fff; font-size: 14px; font-weight: 900; margin-top: 4px;">${capitalText}</div>
                         </div>
                         <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 14px; border: 1px solid var(--card-border);">
                             <div style="color: var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Population</div>
-                            <div style="color: #fff; font-size: 14px; font-weight: 900; margin-top: 4px;">${country.population.toLocaleString()}</div>
+                            <div style="color: #fff; font-size: 14px; font-weight: 900; margin-top: 4px;">${popText}</div>
                         </div>
                         <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 14px; border: 1px solid var(--card-border);">
                             <div style="color: var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Currency & Markets</div>
@@ -8996,7 +9048,7 @@ HTML_DASHBOARD = """
                 `;
 
             } catch (e) {
-                panel.innerHTML = `<div style="color: var(--danger); text-align:center; padding: 40px;"><b>❌ Target Lock Failed.</b><br><span style="font-size:12px;">Satellite could not retrieve secure data for '${rawName}'.</span></div>`;
+                panel.innerHTML = `<div style="color: var(--danger); text-align:center; padding: 40px;"><b>❌ Target Lock Failed.</b><br><span style="font-size:12px;">Satellite could not retrieve secure data for '${rawName}'. Try searching manually.</span></div>`;
                 console.error(e);
             }
         }
