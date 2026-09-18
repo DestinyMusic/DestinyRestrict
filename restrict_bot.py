@@ -8421,7 +8421,8 @@ HTML_DASHBOARD = """
                 playerTotalDuration = Number(pdata.duration) || 0;
                 
                 // 🟢 PLAYLIST INITIALIZATION & GLOBAL TIMELINE MATH
-                window.globalPlaylist = plistData.playlist || [];
+                window.rawZipEntries = plistData.playlist || [];
+                window.globalPlaylist = window.rawZipEntries.filter(t => !t.is_sub); // 🟢 Hide LRC files from audio queue
                 window.currentPlayIndex = 0;
                 
                 if (window.globalPlaylist.length > 0 && playerTotalDuration > 0) {
@@ -8481,12 +8482,76 @@ HTML_DASHBOARD = """
                     const coverImg = document.getElementById('album-cover-art');
                     const trackInfo = document.getElementById('album-track-info');
                     
+                    // 🟢 PREVENT UI COLLAPSE: Force image to hold its space even if broken/empty
+                    if (coverImg) {
+                        coverImg.style.minHeight = '150px';
+                        coverImg.style.minWidth = '150px';
+                    }
+
+                    // 🟢 DYNAMIC LYRICS ENGINE FOR ZIPS & SINGLE FILES
+                    async function fetchSmartLyrics(zipIdx) {
+                        const overlay = document.getElementById('subtitle-overlay');
+                        const scroller = document.getElementById('lyrics-scroller');
+                        if (overlay) overlay.innerHTML = '';
+                        if (scroller) scroller.dataset.rendered = "false";
+                        subtitleCues = [];
+                        activeSubtitleIndex = 'off';
+                        
+                        if (window.subtitleAbortController) window.subtitleAbortController.abort();
+                        window.subtitleAbortController = new AbortController();
+                        
+                        let text = "";
+                        try {
+                            // 1. Check for external .lrc / .vtt file matching the track name inside the ZIP
+                            if (zipIdx !== '' && window.rawZipEntries) {
+                                const track = window.rawZipEntries.find(t => t.original_index === zipIdx);
+                                if (track) {
+                                    const baseName = track.display_name.substring(0, track.display_name.lastIndexOf('.'));
+                                    const lrcTrack = window.rawZipEntries.find(t => 
+                                        t.display_name.toLowerCase() === `${baseName.toLowerCase()}.lrc` || 
+                                        t.display_name.toLowerCase() === `${baseName.toLowerCase()}.vtt`
+                                    );
+                                    if (lrcTrack) {
+                                        let lrcUrl = buildNativeUrl();
+                                        lrcUrl = lrcUrl.replace(`zip_idx=${zipIdx}`, `zip_idx=${lrcTrack.original_index}`);
+                                        if (!lrcUrl.includes('zip_idx')) lrcUrl += `&zip_idx=${lrcTrack.original_index}`;
+                                        
+                                        const res = await fetch(lrcUrl, { signal: window.subtitleAbortController.signal });
+                                        if (res.ok) text = await res.text();
+                                    }
+                                }
+                            }
+                            
+                            // 2. Fallback to extracting internal metadata lyrics via FFprobe
+                            if (!text) {
+                                let url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}&sub_idx=metadata_lyrics`;
+                                if (zipIdx !== '') url += `&zip_idx=${zipIdx}`;
+                                const res = await fetch(url, { signal: window.subtitleAbortController.signal });
+                                if (res.ok) text = await res.text();
+                            }
+                            
+                            if (text && text.trim().length > 0) {
+                                activeSubtitleIndex = 'metadata_lyrics';
+                                if (text.includes('[00:') || text.includes('[01:') || text.includes('[02:')) {
+                                    subtitleCues = parseLRC(text);
+                                } else {
+                                    subtitleCues = parseWebVTT(text);
+                                }
+                            }
+                            renderCurrentSubtitle();
+                        } catch (err) {
+                            if (err?.name !== 'AbortError') console.warn('Lyrics fetch failed:', err);
+                        }
+                    }
+
                     function updateAlbumText() {
                         let currentCoverUrl = '';
+                        let currentZipIdx = ''; // 🟢 Track this
 
                         // 1. Text & URL Logic (Handles BOTH Playlists and Single Tracks)
                         if (window.globalPlaylist && window.globalPlaylist.length > 0) {
                             const track = window.globalPlaylist[window.currentPlayIndex];
+                            currentZipIdx = track.original_index;
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">TRACK ${window.currentPlayIndex + 1} OF ${window.globalPlaylist.length}</span><br>${track.display_name}`;
                             if (titleEl) titleEl.innerText = `[${window.currentPlayIndex + 1}/${window.globalPlaylist.length}] ${track.display_name}`;
                             
@@ -8535,6 +8600,9 @@ HTML_DASHBOARD = """
                             coverContainer.style.display = 'none';
                             vp.style.backgroundImage = 'none';
                         }
+                        
+                        // 🟢 TRIGGER SMART LYRICS REFRESH!
+                        fetchSmartLyrics(currentZipIdx);
                     }
                     window.updateAlbumText = updateAlbumText;
                     updateAlbumText(); // Call immediately on load
@@ -12028,13 +12096,15 @@ async def _api_subtitles_handler(request):
         user_id = 0
     link = request.query.get("link", "").strip()
     sub_idx = request.query.get("sub_idx", "0").strip()
+    zip_idx = request.query.get("zip_idx", "").strip() # 🟢 NEW: Support ZIP
+    
     if not link:
         return web.Response(status=400, text="Invalid Link")
 
     is_tg = _is_tg_link(link)
     logger.info(f"📝 [SUBTITLES] Extract Request | User: {user_id} | Is TG: {is_tg} | Sub_Idx: {sub_idx} | Link: {link[:60]}...")
 
-    cache_key = f"{user_id}:{link}:{sub_idx}"
+    cache_key = f"{user_id}:{link}:{sub_idx}:{zip_idx}"
     now = time.time()
     cached = SUBTITLE_CACHE.get(cache_key)
     if cached and cached[1] > now:
@@ -12051,16 +12121,19 @@ async def _api_subtitles_handler(request):
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
         msg_id = parsed.get("msg_id")
-        msg_range = parsed.get("msg_range") # 🟢 Extract range
+        msg_range = parsed.get("msg_range") 
         if chat_id is None or msg_id is None:
             return web.Response(status=400, text="Invalid Telegram link")
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
         if msg_range:
-            actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
+            actual_url += f"&range={msg_range[0]}-{msg_range[1]}" 
+        if zip_idx:
+            actual_url += f"&zip_idx={zip_idx}" # 🟢 Point FFprobe inside the ZIP track
     else:
         actual_url = await resolve_direct_link(link)
-        # 🟢 FIX: Let FFmpeg fetch directly to extract text instantly without stalling the server!
-        logger.debug(f"📝 [SUBTITLES] Direct FFmpeg Extraction (No Loopback): {actual_url[:100]}...")
+        if zip_idx:
+            from urllib.parse import quote
+            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}&zip_idx={zip_idx}"
 
     # 🟢 FIX: Extract Embedded Metadata Lyrics (ID3/FLAC Tags) directly!
     if sub_idx == "metadata_lyrics":
@@ -12220,12 +12293,15 @@ async def get_zip_playlist(read_fn, zip_size):
         tail_len = min(262144, zip_size)
         tail = await read_fn(zip_size - tail_len, tail_len)
         entries = _parse_central_directory_full(tail, zip_size - tail_len, zip_size)
-        valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
+        valid_media = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
+        valid_subs = (".lrc", ".srt", ".vtt")
         playlist = []
         for idx, e in enumerate(entries):
-            if e["name"].lower().endswith(valid_exts) and e["method"] == 0:
+            lower_name = e["name"].lower()
+            if (lower_name.endswith(valid_media) or lower_name.endswith(valid_subs)) and e["method"] == 0:
                 e["original_index"] = idx
                 e["display_name"] = e["name"].split("/")[-1].split("\\")[-1]
+                e["is_sub"] = lower_name.endswith(valid_subs) # 🟢 Tag subtitles so they aren't played as audio
                 playlist.append(e)
         return playlist
     except Exception: return []
