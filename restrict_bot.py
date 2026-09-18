@@ -4861,21 +4861,21 @@ HTML_DASHBOARD = """
 
         /* 🟢 NEW: Dedicated Audio Lyrics Scroller */
         .lyrics-scroller {
-            position: absolute; top: 15%; bottom: 15%; left: 5%; right: 5%;
+            position: absolute; top: 55%; bottom: 8%; left: 5%; right: 5%;
             overflow-y: auto; text-align: center; z-index: 10;
             display: none; scroll-behavior: smooth;
             -ms-overflow-style: none; scrollbar-width: none;
-            mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
-            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
+            mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
+            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 20%, black 80%, transparent 100%);
             pointer-events: none; /* Let touches pass through to video/center controls if needed */
         }
         .lyrics-scroller::-webkit-scrollbar { display: none; }
         .lrc-line {
-            font-size: clamp(16px, 2.5vw, 24px); font-weight: 700; color: rgba(255,255,255,0.4);
-            margin: 15px 0; transition: all 0.3s ease; text-shadow: 0 2px 10px rgba(0,0,0,0.8);
+            font-size: clamp(14px, 2vw, 18px); font-weight: 600; color: rgba(255,255,255,0.3);
+            margin: 12px 0; transition: all 0.3s ease; text-shadow: none;
         }
         .lrc-line.active {
-            color: var(--accent); transform: scale(1.1); text-shadow: 0 0 15px var(--glow);
+            color: #ffffff; transform: scale(1.15); font-weight: 800; text-shadow: 0 0 10px rgba(255,255,255,0.8);
         }
 
         /* Center Skip Buttons (Liquid Glass UI) */
@@ -7580,7 +7580,14 @@ HTML_DASHBOARD = """
                 gl.bindTexture(gl.TEXTURE_2D, glTexture);
                 try {
                     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
-                } catch (err) {}
+                    if (video.style.opacity !== '0.01') video.style.opacity = '0.01';
+                    if (canvas.style.display === 'none') canvas.style.display = 'block';
+                } catch (err) {
+                    // 🟢 FIX: If direct CDN blocks CORS, fallback to showing the raw video element instantly!
+                    video.style.opacity = '1';
+                    canvas.style.display = 'none';
+                    return;
+                }
 
                 const inMap = { none: 0, lr: 1, tb: 2, ci: 3, ri: 4 };
                 const outMap = { rc: 0, gm: 1, ba: 2, vr: 3, '2d': 4 };
@@ -8133,6 +8140,14 @@ HTML_DASHBOARD = """
         }
 
         function buildNativeUrl() {
+            // 🟢 FAST NATIVE DIRECT LINK SEEKING BYPASS
+            if (playerSourceKind === 'direct' && window.currentProbeData && window.currentProbeData.resolved_url) {
+                // We must proxy ZIPs to extract files, but normal direct links can stream straight from the CDN!
+                if (!window.globalPlaylist || window.globalPlaylist.length === 0) {
+                    return window.currentProbeData.resolved_url;
+                }
+            }
+            
             let base = playerSourceKind === 'tg' 
                 ? `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`
                 : `/api/direct_stream?user_id=${encodeURIComponent(currentUser)}&url=${encodeURIComponent(activeMediaLink)}`;
