@@ -4867,17 +4867,17 @@ HTML_DASHBOARD = """
         /* 🟢 NEW: Apple Music Style Auto-Scrolling Lyrics */
         .lyrics-scroller {
             position: absolute; left: 5%; right: 5%; bottom: 10%; top: 40%; /* Sits elegantly below the album art */
-            overflow-y: auto; scroll-behavior: smooth;
+            overflow-y: hidden; scroll-behavior: smooth;
             -ms-overflow-style: none; scrollbar-width: none;
             mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
             -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 15%, black 85%, transparent 100%);
-            z-index: 28; pointer-events: auto; text-align: center;
+            z-index: 15; pointer-events: none; text-align: center; /* 🟢 FIX: Lowered Z-index & Disabled Touch */
         }
         .lyrics-scroller::-webkit-scrollbar { display: none; }
         .lrc-line {
             font-size: 18px; font-weight: 700; color: rgba(255,255,255,0.4);
             margin: 18px 0; transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            cursor: pointer; padding: 0 10px; filter: blur(0.5px);
+            cursor: default; padding: 0 10px; filter: blur(0.5px); /* 🟢 FIX: Removed pointer cursor */
             display: block; width: 100%;
         }
         .lrc-line:hover { color: rgba(255,255,255,0.7); }
@@ -7709,12 +7709,14 @@ HTML_DASHBOARD = """
         function parseLRC(text) {
             const rawCues = [];
             const lines = String(text).replace(/\\r/g, '').split('\\n');
-            const lrcRegex = /(?:\\[|<)(\\d{2,}):(\\d{2})(?:\\.(\\d{2,3}))?(?:\\]|>)/g;
+            // 🟢 FIX: Only match the MAIN line timestamp [...] and ignore syllable tags!
+            const lrcRegex = /\\[(\\d{2,}):(\\d{2})(?:\\.(\\d{2,3}))?\\]/g;
             
             lines.forEach(line => {
                 const matches = [...line.matchAll(lrcRegex)];
                 if (matches.length > 0) {
-                    const textContent = line.replace(/(?:\\[|<).*?(?:\\]|>)/g, '').trim();
+                    // 🟢 FIX: Strip both line tags and syllable tags <...> for a perfectly clean single line
+                    const textContent = line.replace(/\\[.*?\\]/g, '').replace(/<.*?>/g, '').trim();
                     if (textContent) {
                         matches.forEach(m => {
                             const min = parseInt(m[1], 10);
@@ -7794,7 +7796,8 @@ HTML_DASHBOARD = """
                     
                     // Render HTML lines only once per track
                     if (scroller.dataset.rendered !== activeSubtitleIndex) {
-                        scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line" id="lrc-${i}" onclick="seekPlaybackTo(${c.start})">${c.text}</div>`).join('');
+                        // 🟢 FIX: Removed onclick="" since lyrics are now beautifully untouchable
+                        scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line" id="lrc-${i}">${c.text}</div>`).join('');
                         scroller.dataset.rendered = activeSubtitleIndex;
                         applySubtitleStyle(); // Sync colors & fonts instantly
                     }
