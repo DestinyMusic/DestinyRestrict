@@ -4554,11 +4554,6 @@ HTML_DASHBOARD = """
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="TG Portal">
     <link rel="apple-touch-icon" href="https://cdn-icons-png.flaticon.com/512/2111/2111646.png">
-    
-    <!-- 🟢 NEW: 3D GLOBE ENGINE LIBRARIES (Pinned for Stability) -->
-    <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
-    <script src="https://unpkg.com/globe.gl@2.32.0/dist/globe.gl.min.js"></script>
-
     <style>
         :root { 
             --liquid-width: 85%; /* Scaled up dynamically for TVs & Tablets */
@@ -4860,33 +4855,9 @@ HTML_DASHBOARD = """
             border-radius: 7px;
             padding: 4px 10px;
             text-shadow: 0 2px 4px rgba(0,0,0,0.95);
-            text-align: center; 
+            text-align: center; /* 🟢 FIX: This ensures the text itself is perfectly centered when it breaks into 2 lines */
         }
         .cinema-viewport.fullscreen-subtitle .subtitle-overlay { bottom: 13%; }
-
-        /* 🟢 NEW: Apple Music Style Auto-Scrolling Lyrics */
-        .lyrics-scroller {
-            position: absolute; left: 5%; right: 5%; bottom: 12%; top: 68%; /* 🟢 FIX: Pushed down entirely below the album art */
-            overflow-y: hidden; scroll-behavior: smooth;
-            -ms-overflow-style: none; scrollbar-width: none;
-            mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%); /* Sweeter fade for a smaller area */
-            -webkit-mask-image: linear-gradient(to bottom, transparent 0%, black 30%, black 70%, transparent 100%);
-            z-index: 15; pointer-events: none; text-align: center;
-        }
-        .lyrics-scroller::-webkit-scrollbar { display: none; }
-        .lrc-line {
-            font-size: 18px; font-weight: 700; color: rgba(255,255,255,0.3); /* 🟢 FIX: Dimmer inactive text */
-            margin: 12px 0; /* 🟢 FIX: Tighter margin for smaller lyrics box */
-            transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1);
-            cursor: default; padding: 0 10px; filter: blur(1px); /* 🟢 FIX: Slightly blurrier inactive lines */
-            display: block; width: 100%;
-        }
-        .lrc-line:hover { color: rgba(255,255,255,0.7); }
-        .lrc-line.active {
-            font-size: 24px; color: #ffffff !important; /* 🟢 FIX: Pure full white */
-            text-shadow: 0 0 10px rgba(255,255,255,0.9), 0 0 20px rgba(255,255,255,0.6) !important; /* 🟢 FIX: Bright white glow instead of theme glow */
-            transform: scale(1.15) !important; opacity: 1 !important; filter: blur(0) !important; /* 🟢 FIX: Larger scale and sharp focus */
-        }
 
         /* Center Skip Buttons (Liquid Glass UI) */
         .center-controls {
@@ -5158,8 +5129,6 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('mediainfo', 'Media Inspector')">🔍 Media Inspector</div>
             <div class="menu-item" onclick="switchView('spectrogram', 'Audio Spectrogram')">📉 Audio Spectrogram</div>
             <div class="menu-item" onclick="switchView('theater', 'Media Theater')">🍿 Media Theater</div>             
-            <!-- 🟢 NEW: WORLD EXPLORER MENU LINK -->
-            <div class="menu-item" onclick="switchView('globe', 'World Explorer')">🌍 World Explorer</div>
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
 
@@ -5322,9 +5291,6 @@ HTML_DASHBOARD = """
                     <canvas id="webgl-canvas"></canvas>
                     <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline preload="auto"></video>
                     <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
-                    
-                    <!-- 🟢 NEW: Scrolling Lyrics Engine Container -->
-                    <div id="lyrics-scroller" class="lyrics-scroller" style="display:none;"></div>
 
                     <!-- Video Title Bar -->
                     <div class="cinema-title-bar" id="cinema-title">No Media Loaded</div>
@@ -5797,41 +5763,6 @@ HTML_DASHBOARD = """
                 </div>
             </div>
             
-            <!-- ========================================== -->
-            <!-- 🌍 3D WORLD EXPLORER VIEW                  -->
-            <!-- ========================================== -->
-            <div id="view-globe" class="view-section">
-                <div class="section-title">Global Database & Timezones</div>
-                
-                <div class="input-group" style="margin-bottom: 20px;">
-                    <div style="display: flex; gap: 8px;">
-                        <input type="text" id="country-search-input" placeholder="Search any country (e.g. Japan, Brazil, India)..." style="flex: 1; border-radius: 16px; border: 2px solid var(--card-border); background: rgba(0,0,0,0.3); color: #fff; padding: 14px 16px;" onkeypress="if(event.key === 'Enter') searchCountryManual()">
-                        <button class="primary-btn" style="width: auto; padding: 0 20px; background: #8b5cf6;" onclick="searchCountryManual()">Search</button>
-                    </div>
-                </div>
-
-                <div style="display: flex; flex-wrap: wrap; gap: 20px; align-items: stretch;">
-                    
-                    <!-- 🟢 FIX: Perfectly Centered 3D Globe Projection Area -->
-                    <div style="flex: 1 1 400px; min-height: 450px; height: 55vh; border-radius: 24px; overflow: hidden; position: relative; border: 1px solid var(--card-border); box-shadow: 0 10px 40px rgba(0,0,0,0.5); background: #000; display: flex; align-items: center; justify-content: center;">
-                        <div id="globe-container" style="width: 100%; height: 100%; display: block;">
-                            <!-- Globe.gl engine injects here -->
-                        </div>
-                    </div>
-                    
-                    <!-- Interactive Side Intelligence Panel -->
-                    <div class="card" style="flex: 1 1 350px; display: flex; flex-direction: column; max-height: 600px; overflow-y: auto; padding: 25px; scrollbar-width: thin;">
-                        <div id="country-empty" style="text-align:center; color: var(--subtext); margin-top: 15%;">
-                            <div style="font-size: 60px; margin-bottom: 20px;">🌍</div>
-                            <h3 style="color: #fff;">Spin the globe!</h3>
-                            <p style="font-size: 13px; line-height: 1.5;">Click a country or use the search bar above to fetch live Timezones, Geo-Political data, Economics, and Recent News.</p>
-                        </div>
-                        <div id="country-data" style="display: none;"></div>
-                    </div>
-
-                </div>
-            </div>
-
             <div id="view-settings" class="view-section">
                 
                 <div class="section-title">Interface Settings</div>
@@ -6243,7 +6174,7 @@ HTML_DASHBOARD = """
             if (viewId === 'network') fetchNetworkStats();
             if (viewId === 'sos') loadSosStats();
             if (viewId === 'settings') loadWorkerTokens();
-            if (viewId === 'globe') initGlobe(); // 🟢 NEW: Start 3D Globe Engine
+
         }
         
         async function fetchNetworkStats() {
@@ -7677,6 +7608,7 @@ HTML_DASHBOARD = """
                     const timeParts = lines[i].split('-->');
                     const start = vttTimeToSeconds(timeParts[0]);
                     
+                    // 🟢 FIX: Parse end time AND extra VTT settings (like line:10%)
                     const endMatch = timeParts[1].trim().match(/^(\\S+)(.*)/);
                     const end = endMatch ? vttTimeToSeconds(endMatch[1]) : 0;
                     const settings = endMatch ? endMatch[2].trim() : '';
@@ -7689,12 +7621,17 @@ HTML_DASHBOARD = """
                     }
                     
                     let rawText = payload.join('\\n');
+                    
+                    // 🟢 DETECT SDH INTENT: Top-Screen detection from ASS tags or VTT settings
                     let isTop = false;
                     if (rawText.includes('{\\an8}') || rawText.includes('{\\an7}') || rawText.includes('{\\an9}') || settings.includes('line:0') || settings.includes('line:10%')) {
                         isTop = true;
                     }
                     
+                    // Strip complex ASS brackets but KEEP basic HTML formatting (colors, bold, italics)
                     let cleanText = rawText.replace(/\\{[^}]*\\}/g, '').trim();
+                    
+                    // Convert WebVTT color tags to HTML spans so the browser parses them correctly
                     cleanText = cleanText.replace(/<c\\.([^>]+)>([^<]+)<\\/c>/gi, '<span style="color:$1;">$2</span>');
                     
                     if (cleanText && Number.isFinite(start) && Number.isFinite(end)) {
@@ -7707,72 +7644,6 @@ HTML_DASHBOARD = """
             return cues.sort((a, b) => a.start - b.start);
         }
 
-        // 🟢 UPGRADED: LRC Parser with Duplicate Line Cleaning & Sequential Deduping
-        function parseLRC(text) {
-            const rawCues = [];
-            const lines = String(text).replace(/\\r/g, '').split('\\n');
-            // 🟢 FIX: Only match the MAIN line timestamp [...] and ignore syllable tags!
-            const lrcRegex = /\\[(\\d{2,}):(\\d{2})(?:\\.(\\d{2,3}))?\\]/g;
-            
-            lines.forEach(line => {
-                const matches = [...line.matchAll(lrcRegex)];
-                if (matches.length > 0) {
-                    // 🟢 FIX: Strip both line tags and syllable tags <...> for a perfectly clean single line
-                    const textContent = line.replace(/\\[.*?\\]/g, '').replace(/<.*?>/g, '').trim();
-                    if (textContent) {
-                        matches.forEach(m => {
-                            const min = parseInt(m[1], 10);
-                            const sec = parseInt(m[2], 10);
-                            const ms = m[3] ? parseInt(m[3].padEnd(3, '0'), 10) / 1000 : 0;
-                            const time = min * 60 + sec + ms;
-                            rawCues.push({ start: time, text: textContent });
-                        });
-                    }
-                }
-            });
-            
-            // Sort chronologically by timestamp
-            rawCues.sort((a, b) => a.start - b.start);
-            
-            // 🟢 Deduping Engine: Filter out duplicate consecutive chorus lines
-            const cues = [];
-            for (let i = 0; i < rawCues.length; i++) {
-                const current = rawCues[i];
-                // Check if this exact text appears immediately after, avoid stacking identical lines
-                if (cues.length > 0 && cues[cues.length - 1].text === current.text && (current.start - cues[cues.length - 1].start < 2.0)) {
-                    continue; // Skip duplicate rapid-fire chorus triggers
-                }
-                
-                let endTime = current.start + 6.0; // Default line display window
-                if (i < rawCues.length - 1) {
-                    endTime = Math.min(endTime, rawCues[i + 1].start);
-                }
-                
-                cues.push({
-                    start: current.start,
-                    end: Math.max(current.start + 1.5, endTime),
-                    text: current.text,
-                    isLrc: true
-                });
-            }
-            return cues;
-        }
-
-        // 🟢 NEW: Global Click-to-Seek from Lyrics
-        window.seekPlaybackTo = function(targetSec) {
-            const target = targetSec + subtitleSyncOffset;
-            const video = document.getElementById('hidden-video');
-            globalTargetTime = target;
-            if (playerRequiresTranscode) {
-                isTranscodeSeeking = true;
-                restartStreamAt(target);
-            } else {
-                if (video) video.currentTime = target;
-                renderCurrentSubtitle(target);
-                if (!playerFallbackAttempted) armPlaybackWatchdog();
-            }
-        };
-
         function renderCurrentSubtitle(forceTime = null) {
             const video = document.getElementById('hidden-video');
             const overlay = document.getElementById('subtitle-overlay');
@@ -7784,12 +7655,18 @@ HTML_DASHBOARD = """
                 return;
             }
             
-            let t = forceTime !== null ? forceTime : (playerRequiresTranscode ? (playerTimelineOffset + (video.currentTime||0)) : (video.currentTime||0));
+            let t = 0;
+            if (forceTime !== null) {
+                t = forceTime;
+            } else {
+                let cur = video.currentTime || 0;
+                t = playerRequiresTranscode ? (playerTimelineOffset + cur) : cur;
+            }
+
+            // 🟢 Apply the manual sync offset slider
             const adjustedTime = t - subtitleSyncOffset;
 
-            // 🟢 CRITICAL FIX: Strict Separation of Lyrics vs Subtitles!
-            // Only use the Apple Music Lyrics Scroller if it is explicitly an LRC file.
-            // If it is a VTT file (even for an audio track), use the standard bottom Subtitle Overlay!
+            // 🟢 STRICT SEPARATION: Use Scroller ONLY for explicitly parsed Lyrics (LRC)
             const useScroller = subtitleCues.length > 0 && subtitleCues[0].isLrc === true;
 
             if (useScroller) {
@@ -7797,14 +7674,12 @@ HTML_DASHBOARD = """
                 if (scroller) {
                     scroller.style.display = 'block';
                     
-                    // Render HTML lines only once per track
                     if (scroller.dataset.rendered !== activeSubtitleIndex) {
                         scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line" id="lrc-${i}">${c.text}</div>`).join('');
                         scroller.dataset.rendered = activeSubtitleIndex;
-                        applySubtitleStyle(); // Sync colors & fonts instantly
+                        applySubtitleStyle();
                     }
                     
-                    // Find active lyric
                     let activeIdx = -1;
                     for (let i = 0; i < subtitleCues.length; i++) {
                         if (adjustedTime >= subtitleCues[i].start && adjustedTime < subtitleCues[i].end) {
@@ -7817,7 +7692,6 @@ HTML_DASHBOARD = """
                         if (activeEl && !activeEl.classList.contains('active')) {
                             document.querySelectorAll('.lrc-line.active').forEach(el => el.classList.remove('active'));
                             activeEl.classList.add('active');
-                            // Smooth scroll into vertical center
                             activeEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                         }
                     } else if (adjustedTime < subtitleCues[0].start) {
@@ -7831,8 +7705,9 @@ HTML_DASHBOARD = """
             // 🎥 Normal Video WebVTT Subtitles (or VTT on Audio)
             if (scroller) scroller.style.display = 'none';
             if (overlay) overlay.style.display = 'flex';
-            
+
             const hits = subtitleCues.filter(c => adjustedTime >= c.start && adjustedTime <= c.end);
+            
             if (!hits.length) {
                 overlay.innerHTML = '';
                 return;
@@ -7846,6 +7721,7 @@ HTML_DASHBOARD = """
                 htmlContent += `<div class="subtitle-text">${c.text}</div>`;
             });
             
+            // 3D Split-Screen (VR/SBS) Subtitle Duplication
             if (matrix3DOut === 'vr') {
                 overlay.style.left = '0';
                 overlay.style.right = '0';
@@ -7856,24 +7732,22 @@ HTML_DASHBOARD = """
                     </div>
                 `;
             } else {
-                overlay.style.left = '1%'; 
+                overlay.style.left = '1%'; /* 🟢 FIX: Allows the subtitle slider to stretch to 99% of screen width */
                 overlay.style.right = '1%';
                 overlay.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>`;
             }
             
+            // Flag the overlay so applySubtitleStyle knows where to put it
             overlay.dataset.isTop = hasTop ? 'true' : 'false';
             applySubtitleStyle();
         }
-
+        
         async function applySubtitleSelection() {
             const subSelect = document.getElementById('pop-sub-select');
             const overlay = document.getElementById('subtitle-overlay');
-            const scroller = document.getElementById('lyrics-scroller');
             activeSubtitleIndex = subSelect?.value ?? 'off';
             subtitleCues = [];
-            
             if (overlay) overlay.innerHTML = '';
-            if (scroller) scroller.dataset.rendered = "false";
 
             if (subtitleAbortController) {
                 subtitleAbortController.abort();
@@ -7891,16 +7765,39 @@ HTML_DASHBOARD = """
                 const response = await fetch(url, { signal: subtitleAbortController.signal, cache: 'force-cache' });
                 if (!response.ok) throw new Error(`Subtitle server returned ${response.status}`);
 
-                // 🟢 FETCH FULL TEXT ONCE (Because Lyrics files are extremely small)
-                const text = await response.text();
-                
-                // Automatically detect LRC vs VTT formats natively
-                if (text.includes('[00:') || text.includes('[01:') || text.includes('[02:')) {
-                    subtitleCues = parseLRC(text);
-                } else {
-                    subtitleCues = parseWebVTT(text);
+                // The server caches extracted WebVTT.  Read it progressively so the
+                // first cues can appear before the entire file has arrived.
+                const reader = response.body?.getReader();
+                if (!reader) {
+                    subtitleCues = parseWebVTT(await response.text());
+                    renderCurrentSubtitle();
+                    return;
                 }
-                
+
+                const decoder = new TextDecoder('utf-8');
+                let buffer = '';
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    buffer += decoder.decode(value, { stream: true });
+
+                    const blocks = buffer.split(/\\n\\s*\\n/);
+                    buffer = blocks.pop() || '';
+                    for (const block of blocks) {
+                        const cues = parseWebVTT(block + '\\n\\n');
+                        if (cues.length) subtitleCues.push(...cues);
+                    }
+                    subtitleCues.sort((a, b) => a.start - b.start);
+                    renderCurrentSubtitle();
+                }
+
+                buffer += decoder.decode();
+                if (buffer.trim()) {
+                    const cues = parseWebVTT(buffer + '\\n\\n');
+                    if (cues.length) subtitleCues.push(...cues);
+                }
+                subtitleCues.sort((a, b) => a.start - b.start);
                 renderCurrentSubtitle();
             } catch (err) {
                 if (err?.name !== 'AbortError') {
@@ -7920,7 +7817,7 @@ HTML_DASHBOARD = """
         }
 
         function applySubtitleStyle() {
-            const size = Number(document.getElementById('subtitle-size-select')?.value || 20); 
+            const size = Number(document.getElementById('subtitle-size-select')?.value || 20); // 🟢 FIX: Fallback to 20px
             const fg = document.getElementById('subtitle-color-input')?.value || '#ffffff';
             const bg = document.getElementById('subtitle-bg-input')?.value || '#000000';
             const alpha = Math.max(0, Math.min(100, Number(document.getElementById('subtitle-bg-alpha')?.value || 70))) / 100;
@@ -7929,33 +7826,44 @@ HTML_DASHBOARD = """
             const weight = document.getElementById('subtitle-weight-select')?.value || '600';
             
             const pos = document.getElementById('subtitle-pos-slider')?.value || 88;
-            const stretch = document.getElementById('subtitle-width-slider')?.value || 95; 
+            const stretch = document.getElementById('subtitle-width-slider')?.value || 95; // 🟢 FIX: Fallback to 95% width
             
             const overlay = document.getElementById('subtitle-overlay');
+            const canvas = document.getElementById('webgl-canvas');
             
             if (overlay) {
-                overlay.style.position = 'absolute';
-                overlay.style.bottom = '12%'; // Anchored neatly above the OSD player controls
-                overlay.style.top = 'auto';
-                overlay.style.left = '5%';
-                overlay.style.right = '5%';
-                overlay.style.display = 'flex';
-                overlay.style.flexDirection = 'column';
-                overlay.style.alignItems = 'center';
-                overlay.style.justifyContent = 'flex-end';
-                overlay.style.zIndex = '28';
-                overlay.style.pointerEvents = 'none';
+                if (canvas && canvas.style.display !== 'none') {
+                    // 🟢 FIX 2a: Lock subtitles dynamically to the mathematical BOTTOM edge of the video, NOT the viewport top!
+                    const viewportHeight = overlay.parentElement.clientHeight;
+                    const canvasHeight = parseFloat(canvas.style.height) || viewportHeight;
+                    const topEdge = (viewportHeight - canvasHeight) / 2;
+                    const bottomEdge = (viewportHeight - canvasHeight) / 2;
+                    
+                    if (overlay.dataset.isTop === 'true') {
+                        overlay.style.top = `${Math.max(0, topEdge + (canvasHeight * 0.10))}px`;
+                        overlay.style.bottom = 'auto';
+                    } else {
+                        overlay.style.top = 'auto';
+                        overlay.style.bottom = `${Math.max(0, bottomEdge + (canvasHeight * ((100 - pos) / 100)))}px`; 
+                    }
+                } else {
+                    if (overlay.dataset.isTop === 'true') {
+                        overlay.style.top = '10%';
+                        overlay.style.bottom = 'auto';
+                    } else {
+                        overlay.style.top = 'auto';
+                        overlay.style.bottom = `${100 - pos}%`; 
+                    }
+                }
+                overlay.style.alignItems = 'center'; 
             }
 
+            // 🟢 FIX 2b: Dynamically shrink subtitle font size on narrow mobile portrait screens
             let responsiveSize = size;
-            let lyricSize = size + 4; 
-            
             if (window.innerWidth < 600) {
-                responsiveSize = Math.max(12, size * 0.65); 
-                lyricSize = Math.max(16, (size + 4) * 0.75); 
+                responsiveSize = Math.max(12, size * 0.65); // Scale down 35% on mobile phones
             }
 
-            // Sync standard VTT Subs
             document.querySelectorAll('#subtitle-overlay .subtitle-text').forEach(text => {
                 text.style.fontSize = `${responsiveSize}px`;
                 text.style.color = fg;
@@ -7963,19 +7871,6 @@ HTML_DASHBOARD = """
                 text.style.fontFamily = font;
                 text.style.fontWeight = weight;
                 text.style.maxWidth = `${stretch}%`;
-                text.style.textAlign = 'center';
-            });
-
-            // Sync Apple Music Lyrics Scroller
-            document.querySelectorAll('.lrc-line').forEach(text => {
-                text.style.fontFamily = font;
-                text.style.fontWeight = weight;
-                text.style.color = 'rgba(255,255,255,0.4)';
-                text.style.fontSize = `${responsiveSize}px`;
-            });
-            document.querySelectorAll('.lrc-line.active').forEach(text => {
-                text.style.color = fg; 
-                text.style.fontSize = `${lyricSize}px`;
             });
         }
 
@@ -8058,30 +7953,23 @@ HTML_DASHBOARD = """
 
         // Setup the subtitle syncing
         function syncExternalSubtitles(text) {
-            if (text.includes('[00:') || text.includes('[01:') || text.includes('[02:')) {
-                subtitleCues = parseLRC(text);
-            } else {
-                subtitleCues = parseWebVTT(text);
-            }
+            subtitleCues = parseWebVTT(text);
             activeSubtitleIndex = 'external';
             const subSelect = document.getElementById('pop-sub-select');
             if(subSelect) subSelect.value = 'off';
-            
-            const scroller = document.getElementById('lyrics-scroller');
-            if(scroller) scroller.dataset.rendered = "false";
             renderCurrentSubtitle();
         }
 
         // --- Subtitle Loaders ---
         async function loadExternalSubtitlesUrl() {
             const url = document.getElementById('ext-sub-url').value.trim();
-            if(!url) return alert("Please enter a .vtt or .lrc subtitle URL.");
+            if(!url) return alert("Please enter a .vtt subtitle URL.");
             try {
                 const res = await fetch(url);
                 if(!res.ok) throw new Error("HTTP " + res.status);
                 const text = await res.text();
                 syncExternalSubtitles(text);
-                alert("External Subtitles/Lyrics URL Loaded!");
+                alert("External Subtitles URL Loaded!");
             } catch (err) {
                 alert("Failed to load subtitles. (Check CORS or URL): " + err.message);
             }
@@ -8093,7 +7981,7 @@ HTML_DASHBOARD = """
             const reader = new FileReader();
             reader.onload = function(e) {
                 syncExternalSubtitles(e.target.result);
-                alert(`Local Subtitle/Lyrics File '${file.name}' Loaded!`);
+                alert(`Local Subtitle File '${file.name}' Loaded!`);
             };
             reader.readAsText(file);
         }
@@ -8164,20 +8052,10 @@ HTML_DASHBOARD = """
         }
 
         function buildNativeUrl() {
-            // 🟢 CRITICAL FIX: For Direct HTTP Links, give the pure CDN URL straight to the browser!
-            // This bypasses the Python proxy completely, making seeking INSTANT for native audio & video.
-            if (playerSourceKind === 'direct' && window.currentProbeData && window.currentProbeData.resolved_url) {
-                // If it's a single file (not a ZIP playlist), bypass the proxy!
-                if (!window.globalPlaylist || window.globalPlaylist.length === 0) {
-                    return window.currentProbeData.resolved_url;
-                }
-            }
-
             let base = playerSourceKind === 'tg' 
                 ? `/api/tg_stream?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}`
                 : `/api/direct_stream?user_id=${encodeURIComponent(currentUser)}&url=${encodeURIComponent(activeMediaLink)}`;
                 
-            // INJECT TRACK INDEX FOR ZIP PLAYLISTS
             if (window.globalPlaylist && window.globalPlaylist.length > 0) {
                 const track = window.globalPlaylist[window.currentPlayIndex];
                 if (track) base += `&zip_idx=${track.original_index}`;
@@ -8187,41 +8065,36 @@ HTML_DASHBOARD = """
 
         function openExternalPlayer(appType) {
             if (!activeMediaLink) return alert("Please load a stream first!");
-            // 🟢 FIX 1: External players MUST ALWAYS use the Native URL. They can natively decode MKVs and HEVC, 
-            // so we should never force them through the browser's transcode pipeline.
-            let streamUrl = window.location.origin + buildNativeUrl();
             
-            // 1. Get the actual file name from the UI title
+            let streamUrl = "";
+            // 🟢 CRITICAL FIX: External players get raw CDN link for instant seeking!
+            if (playerSourceKind === 'direct' && window.currentProbeData && window.currentProbeData.resolved_url) {
+                streamUrl = window.currentProbeData.resolved_url;
+            } else {
+                streamUrl = window.location.origin + buildNativeUrl();
+            }
+            
             let title = document.getElementById('cinema-title')?.innerText || "Media Stream";
-            
-            // 2. URL TRICK: Append a fake filename to the end of the URL.
-            // Many players (especially on iOS/PC) parse the URL string to guess the file name!
             let safeTitle = encodeURIComponent(title.replace(/[^a-zA-Z0-9.\-_ ()]/g, '_'));
-            if (!streamUrl.includes('&/')) {
+            
+            if (streamUrl.includes(window.location.origin) && !streamUrl.includes('&/')) {
                 streamUrl += `&/${safeTitle}`;
             }
 
             const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
             const isAndroid = /Android/.test(navigator.userAgent);
 
-            // 3. Android uses Android Intents which support explicit "S.title" extras to force the exact title!
             if (appType === 'vlc') {
-                if (isAndroid) {
-                    window.location.href = `intent:${streamUrl}#Intent;package=org.videolan.vlc;type=video/*;S.title=${encodeURIComponent(title)};end`;
-                } else if (isIOS) {
-                    window.location.href = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(streamUrl)}`;
-                } else {
-                    window.location.href = `vlc://${streamUrl}`;
-                }
+                if (isAndroid) window.location.href = `intent:${streamUrl}#Intent;package=org.videolan.vlc;type=video/*;S.title=${encodeURIComponent(title)};end`;
+                else if (isIOS) window.location.href = `vlc-x-callback://x-callback-url/stream?url=${encodeURIComponent(streamUrl)}`;
+                else window.location.href = `vlc://${streamUrl}`;
             } else if (appType === 'mx') {
                 window.location.href = `intent:${streamUrl}#Intent;package=com.mxtech.videoplayer.ad;type=video/*;S.title=${encodeURIComponent(title)};end`;
             } else if (appType === 'mpv') {
                 window.location.href = `intent:${streamUrl}#Intent;package=is.xyz.mpv;type=video/*;S.title=${encodeURIComponent(title)};end`;
             } else if (appType === 'infuse') {
-                // Infuse (Apple/iOS/Mac)
                 window.location.href = `infuse://x-callback-url/play?url=${encodeURIComponent(streamUrl)}`;
             } else if (appType === 'outplayer') {
-                // Outplayer (iOS)
                 window.location.href = `outplayer://url/${streamUrl}`;
             }
         }
@@ -8433,8 +8306,7 @@ HTML_DASHBOARD = """
                 playerTotalDuration = Number(pdata.duration) || 0;
                 
                 // 🟢 PLAYLIST INITIALIZATION & GLOBAL TIMELINE MATH
-                window.rawZipEntries = plistData.playlist || [];
-                window.globalPlaylist = window.rawZipEntries.filter(t => !t.is_sub); // 🟢 Hide LRC files from audio queue
+                window.globalPlaylist = plistData.playlist || [];
                 window.currentPlayIndex = 0;
                 
                 if (window.globalPlaylist.length > 0 && playerTotalDuration > 0) {
@@ -8494,119 +8366,45 @@ HTML_DASHBOARD = """
                     const coverImg = document.getElementById('album-cover-art');
                     const trackInfo = document.getElementById('album-track-info');
                     
-                    // 🟢 PREVENT UI COLLAPSE: Force image to hold its space even if broken/empty
-                    if (coverImg) {
-                        coverImg.style.minHeight = '150px';
-                        coverImg.style.minWidth = '150px';
-                    }
-
-                    // 🟢 DYNAMIC LYRICS ENGINE FOR ZIPS & SINGLE FILES
-                    async function fetchSmartLyrics(zipIdx) {
-                        const overlay = document.getElementById('subtitle-overlay');
-                        const scroller = document.getElementById('lyrics-scroller');
-                        if (overlay) overlay.innerHTML = '';
-                        if (scroller) scroller.dataset.rendered = "false";
-                        subtitleCues = [];
-                        activeSubtitleIndex = 'off';
-                        
-                        if (window.subtitleAbortController) window.subtitleAbortController.abort();
-                        window.subtitleAbortController = new AbortController();
-                        
-                        let text = "";
-                        try {
-                            // 1. FIRST PRIORITY: Extract internal metadata lyrics via FFprobe directly from the track!
-                            let url = `/api/subtitles?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}&sub_idx=metadata_lyrics`;
-                            if (zipIdx !== '') url += `&zip_idx=${zipIdx}`;
-                            
-                            const resInternal = await fetch(url, { signal: window.subtitleAbortController.signal });
-                            if (resInternal.ok) text = await resInternal.text();
-                            
-                            // 2. SECOND PRIORITY: Check for external .lrc / .vtt file matching the track name inside the ZIP
-                            if ((!text || text.trim().length === 0) && zipIdx !== '' && window.rawZipEntries) {
-                                const track = window.rawZipEntries.find(t => t.original_index === zipIdx);
-                                if (track) {
-                                    const baseName = track.display_name.substring(0, track.display_name.lastIndexOf('.'));
-                                    const lrcTrack = window.rawZipEntries.find(t => 
-                                        t.display_name.toLowerCase() === `${baseName.toLowerCase()}.lrc` || 
-                                        t.display_name.toLowerCase() === `${baseName.toLowerCase()}.vtt`
-                                    );
-                                    if (lrcTrack) {
-                                        let lrcUrl = buildNativeUrl();
-                                        lrcUrl = lrcUrl.replace(`zip_idx=${zipIdx}`, `zip_idx=${lrcTrack.original_index}`);
-                                        if (!lrcUrl.includes('zip_idx')) lrcUrl += `&zip_idx=${lrcTrack.original_index}`;
-                                        
-                                        const resExternal = await fetch(lrcUrl, { signal: window.subtitleAbortController.signal });
-                                        if (resExternal.ok) text = await resExternal.text();
-                                    }
-                                }
-                            }
-                            
-                            if (text && text.trim().length > 0) {
-                                activeSubtitleIndex = 'metadata_lyrics';
-                                if (text.includes('[00:') || text.includes('[01:') || text.includes('[02:')) {
-                                    subtitleCues = parseLRC(text);
-                                } else {
-                                    subtitleCues = parseWebVTT(text);
-                                }
-                            }
-                            renderCurrentSubtitle();
-                        } catch (err) {
-                            if (err?.name !== 'AbortError') console.warn('Lyrics fetch failed:', err);
-                        }
-                    }
-
                     function updateAlbumText() {
-                        let currentCoverUrl = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png'; // Safe fallback
+                        let currentCoverUrl = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
                         let currentZipIdx = ''; 
-                        
                         let currentIsAudio = false;
                         let currentIsVideo = false;
 
-                        // Check single file metadata first
                         if (pdata && pdata.mime_type) {
                             if (pdata.mime_type.startsWith('audio')) currentIsAudio = true;
                             if (pdata.mime_type.startsWith('video')) currentIsVideo = true;
                         }
 
-                        // 1. Text & URL Logic (Handles BOTH Playlists and Single Tracks)
                         if (window.globalPlaylist && window.globalPlaylist.length > 0) {
                             const track = window.globalPlaylist[window.currentPlayIndex];
                             currentZipIdx = track.original_index;
                             
-                            // 🟢 CRITICAL FIX: Dynamically detect if the current playlist track is Audio or Video!
                             if (track.display_name) {
                                 const ext = track.display_name.split('.').pop().toLowerCase();
                                 if (['mp3', 'flac', 'm4a', 'wav', 'aac', 'ogg', 'alac', 'mka', 'opus'].includes(ext)) {
-                                    currentIsAudio = true;
-                                    currentIsVideo = false;
+                                    currentIsAudio = true; currentIsVideo = false;
                                 } else if (['mp4', 'mkv', 'webm', 'avi', 'm4v', 'ts'].includes(ext)) {
-                                    currentIsAudio = false;
-                                    currentIsVideo = true;
+                                    currentIsAudio = false; currentIsVideo = true;
                                 }
                             }
 
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">TRACK ${window.currentPlayIndex + 1} OF ${window.globalPlaylist.length}</span><br>${track.display_name}`;
                             if (titleEl) titleEl.innerText = `[${window.currentPlayIndex + 1}/${window.globalPlaylist.length}] ${track.display_name}`;
                             
-                            // ZIPs: Use 'activeMediaLink' so the server knows which ZIP file to look inside
                             const zipLink = (typeof activeMediaLink !== 'undefined' && activeMediaLink) ? activeMediaLink : link;
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(zipLink)}&zip_idx=${track.original_index}`;
-                            
                         } else {
-                            // Single Track
-                            let titleText = pdata.file_name || 'Media Stream';
-                            trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">NOW PLAYING</span><br>${titleText}`;
-                            if (titleEl) titleEl.innerText = titleText;
-                            
-                            // Single tracks: Use 'link' to point directly to the individual media file
+                            trackInfo.innerHTML = '';
+                            if (titleEl) titleEl.innerText = pdata.file_name || 'Media Stream';
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
                         }
 
-                        // 2. Display Logic
-                        // 🟢 CRITICAL FIX: Only show the cover container if it's Audio! If it's a Video track, hide it!
+                        // 🟢 Hide Cover Box for Videos so they aren't blocked!
                         if ((pdata.has_cover || currentIsAudio) && !currentIsVideo) {
                             coverContainer.style.display = 'flex';
-                            coverContainer.style.zIndex = '50'; // Ensure container stays above any native video elements
+                            coverContainer.style.zIndex = '50';
                             
                             if (coverImg) {
                                 coverImg.style.display = 'block'; 
@@ -8614,15 +8412,10 @@ HTML_DASHBOARD = """
                                 coverImg.style.minWidth = '220px';
                                 coverImg.style.opacity = '1'; 
                                 
-                                // Handle failures gracefully by falling back to the icon
                                 coverImg.onerror = function() {
-                                    if (!this.src.includes('flaticon')) {
-                                        this.src = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
-                                    }
+                                    if (!this.src.includes('flaticon')) this.src = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
                                     vp.style.backgroundImage = 'none';
                                 };
-                                
-                                // Handle successful loads to set the blurred background
                                 coverImg.onload = function() {
                                     if (!this.src.includes('flaticon')) {
                                         vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${this.src}')`;
@@ -8632,25 +8425,22 @@ HTML_DASHBOARD = """
                                         vp.style.backgroundImage = 'none';
                                     }
                                 };
-                                
-                                // Fire request!
                                 coverImg.src = currentCoverUrl;
                             }
                         } else {
-                            // 🟢 IT'S A VIDEO: Hide the cover container completely so the video feed plays!
                             if (coverContainer) coverContainer.style.display = 'none';
                             if (vp) vp.style.backgroundImage = 'none';
                         }
                         
-                        // 🟢 TRIGGER SMART LYRICS REFRESH!
-                        // ONLY fetch smart lyrics automatically if it's an Audio track!
+                        // 🟢 ONLY fetch smart lyrics automatically if it's an Audio track!
                         if (currentIsAudio && typeof fetchSmartLyrics === 'function') {
                             fetchSmartLyrics(currentZipIdx);
                         }
                     }
                     window.updateAlbumText = updateAlbumText;
-                    updateAlbumText(); // Call immediately on load
+                    updateAlbumText();
                 }
+
                 qSelect.innerHTML = '';
                 (pdata.qualities?.length ? pdata.qualities : ['Original']).forEach(q => addOption(qSelect, q, q));
 
@@ -8672,15 +8462,6 @@ HTML_DASHBOARD = """
                 activeSubtitleIndex = 'off';
                 subtitleCues = [];
                 document.getElementById('subtitle-overlay').innerHTML = '';
-                
-                // 🟢 FIX: Auto-Select Embedded Lyrics or First Available Subtitle!
-                if (pdata.subtitles && pdata.subtitles.length > 0) {
-                    const bestSub = pdata.subtitles.find(s => s.index === 'metadata_lyrics') || pdata.subtitles[0];
-                    sSelect.value = bestSub.index;
-                    activeSubtitleIndex = bestSub.index;
-                    // Trigger the lyrics fetch asynchronously so it populates the UI instantly
-                    setTimeout(applySubtitleSelection, 500); 
-                }
 
                 const savedAspect = localStorage.getItem('player_aspect_mode') || 'contain';
                 const aspectSelect = document.getElementById('pop-aspect-select');
@@ -9084,320 +8865,6 @@ HTML_DASHBOARD = """
         // Initial state: hidden while idle, visible on first interaction/playback.
         if (vpElement) vpElement.classList.add('idle-hide');
         if (!gl) initWebGL();
-
-        // ======================================================================
-        // 🌍 3D WORLD EXPLORER & LIVE TIMEZONE ENGINE
-        // ======================================================================
-        let globeInitialized = false;
-        let myGlobe = null;
-
-        function initGlobe() {
-            if (globeInitialized) return;
-            globeInitialized = true;
-            
-            const container = document.getElementById('globe-container');
-            container.innerHTML = '<div style="color:var(--accent); text-align:center; margin-top: 40%; font-weight: bold; font-size: 18px;">⏳ Connecting to Satellites...<br><span style="font-size:12px; color:var(--subtext);">Loading Topographical Map Data</span></div>';
-
-            setTimeout(() => {
-                // 🟢 FIX: Load compliant Indian World Map & Default World Map simultaneously
-                Promise.all([
-                    fetch('https://cdn.jsdelivr.net/npm/globe.gl@2.32.0/example/datasets/ne_110m_admin_0_countries.geojson').then(r => r.json()),
-                    fetch('https://raw.githubusercontent.com/geohacker/india/master/country/india.geojson').then(r => r.json()).catch(() => null)
-                ])
-                .then(([countries, indiaMap]) => {
-                    container.innerHTML = ''; 
-
-                    let mapFeatures = countries.features;
-                    // 🟢 INDIAN MAP COMPLIANCE: Inject correct Indian borders if the overlay loads
-                    if (indiaMap && indiaMap.features) {
-                        mapFeatures = mapFeatures.filter(f => !['IND'].includes(f.properties.ISO_A3));
-                        const indiaFeature = indiaMap.features[0];
-                        if (indiaFeature) {
-                            indiaFeature.properties = { NAME_EN: 'India', NAME: 'India', ISO_A2: 'IN', ISO_A3: 'IND' };
-                            mapFeatures.push(indiaFeature);
-                        }
-                    }
-
-                    // 🟢 FIX: Explicitly pass width and height to force perfect centering!
-                    myGlobe = Globe()(container)
-                        .width(container.clientWidth)
-                        .height(container.clientHeight)
-                        // 🟢 FIX: 'earth-night.jpg' adds glowing city lights so the globe isn't too black!
-                        .globeImageUrl('https://unpkg.com/three-globe@2.31.1/example/img/earth-night.jpg')
-                        .bumpImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/earth-topology.png')
-                        .backgroundImageUrl('https://cdn.jsdelivr.net/npm/three-globe@2.31.1/example/img/night-sky.png')
-                        .polygonsData(mapFeatures)
-                        .polygonAltitude(0.005)
-                        // 🟢 FIX: Translucent white cap color so city lights shine through beautifully
-                        .polygonCapColor(() => 'rgba(255, 255, 255, 0.05)')
-                        .polygonSideColor(() => 'rgba(0, 0, 0, 0.3)')
-                        .polygonStrokeColor(() => '#38bdf8')
-                        .polygonLabel(({ properties: d }) => {
-                            const englishName = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
-                            return `
-                            <div style="background: rgba(0,0,0,0.85); border: 1px solid var(--accent); padding: 8px 12px; border-radius: 12px; color: white; box-shadow: 0 5px 15px rgba(0,0,0,0.5);">
-                                <b>${englishName}</b>
-                                <div style="font-size: 10px; color: var(--subtext); margin-top: 2px;">Click to scan nation</div>
-                            </div>
-                            `;
-                        })
-                        .onPolygonHover(hoverD => {
-                            myGlobe
-                            .polygonAltitude(d => d === hoverD ? 0.04 : 0.005)
-                            .polygonCapColor(d => d === hoverD ? 'rgba(244, 114, 182, 0.4)' : 'rgba(255, 255, 255, 0.05)');
-                        })
-                        .onPolygonClick(({ properties: d }) => {
-                            const name = d.NAME_EN || d.NAME_ASCII || d.ADMIN || d.NAME;
-                            const iso2 = d.ISO_A2 !== "-99" ? d.ISO_A2 : null;
-                            const iso3 = d.ISO_A3 !== "-99" ? d.ISO_A3 : null;
-                            loadCountryData(name, iso2, iso3, false);
-                        });
-
-                    myGlobe.controls().autoRotate = true;
-                    myGlobe.controls().autoRotateSpeed = 1.0;
-                    
-                    const isMobile = window.innerWidth < 768;
-                    // 🟢 FIX: Centered starting POV to India (lng: 78)
-                    myGlobe.pointOfView({ lat: 20, lng: 78, altitude: isMobile ? 2.5 : 2.0 });
-
-                    window.addEventListener('resize', () => {
-                        if(document.getElementById('view-globe').classList.contains('active') && myGlobe) {
-                            myGlobe.width(container.clientWidth);
-                            myGlobe.height(container.clientHeight);
-                        }
-                    });
-
-                    // 🟢 FIX: Robust Labels Fetching using Proxies to guarantee country names load!
-                    const fetchLabels = async () => {
-                        const urls = [
-                            'https://restcountries.com/v3.1/all',
-                            'https://corsproxy.io/?https%3A%2F%2Frestcountries.com%2Fv3.1%2Fall',
-                            'https://api.allorigins.win/raw?url=https%3A%2F%2Frestcountries.com%2Fv3.1%2Fall'
-                        ];
-                        for (let u of urls) {
-                            try {
-                                const r = await fetch(u);
-                                if (r.ok) {
-                                    const allCountries = await r.json();
-                                    const labels = allCountries.filter(c => c.latlng).map(c => ({
-                                        lat: c.latlng[0],
-                                        lng: c.latlng[1],
-                                        name: c.name.common
-                                    }));
-                                    myGlobe.labelsData(labels)
-                                        .labelLat(d => d.lat)
-                                        .labelLng(d => d.lng)
-                                        .labelText(d => d.name)
-                                        .labelSize(1.5)
-                                        .labelDotRadius(0.3)
-                                        .labelColor(() => 'rgba(255, 255, 255, 0.95)')
-                                        .labelResolution(2)
-                                        .labelAltitude(0.01);
-                                    return; // Success, exit loop
-                                }
-                            } catch(e) {}
-                        }
-                        console.warn("Country labels fetch failed completely.");
-                    };
-                    fetchLabels();
-
-                })
-                .catch(err => {
-                    container.innerHTML = `<div style="color:var(--danger); text-align:center; margin-top: 40%;">❌ Satellite connection failed. Error: ${err.message}<br><span style="font-size:12px;color:var(--subtext);">Try searching manually or check your network.</span></div>`;
-                });
-            }, 100); 
-        }
-
-        async function searchCountryManual() {
-            const query = document.getElementById('country-search-input').value.trim();
-            if(!query) return;
-            loadCountryData(query, null, null, true); 
-        }
-
-        async function loadCountryData(rawName, iso2, iso3, isManualSearch = false) {
-            document.getElementById('country-empty').style.display = 'none';
-            const panel = document.getElementById('country-data');
-            panel.style.display = 'block';
-            panel.innerHTML = '<div style="color:var(--accent); text-align:center; padding: 50px;"><b>⏳ Fetching Classified Data...</b><br><span style="font-size: 11px; color: var(--subtext);">Accessing Geopolitical & Economic Servers</span></div>';
-
-            try {
-                // 🟢 FIX: Handle both Array and Object responses + aggressively use CORS Proxies to prevent Blocks
-                const fetchAPI = async (urls) => {
-                    for (let base of urls) {
-                        const attempts = [
-                            base, // Direct
-                            `https://corsproxy.io/?${encodeURIComponent(base)}`, // Proxy 1
-                            `https://api.allorigins.win/raw?url=${encodeURIComponent(base)}` // Proxy 2
-                        ];
-                        for (let url of attempts) {
-                            try {
-                                const r = await fetch(url);
-                                if (r.ok) {
-                                    const json = await r.json();
-                                    if (Array.isArray(json) && json.length > 0) return json;
-                                    if (json && !Array.isArray(json) && json.name) return [json]; // Handle single object
-                                }
-                            } catch(e) {}
-                        }
-                    }
-                    return null;
-                };
-
-                let searchUrls = [];
-                if (isManualSearch) {
-                    searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}?fullText=true`);
-                    searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
-                    searchUrls.push(`https://restcountries.com/v3.1/alpha/${encodeURIComponent(rawName)}`);
-                } else {
-                    if (iso3 && iso3 !== "-99") searchUrls.push(`https://restcountries.com/v3.1/alpha/${iso3}`);
-                    if (iso2 && iso2 !== "-99") searchUrls.push(`https://restcountries.com/v3.1/alpha/${iso2}`);
-                    searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}?fullText=true`);
-                    searchUrls.push(`https://restcountries.com/v3.1/name/${encodeURIComponent(rawName)}`);
-                }
-
-                let data = await fetchAPI(searchUrls);
-
-                // 🟢 Fallback for missing/classified entries
-                if (!data && rawName.includes(" ")) {
-                    const shortName = rawName.split(" ")[0];
-                    data = await fetchAPI([`https://restcountries.com/v3.1/name/${encodeURIComponent(shortName)}`]);
-                }
-
-                let englishName = rawName;
-                let regionInfo = "Region Data Unavailable";
-                // 🟢 FIX: Properly use a Globe Icon instead of the French Flag!
-                let flagUrl = "https://cdn-icons-png.flaticon.com/512/2111/2111646.png"; 
-                let tzHtml = '<div style="color:var(--subtext); font-size:12px;">Timezone data unavailable.</div>';
-                let capitalText = 'Unknown';
-                let popText = 'Unknown';
-                let currencies = 'Unknown';
-                let languages = 'Unknown';
-
-                if (data && data[0]) {
-                    const country = data[0]; 
-                    englishName = country.name.common;
-                    if (country.name.translations && country.name.translations.eng) {
-                        englishName = country.name.translations.eng.common || englishName;
-                    }
-                    
-                    regionInfo = `${country.region || ''} ${country.subregion ? '• ' + country.subregion : ''}`;
-                    if (country.flags && country.flags.svg) flagUrl = country.flags.svg;
-                    
-                    try {
-                        if (myGlobe && country.latlng) {
-                            const isMobile = window.innerWidth < 768;
-                            myGlobe.pointOfView({ lat: country.latlng[0], lng: country.latlng[1], altitude: isMobile ? 1.8 : 1.2 }, 1200);
-                        }
-                    } catch(camErr) { console.warn("Camera jump skipped", camErr); }
-
-                    const localDate = new Date();
-                    const userTimeStr = localDate.toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
-                    
-                    if (country.timezones && country.timezones.length > 0) {
-                        tzHtml = country.timezones.map(tz => {
-                            let timeStr = "Unknown";
-                            try {
-                                if(tz === "UTC" || tz === "UTC+00:00") {
-                                    let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
-                                    timeStr = new Date(utcMs).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
-                                } else {
-                                    let match = tz.match(/UTC([+-])(\\d{2}):(\\d{2})/);
-                                    if(match) {
-                                        let sign = match[1] === '+' ? 1 : -1;
-                                        let hrs = parseInt(match[2]);
-                                        let mins = parseInt(match[3]);
-                                        let offsetMs = sign * ((hrs * 60) + mins) * 60000;
-                                        let utcMs = localDate.getTime() + (localDate.getTimezoneOffset() * 60000);
-                                        timeStr = new Date(utcMs + offsetMs).toLocaleTimeString('en-US', {hour: '2-digit', minute:'2-digit'});
-                                    }
-                                }
-                            } catch(err) { timeStr = "Calc Error"; }
-                            
-                            return `
-                            <div style="background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); padding: 12px; border-radius: 12px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
-                                <div>
-                                    <div style="color:var(--subtext); font-size: 10px; font-weight: 800; text-transform: uppercase;">Zone: ${tz}</div>
-                                    <div style="color:#fff; font-size: 16px; font-weight: 900; margin-top: 2px;">${timeStr}</div>
-                                </div>
-                                <div style="text-align: right; border-left: 1px solid rgba(255,255,255,0.1); padding-left: 15px;">
-                                    <div style="color:var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Your Time</div>
-                                    <div style="color:#cbd5e1; font-size: 16px; font-weight: 900; margin-top: 2px;">${userTimeStr}</div>
-                                </div>
-                            </div>`;
-                        }).join('');
-                    }
-
-                    if(country.currencies) currencies = Object.values(country.currencies).map(c => `${c.name} (${c.symbol})`).join(', ');
-                    if(country.languages) languages = Object.values(country.languages).join(', ');
-                    if(country.capital && country.capital.length > 0) capitalText = country.capital[0];
-                    if(country.population) popText = country.population.toLocaleString();
-                }
-
-                // 🟢 ALWAYS FETCH WIKIPEDIA (Provides a graceful fallback if RestCountries API is totally down!)
-                let wikiSummary = "<i style='color:var(--subtext);'>Accessing local intelligence failed. No recent developments available in the active database.</i>";
-                try {
-                    let wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(englishName)}`);
-                    if (wikiRes.ok) {
-                        let wikiData = await wikiRes.json();
-                        if((wikiData.title === "Not found." || wikiData.type === "disambiguation") && rawName) {
-                            wikiRes = await fetch(`https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(rawName)}`);
-                            wikiData = await wikiRes.json();
-                        }
-                        if(wikiData.extract_html) wikiSummary = wikiData.extract_html;
-                    }
-                } catch(e) {}
-
-                panel.innerHTML = `
-                    ${!data ? `<div style="background: rgba(245,158,11,0.1); border: 1px solid #f59e0b; color: #f59e0b; padding: 10px; border-radius: 10px; font-size: 11px; margin-bottom: 15px; text-align: center;">⚠️ Primary database unreachable. Displaying fallback Wikipedia intelligence for '${englishName}'.</div>` : ''}
-                    <div style="display:flex; align-items:center; gap: 15px; margin-bottom: 25px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 20px;">
-                        <img src="${flagUrl}" style="width: 90px; height: 60px; object-fit: cover; border-radius: 8px; box-shadow: 0 5px 15px rgba(0,0,0,0.5); border: 1px solid rgba(255,255,255,0.2);">
-                        <div>
-                            <h2 style="margin: 0 0 4px 0; color: #fff; font-size: 24px; text-shadow: 0 2px 10px rgba(0,0,0,0.8);">${englishName}</h2>
-                            <div style="color: var(--accent); font-weight: 900; font-size: 11px; text-transform: uppercase; letter-spacing: 1px;">
-                                ${regionInfo}
-                            </div>
-                        </div>
-                    </div>
-                    
-                    <h4 style="margin: 0 0 12px 0; color: #fff; text-transform: uppercase; letter-spacing: 1px; font-size: 13px;">🌍 Live Timezones</h4>
-                    <div style="margin-bottom: 25px; max-height: 180px; overflow-y: auto; padding-right: 5px; scrollbar-width: thin;">
-                        ${tzHtml}
-                    </div>
-
-                    <h4 style="margin: 0 0 12px 0; color: #fff; text-transform: uppercase; letter-spacing: 1px; font-size: 13px;">📊 Economic & Demographic Data</h4>
-                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 25px;">
-                        <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 14px; border: 1px solid var(--card-border);">
-                            <div style="color: var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Capital City</div>
-                            <div style="color: #fff; font-size: 14px; font-weight: 900; margin-top: 4px;">${capitalText}</div>
-                        </div>
-                        <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 14px; border: 1px solid var(--card-border);">
-                            <div style="color: var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Population</div>
-                            <div style="color: #fff; font-size: 14px; font-weight: 900; margin-top: 4px;">${popText}</div>
-                        </div>
-                        <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 14px; border: 1px solid var(--card-border);">
-                            <div style="color: var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Currency & Markets</div>
-                            <div style="color: #fff; font-size: 12px; font-weight: 800; margin-top: 4px;">${currencies}</div>
-                        </div>
-                        <div style="background: rgba(0,0,0,0.3); padding: 12px; border-radius: 14px; border: 1px solid var(--card-border);">
-                            <div style="color: var(--accent); font-size: 10px; font-weight: 800; text-transform: uppercase;">Spoken Languages</div>
-                            <div style="color: #fff; font-size: 12px; font-weight: 800; margin-top: 4px;">${languages}</div>
-                        </div>
-                    </div>
-
-                    <h4 style="margin: 0 0 12px 0; color: #fff; text-transform: uppercase; letter-spacing: 1px; font-size: 13px;">📰 Geo-Political Overview & Recent Status</h4>
-                    <div style="background: rgba(255,255,255,0.02); padding: 18px; border-radius: 14px; border-left: 4px solid var(--accent); color: #cbd5e1; font-size: 13px; line-height: 1.6; max-height: 250px; overflow-y: auto; scrollbar-width: thin;">
-                        ${wikiSummary}
-                        <div style="margin-top: 15px; font-size: 11px; text-align:right;">
-                            <a href="https://en.wikipedia.org/wiki/${encodeURIComponent(englishName)}" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: 800; text-transform: uppercase;">Open Full Intelligence Report ↗</a>
-                        </div>
-                    </div>
-                `;
-
-            } catch (e) {
-                panel.innerHTML = `<div style="color: var(--danger); text-align:center; padding: 40px;"><b>❌ Interface Error.</b><br><span style="font-size:12px;">Failed to render panel. Reason: ${e.message}</span></div>`;
-                console.error(e);
-            }
-        }
 
         // ======================================================================
         // 🛠️ BACKGROUND DEBUGGER TOOL
@@ -11002,7 +10469,7 @@ async def _run_ffprobe_json(input_url, fast=True):
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
-            "format=duration:format_tags=lyrics,LYRICS,Lyrics:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
+            "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
             "stream_tags=language,title,handler_name:stream_disposition=default,forced",
             "-of", "json", input_url,
         ]
@@ -11233,7 +10700,6 @@ async def _api_media_probe_handler(request):
                     duration_val = tg_duration
                     logger.info(f"🔎 [PROBE TG] Found Telegram native duration: {duration_val}s")
 
-            pdata = {} # 🟢 FIX: Initialize pdata to prevent UnboundLocalError when FFprobe fails on ZIPs
             try:
                 pdata = await _run_ffprobe_json(probe_input, fast=True)
                 streams = pdata.get("streams", []) or []
@@ -11305,7 +10771,10 @@ async def _api_media_probe_handler(request):
             videos = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
             covers = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") in {"mjpeg", "png", "bmp", "webp"}]
             audios = [s for s in streams if s.get("codec_type") == "audio"]
-            subs = [s for s in streams if s.get("codec_type") == "subtitle"]
+            
+            # 🟢 CRITICAL FIX: Filter out image-based subtitles (PGS, VobSub) because FFmpeg cannot convert them!
+            valid_sub_codecs = {"subrip", "ass", "ssa", "webvtt", "mov_text"}
+            subs = [s for s in streams if s.get("codec_type") == "subtitle" and s.get("codec_name") in valid_sub_codecs]
             filename_lower = str(real_file_name).lower()
             is_audio = bool(audios and not videos) or filename_lower.endswith((
                 ".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus"
@@ -11341,17 +10810,6 @@ async def _api_media_probe_handler(request):
                 })
 
             subtitles = []
-            
-            # 🟢 FIX: Detect Internal Metadata Lyrics natively embedded inside FLAC/MP3 files!
-            format_tags = pdata.get("format", {}).get("tags", {})
-            internal_lyrics = format_tags.get("lyrics") or format_tags.get("LYRICS") or format_tags.get("Lyrics")
-            if internal_lyrics:
-                subtitles.append({
-                    "index": "metadata_lyrics",
-                    "label": "Embedded Lyrics",
-                    "language": "eng"
-                })
-                
             for i, st in enumerate(subs):
                 tags = st.get("tags", {}) or {}
                 lang = tags.get("language") or tags.get("LANGUAGE")
@@ -11411,8 +10869,6 @@ async def _api_cover_handler(request):
     except:
         user_id = 0
     link = request.query.get("link", "").strip()
-    zip_idx = request.query.get("zip_idx", "").strip() # 🟢 NEW: Capture ZIP Playlist Index
-    
     if not link:
         return web.Response(status=400, text="No link provided")
 
@@ -11425,13 +10881,8 @@ async def _api_cover_handler(request):
             chat_id = parsed.get("chat_id")
             msg_id = parsed.get("msg_id")
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
-            if zip_idx:
-                actual_url += f"&zip_idx={zip_idx}" # 🟢 Route FFmpeg directly into the ZIP track!
         else:
             actual_url = await resolve_direct_link(link)
-            if zip_idx:
-                from urllib.parse import quote
-                actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}&zip_idx={zip_idx}"
 
         # Grabs the exact cover frame directly from the media container
         cmd = [
@@ -11518,10 +10969,11 @@ async def _api_stream_handler(request):
                     )
                 )
             )
-            # 🟢 FIX: Directly feed the resolved HTTP URL to FFmpeg instead of looping it through Python.
-            # This completely removes the Python middleman (aiohttp), allowing FFmpeg's highly optimized 
-            # C-backend to stream 10GB+ files directly without I/O blocking!
-            logger.debug(f"🎬 [TRANSCODE] Direct FFmpeg Streaming (No Loopback): {actual_url[:100]}...")
+            # 🟢 CRITICAL FIX: Restore Loopback Proxy for FFmpeg!
+            # FFmpeg's native HTTP client gets stuck when seeking direct links. Route through Python proxy!
+            from urllib.parse import quote
+            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
+            logger.debug(f"🎬 [TRANSCODE] Using Local Proxy for FFmpeg: {actual_url[:100]}...")
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
@@ -11577,14 +11029,6 @@ async def _api_stream_handler(request):
         "-probesize", "5M", "-analyzeduration", "5M", 
         "-fflags", "+nobuffer+flush_packets+genpts" # 🟢 FIX: +genpts ensures synced timestamps, removed deprecated -async 1
     ]
-
-    # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg since we removed the loopback
-    if not is_tg:
-        from urllib.parse import urlparse
-        parsed_res = urlparse(actual_url)
-        referer = f"{parsed_res.scheme}://{parsed_res.netloc}/"
-        headers_str = f"Accept: */*\r\nReferer: {referer}\r\nOrigin: {referer}\r\nSec-Fetch-Dest: video\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Site: cross-site\r\n"
-        cmd += ["-headers", headers_str]
 
     if start_time is not None:
         try:
@@ -11948,17 +11392,6 @@ async def _api_tg_stream_handler(request):
         filename = str(getattr(media, "file_name", "") or "").lower()
         mime_type = getattr(media, "mime_type", "application/octet-stream") or "application/octet-stream"
 
-        # 🟢 FIX: Enforce correct MIME type to allow Native Browser Album Art rendering!
-        if filename.endswith('.mp3'): mime_type = "audio/mpeg"
-        elif filename.endswith(('.m4a', '.aac')): mime_type = "audio/mp4"
-        elif filename.endswith('.flac'): mime_type = "audio/flac"
-        elif filename.endswith('.ogg'): mime_type = "audio/ogg"
-        elif filename.endswith('.wav'): mime_type = "audio/wav"
-        elif filename.endswith('.opus'): mime_type = "audio/ogg"
-        elif filename.endswith('.webm'): mime_type = "video/webm"
-        elif filename.endswith('.mp4'): mime_type = "video/mp4"
-        elif filename.endswith('.mkv'): mime_type = "video/x-matroska"
-
         parts_map = []
         global_offset = 0
 
@@ -12140,15 +11573,13 @@ async def _api_subtitles_handler(request):
         user_id = 0
     link = request.query.get("link", "").strip()
     sub_idx = request.query.get("sub_idx", "0").strip()
-    zip_idx = request.query.get("zip_idx", "").strip() # 🟢 NEW: Support ZIP
-    
     if not link:
         return web.Response(status=400, text="Invalid Link")
 
     is_tg = _is_tg_link(link)
     logger.info(f"📝 [SUBTITLES] Extract Request | User: {user_id} | Is TG: {is_tg} | Sub_Idx: {sub_idx} | Link: {link[:60]}...")
 
-    cache_key = f"{user_id}:{link}:{sub_idx}:{zip_idx}"
+    cache_key = f"{user_id}:{link}:{sub_idx}"
     now = time.time()
     cached = SUBTITLE_CACHE.get(cache_key)
     if cached and cached[1] > now:
@@ -12165,21 +11596,23 @@ async def _api_subtitles_handler(request):
         parsed = _parse_source_link(link)
         chat_id = parsed.get("chat_id")
         msg_id = parsed.get("msg_id")
-        msg_range = parsed.get("msg_range") 
+        msg_range = parsed.get("msg_range") # 🟢 Extract range
         if chat_id is None or msg_id is None:
             return web.Response(status=400, text="Invalid Telegram link")
         actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
         if msg_range:
             actual_url += f"&range={msg_range[0]}-{msg_range[1]}" 
         if zip_idx:
-            actual_url += f"&zip_idx={zip_idx}" # 🟢 Point FFprobe inside the ZIP track
+            actual_url += f"&zip_idx={zip_idx}" 
     else:
-        actual_url = await resolve_direct_link(link)
+        # 🟢 CRITICAL FIX: Route FFmpeg through internal proxy so subtitle extraction doesn't stall on CDNs
+        from urllib.parse import quote
         if zip_idx:
-            from urllib.parse import quote
-            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}&zip_idx={zip_idx}"
+            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}&zip_idx={zip_idx}"
+        else:
+            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
 
-    # 🟢 FIX: Extract Embedded Metadata Lyrics (ID3/FLAC Tags) directly!
+    # 🟢 FIX: Extract Embedded Metadata Lyrics directly!
     if sub_idx == "metadata_lyrics":
         cmd = [
             "ffprobe", "-v", "error",
@@ -12187,12 +11620,6 @@ async def _api_subtitles_handler(request):
             "-of", "default=noprint_wrappers=1:nokey=1",
             actual_url
         ]
-        
-        if not is_tg:
-            from urllib.parse import urlparse
-            parsed_res = urlparse(actual_url)
-            referer = f"{parsed_res.scheme}://{parsed_res.netloc}/"
-            cmd += ["-headers", f"Accept: */*\r\nReferer: {referer}\r\nOrigin: {referer}\r\n"]
             
         try:
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
@@ -12213,18 +11640,10 @@ async def _api_subtitles_handler(request):
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
         "-rw_timeout", "120000000", 
         "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-        "-seekable", "1", "-multiple_requests", "1",
-        "-probesize", "4M", "-analyzeduration", "2M",
+        "-seekable", "1", "-multiple_requests", "1"
+        # 🟢 CRITICAL FIX: Removed probesize limit so MKV subs are found!
     ]
     
-    # 🟢 FIX: Inject Cloudflare bypass headers natively into FFmpeg for subtitles
-    if not is_tg:
-        from urllib.parse import urlparse
-        parsed_res = urlparse(actual_url)
-        referer = f"{parsed_res.scheme}://{parsed_res.netloc}/"
-        headers_str = f"Accept: */*\r\nReferer: {referer}\r\nOrigin: {referer}\r\nSec-Fetch-Dest: video\r\nSec-Fetch-Mode: no-cors\r\nSec-Fetch-Site: cross-site\r\n"
-        cmd += ["-headers", headers_str]
-
     cmd += [
         "-i", actual_url,
         "-map", f"0:{sub_idx}",
@@ -12337,15 +11756,12 @@ async def get_zip_playlist(read_fn, zip_size):
         tail_len = min(262144, zip_size)
         tail = await read_fn(zip_size - tail_len, tail_len)
         entries = _parse_central_directory_full(tail, zip_size - tail_len, zip_size)
-        valid_media = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
-        valid_subs = (".lrc", ".srt", ".vtt")
+        valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
         playlist = []
         for idx, e in enumerate(entries):
-            lower_name = e["name"].lower()
-            if (lower_name.endswith(valid_media) or lower_name.endswith(valid_subs)) and e["method"] == 0:
+            if e["name"].lower().endswith(valid_exts) and e["method"] == 0:
                 e["original_index"] = idx
                 e["display_name"] = e["name"].split("/")[-1].split("\\")[-1]
-                e["is_sub"] = lower_name.endswith(valid_subs) # 🟢 Tag subtitles so they aren't played as audio
                 playlist.append(e)
         return playlist
     except Exception: return []
