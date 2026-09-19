@@ -12431,6 +12431,8 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
                     except Exception as exc:
                         last_exc = exc
+                        # 🟢 Re-added the invalidate call here correctly!
+                        await _invalidate_tg_access(user_id, chat_id, part["msg_id"], client)
                 raise last_exc or RuntimeError("Telegram chunk fetch failed across all bots")
 
             tasks = [asyncio.create_task(_fetch_with_failover(i, unit)) for i, unit in enumerate(batch)]
@@ -12444,33 +12446,10 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
             tasks.clear()
             
     finally:
+        # 🟢 Clean and simple! No duplicated logic.
         for task in tasks:
             if not task.done():
                 task.cancel()
-
-        async def _fetch_with_failover(unit_idx, unit):
-            part, internal_offset, internal_limit = unit
-            preferred = pool[unit_idx % len(pool)]
-            candidates = [preferred] + [c for c in pool if c is not preferred]
-            last_exc = None
-            for client in candidates:
-                try:
-                    return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
-                except Exception as exc:
-                    last_exc = exc
-                    await _invalidate_tg_access(chat_id, part["msg_id"], client)
-            raise last_exc or RuntimeError("Telegram chunk fetch failed")
-
-        results = await asyncio.gather(
-            *[_fetch_with_failover(i, unit) for i, unit in enumerate(batch)],
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, Exception):
-                raise result
-            if result:
-                yield result
-        cursor += len(batch)
 
 async def _api_tg_stream_handler(request):
     """High-speed Telegram Range proxy with multi-bot routing, user fallback, split files and ZIP extraction."""
