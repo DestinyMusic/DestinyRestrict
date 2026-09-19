@@ -489,30 +489,47 @@ class Database:
     async def get_all_active_tasks(self):
         return self.db.active_tasks.find({})
 
-    async def get_approved_users(self):
-        doc = await self.db.config.find_one({"_id": "access_control"})
-        return doc.get("approved_users", []) if doc else []
+    async def get_access_control(self):
+        doc = await self.db.config.find_one({"_id": "access_control"}) or {}
+        revoked = doc.get("revoked_users", [])
+        approved = doc.get("approved_users", [])
+        
+        # Calculate who is still an admin (ignoring revoked ones across restarts)
+        effective_admins = [x for x in ADMINS if x not in revoked]
+        effective_sudos = [x for x in SUDOS if x not in revoked]
+        return effective_admins, effective_sudos, approved, revoked
+
+    async def is_user_approved(self, user_id):
+        user_id = int(user_id)
+        effective_admins, effective_sudos, approved, _ = await self.get_access_control()
+        if user_id in effective_admins or user_id in effective_sudos:
+            return True
+        return user_id in approved
+
+    async def is_user_admin(self, user_id):
+        user_id = int(user_id)
+        effective_admins, effective_sudos, _, _ = await self.get_access_control()
+        return user_id in effective_admins or user_id in effective_sudos
 
     async def add_approved_user(self, user_id):
         await self.db.config.update_one(
             {"_id": "access_control"},
-            {"$addToSet": {"approved_users": int(user_id)}},
+            {
+                "$pull": {"revoked_users": int(user_id)},
+                "$addToSet": {"approved_users": int(user_id)}
+            },
             upsert=True
         )
 
-    async def remove_approved_user(self, user_id):
+    async def remove_user_access(self, user_id):
         await self.db.config.update_one(
             {"_id": "access_control"},
-            {"$pull": {"approved_users": int(user_id)}},
+            {
+                "$addToSet": {"revoked_users": int(user_id)},
+                "$pull": {"approved_users": int(user_id)}
+            },
             upsert=True
         )
-
-    async def is_user_approved(self, user_id):
-        if int(user_id) in ADMINS or int(user_id) in SUDOS:
-            return True
-        doc = await self.db.config.find_one({"_id": "access_control"})
-        approved = doc.get("approved_users", []) if doc else []
-        return int(user_id) in approved
 
 db = Database(DB_URI, DB_NAME)
 
@@ -589,11 +606,22 @@ async def global_command_reactor(client: Client, message: Message):
 async def access_control_guard(client: Client, message: Message):
     if message.from_user:
         user_id = message.from_user.id
-        if not await db.is_user_approved(user_id):
-            raise StopPropagation
     elif message.sender_chat:
-        if not await db.is_user_approved(message.sender_chat.id):
-            raise StopPropagation
+        user_id = message.sender_chat.id
+    else:
+        return
+        
+    # 1. Stop if not approved for basic bot usage
+    if not await db.is_user_approved(user_id):
+        raise StopPropagation
+        
+    # 2. Dynamic Admin Shield: Prevent revoked admins from using Admin Commands
+    if message.text and message.text.startswith("/"):
+        cmd = message.text.split()[0].lower().strip("/")
+        admin_cmds = ["log", "pixel", "speedtest", "status", "botstats", "sos", "broadcast", "spectrogram", "spec", "mi", "mediainfo"]
+        if cmd in admin_cmds:
+            if not await db.is_user_admin(user_id):
+                raise StopPropagation
 
 BOT_START_TIME = time.time()
 WATCHER_LAST_RUN = {} # Tracks strict delays between live watcher messages
@@ -6996,15 +7024,24 @@ HTML_DASHBOARD = """
                 if (data.status === 'success') {
                     const list = document.getElementById('admin-users-list');
                     if (!data.users || data.users.length === 0) {
-                        list.innerHTML = '<div style="color: #94a3b8; font-size: 12px;">No specific users added. (Admins have default access)</div>';
+                        list.innerHTML = '<div style="color: #94a3b8; font-size: 12px;">No users found in database.</div>';
                         return;
                     }
-                    list.innerHTML = data.users.map(uid => `
+                    list.innerHTML = data.users.map(user => {
+                        let roleBadge = '';
+                        if (user.role === 'Admin') roleBadge = '<span style="background: rgba(239, 68, 68, 0.2); color: #ef4444; padding: 2px 6px; border-radius: 6px; font-size: 10px; margin-left: 8px; font-family: sans-serif;">ADMIN</span>';
+                        else if (user.role === 'Sudo') roleBadge = '<span style="background: rgba(245, 158, 11, 0.2); color: #f59e0b; padding: 2px 6px; border-radius: 6px; font-size: 10px; margin-left: 8px; font-family: sans-serif;">SUDO</span>';
+                        else roleBadge = '<span style="background: rgba(16, 185, 129, 0.2); color: #10b981; padding: 2px 6px; border-radius: 6px; font-size: 10px; margin-left: 8px; font-family: sans-serif;">USER</span>';
+                        
+                        return `
                         <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
-                            <div style="color: #fff; font-size: 14px; font-family: monospace;">${uid}</div>
-                            <button onclick="adminRemoveUser('${uid}')" style="background: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: bold; cursor: pointer;">Remove</button>
+                            <div style="color: #fff; font-size: 14px; font-family: monospace; display: flex; align-items: center; flex-wrap: wrap;">
+                                ${user.name} <span style="color: var(--subtext); margin-left: 6px;">(${user.id})</span> ${roleBadge}
+                            </div>
+                            <button onclick="adminRemoveUser('${user.id}')" style="background: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: bold; cursor: pointer; flex-shrink: 0;">Remove</button>
                         </div>
-                    `).join('');
+                        `;
+                    }).join('');
                 }
             } catch (e) { console.error(e); }
         }
@@ -10309,7 +10346,7 @@ async def _api_stats_handler(request):
     user_doc = await db.col.find_one({"id": user_id})
     tg_session_active = bool(user_doc and user_doc.get("session"))
     user_name = user_doc.get("name", "User") if user_doc else "User"
-    is_admin = user_id in ADMINS or user_id in SUDOS
+    is_admin = await db.is_user_admin(user_id)
 
     return web.json_response({
         "uptime": uptime_str,
@@ -13789,15 +13826,35 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     async def _api_admin_get_users(request):
         try: uid = int(request.query.get("user_id", 0))
         except: uid = 0
-        if uid not in ADMINS and uid not in SUDOS:
+        if not await db.is_user_admin(uid):
             return web.json_response({"status": "error", "message": "Unauthorized"})
-        users = await db.get_approved_users()
-        return web.json_response({"status": "success", "users": users})
+        
+        effective_admins, effective_sudos, approved, _ = await db.get_access_control()
+        
+        # Consolidate all users into a dictionary to determine their highest role
+        users_dict = {}
+        for x in effective_admins: users_dict[x] = "Admin"
+        for x in effective_sudos:
+            if x not in users_dict: users_dict[x] = "Sudo"
+        for x in approved:
+            if x not in users_dict: users_dict[x] = "User"
+            
+        user_data_list = []
+        for a_id, role in users_dict.items():
+            user_doc = await db.col.find_one({"id": a_id})
+            name = user_doc.get("name", "Unknown User") if user_doc else "Unknown User"
+            user_data_list.append({
+                "id": a_id,
+                "name": name,
+                "role": role
+            })
+            
+        return web.json_response({"status": "success", "users": user_data_list})
 
     async def _api_admin_add_user(request):
         data = await request.json()
         uid = int(data.get("user_id", 0))
-        if uid not in ADMINS and uid not in SUDOS:
+        if not await db.is_user_admin(uid):
             return web.json_response({"status": "error", "message": "Unauthorized"})
         target = int(data.get("target_id", 0))
         await db.add_approved_user(target)
@@ -13806,10 +13863,14 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     async def _api_admin_remove_user(request):
         data = await request.json()
         uid = int(data.get("user_id", 0))
-        if uid not in ADMINS and uid not in SUDOS:
+        if not await db.is_user_admin(uid):
             return web.json_response({"status": "error", "message": "Unauthorized"})
         target = int(data.get("target_id", 0))
-        await db.remove_approved_user(target)
+        
+        if target == uid:
+            return web.json_response({"status": "error", "message": "You cannot remove yourself!"})
+            
+        await db.remove_user_access(target)
         return web.json_response({"status": "success", "message": f"User {target} removed!"})
 
     app_web.router.add_get("/api/admin/users", _api_admin_get_users)
