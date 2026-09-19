@@ -12902,26 +12902,60 @@ async def get_client_msg(client, chat_id, msg_id):
     return CLIENT_MSG_CACHE[key]
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk continuously. Retries on transient errors with clean byte skipping."""
-    ALIGNMENT = 1048576
-    aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
+    """Fetches a chunk continuously. Translates raw bytes into Pyrogram Chunk Indexes."""
+    CHUNK_SIZE = 1048576
+    
+    # 🟢 CRITICAL FIX: Pyrogram offset expects CHUNK INDEX, not raw bytes!
+    chunk_index = offset // CHUNK_SIZE
+    skip_bytes = offset % CHUNK_SIZE
+    
     target_bytes = limit
+    # Calculate how many 1MB chunks we need to fetch to satisfy the request
+    total_bytes_to_fetch = skip_bytes + target_bytes
+    chunk_limit = math.ceil(total_bytes_to_fetch / CHUNK_SIZE)
     
     for attempt in range(6): 
         if not getattr(client, "is_connected", False):
             try: await client.connect()
             except Exception: pass
 
-        skip_bytes = offset - aligned_offset
-        fetch_limit = target_bytes + skip_bytes
+        current_skip = skip_bytes
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
             async def fetch_continuous():
-                nonlocal skip_bytes
-                # 🟢 CRITICAL FIX: Restored byte-level offsets! Pyrofork strictly expects bytes.
-                async for chunk in client.stream_media(msg, offset=aligned_offset, limit=fetch_limit):
+                nonlocal current_skip
+                # 🟢 Pass the correct Chunk Index (e.g. 1) and Chunk Limit (e.g. 4)
+                async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunk_limit):
+                    if current_skip > 0:
+                        if len(chunk) <= current_skip:
+                            current_skip -= len(chunk)
+                            continue
+                        else:
+                            chunk = chunk[current_skip:]
+                            current_skip = 0
+                            
+                    data.extend(chunk)
+                    if len(data) >= target_bytes:
+                        break
+                        
+            import asyncio
+            # Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
+            dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 5.0)
+            await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
+                    
+            if not data: 
+                raise ValueError("EOF Reached or Empty Chunk")
+            return bytes(data[:target_bytes])
+            
+        except FloodWait as e:
+            await asyncio.sleep(e.value + 1)
+        except Exception as e:
+            if attempt == 5: raise e
+            await asyncio.sleep(1.5 + attempt) 
+            
+    raise TimeoutError("Exceeded max retries for chunk")
                     if skip_bytes > 0:
                         if len(chunk) <= skip_bytes:
                             skip_bytes -= len(chunk)
