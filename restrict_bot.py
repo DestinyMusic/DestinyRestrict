@@ -6080,7 +6080,16 @@ HTML_DASHBOARD = """
                     </div>
 
                     <div class="input-group">
+                        <label>Custom Thumbnail (Optional)</label>
+                        <label class="primary-btn" style="width: 100%; padding: 14px 16px; background: rgba(0,0,0,0.3); border: 2px solid var(--card-border); color: #fff; cursor: pointer; margin: 0; display: block; text-align: left; border-radius: 16px; font-weight: normal; font-size: 14px; text-transform: none; letter-spacing: normal;">
+                            <span id="editor-thumb-name">📁 Click to Select Image (JPG/PNG)</span>
+                            <input type="file" id="editor-thumb-file" accept="image/*" style="display: none;" onchange="document.getElementById('editor-thumb-name').innerText = this.files[0] ? this.files[0].name : '📁 Click to Select Image (JPG/PNG)'">
+                        </label>
+                    </div>
+
+                    <div class="input-group">
                         <label>Upload Destination</label>
+                        <!-- 🟢 Dynamic Selection: Will automatically populate with your Groups/Channels -->
                         <select id="editor-dest" class="pop-select">
                             <option value="tg">Telegram (Saved Messages)</option>
                             <option value="gofile">GoFile.io (Public Link)</option>
@@ -9516,6 +9525,30 @@ HTML_DASHBOARD = """
         // ======================================================================
         // DEDICATED MEDIA EDITOR TAB (Python-Safe Strings)
         // ======================================================================
+        // 🟢 Automatically populate destination dropdown from your loaded Chats
+        function populateEditorDestinations() {
+            const destSelect = document.getElementById('editor-dest');
+            if (!destSelect) return;
+            
+            let html = `
+                <option value="tg">Telegram (Saved Messages)</option>
+                <option value="gofile">GoFile.io (Public Link)</option>
+            `;
+            
+            if (window.allLoadedChats && window.allLoadedChats.length > 0) {
+                html += `<optgroup label="Your Telegram Chats & Channels">`;
+                window.allLoadedChats.forEach(c => {
+                    if (c.name.toLowerCase().includes('channel') || c.name.toLowerCase().includes('group')) {
+                        html += `<option value="${c.id}">${c.name}</option>`;
+                    }
+                });
+                html += `</optgroup>`;
+            }
+            
+            destSelect.innerHTML = html;
+            initCustomSelects(); // Re-render the liquid glass UI
+        }
+
         async function loadEditorMedia() {
             const link = document.getElementById('editor-stream-url').value.trim();
             if (!link) return alert('Provide a valid media link!');
@@ -9556,8 +9589,6 @@ HTML_DASHBOARD = """
                     let langText = lang ? '(' + lang + ')' : '';
                     
                     let htmlStr = '<div style="padding: 12px; margin: 0; background: rgba(0,0,0,0.4); border: 1px solid var(--card-border); border-left: 4px solid ' + color + '; display: flex; flex-direction: column; gap: 8px; border-radius: 12px;">';
-                    
-                    // Top Row: Checkbox & Codec Info
                     htmlStr += '<div style="display: flex; justify-content: space-between; align-items: center;">';
                     htmlStr += '<label style="color: #fff; font-weight: bold; font-size: 13px; display: flex; align-items: center; gap: 8px;">';
                     htmlStr += '<input type="checkbox" id="edit-keep-' + idx + '" checked style="width: 16px; height: 16px; accent-color: var(--accent);"> ';
@@ -9565,38 +9596,34 @@ HTML_DASHBOARD = """
                     htmlStr += '</label>';
                     htmlStr += '<span style="color: var(--subtext); font-size: 11px;">' + codec + ' ' + langText + '</span>';
                     htmlStr += '</div>';
-                    
-                    // Bottom Row: Inputs with Labels
                     htmlStr += '<div style="display: flex; gap: 8px; margin-top: 4px;">';
                     
-                    // Title Input
                     htmlStr += '<div style="flex: 3; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Track Title</span>';
                     htmlStr += '<input type="text" id="edit-title-' + idx + '" placeholder="Name..." value="' + title + '" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
                     htmlStr += '</div>';
                     
-                    // Delay Input
                     htmlStr += '<div style="flex: 1.5; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Delay (ms)</span>';
                     htmlStr += '<input type="number" id="edit-delay-' + idx + '" value="0" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
                     htmlStr += '</div>';
                     
-                    // Order Input
                     htmlStr += '<div style="flex: 1; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Order</span>';
                     htmlStr += '<input type="number" id="edit-order-' + idx + '" value="' + idx + '" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
                     htmlStr += '</div>';
-                    
                     htmlStr += '</div></div>';
-                    
                     container.innerHTML += htmlStr;
                 });
                 
                 document.getElementById('editor-filename').value = data.file_name || 'output.mkv';
                 workspace.style.display = 'block';
                 
-                // Re-initialize custom glass dropdowns for the destination selector
-                initCustomSelects();
+                // If chats haven't loaded yet, load them silently in the background
+                if (!window.allLoadedChats || window.allLoadedChats.length === 0) {
+                    await loadWebChats(false);
+                }
+                populateEditorDestinations();
                 
             } catch (err) {
                 alert("Analysis failed: " + err.message);
@@ -9606,11 +9633,41 @@ HTML_DASHBOARD = """
             }
         }
 
+        async function sendEditorPayload(config, newName, dest, thumbB64, btn, status) {
+            try {
+                const res = await fetch('/api/edit_media', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        user_id: currentUser,
+                        link: window.editorMediaLink,
+                        config: config,
+                        new_name: newName,
+                        dest: dest,
+                        thumb: thumbB64
+                    })
+                });
+                const data = await res.json();
+                
+                if (data.status === 'success') {
+                    status.innerHTML = '✅ <b>Success!</b><br><span style="color: #10b981;">' + data.url + '</span>';
+                } else {
+                    status.innerHTML = '❌ <b>Error:</b> ' + data.message;
+                }
+            } catch (e) {
+                status.innerHTML = '❌ <b>Network Error:</b> ' + e.message;
+            } finally {
+                btn.disabled = false;
+                btn.innerText = "🚀 Process & Upload";
+            }
+        }
+
         async function submitEditorTask() {
             const btn = document.getElementById('editor-submit-btn');
             const status = document.getElementById('editor-status');
             const dest = document.getElementById('editor-dest').value;
             const newName = document.getElementById('editor-filename').value;
+            const thumbFile = document.getElementById('editor-thumb-file').files[0];
             
             let config = [];
             window.editorProbeData.streams.forEach(function(s) {
@@ -9629,47 +9686,28 @@ HTML_DASHBOARD = """
             
             if (config.length === 0) return alert("You must keep at least one track!");
 
-            // 🟢 Sort the payload array based on the user's custom Ordering numbers!
-            config.sort(function(a, b) {
-                return a.order - b.order;
-            });
+            config.sort(function(a, b) { return a.order - b.order; });
             
             btn.disabled = true;
-            btn.innerText = "⏳ Processing...";
+            btn.innerText = "⏳ Dispatching to Server...";
             status.style.display = 'block';
-            status.innerText = "Downloading, Remuxing & Uploading... This may take a few minutes depending on file size.";
+            status.innerText = "Connecting...";
             
-            try {
-                const res = await fetch('/api/edit_media', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        user_id: currentUser,
-                        link: window.editorMediaLink,
-                        config: config,
-                        new_name: newName,
-                        dest: dest
-                    })
-                });
-                const data = await res.json();
-                
-                if (data.status === 'success') {
-                    status.innerHTML = '✅ <b>Success!</b><br><a href="' + data.url + '" target="_blank" style="color: #10b981; text-decoration: underline;">Click here to view/download</a>';
-                } else {
-                    status.innerHTML = '❌ <b>Error:</b> ' + data.message;
-                }
-            } catch (e) {
-                status.innerHTML = '❌ <b>Network Error:</b> ' + e.message;
-            } finally {
-                btn.disabled = false;
-                btn.innerText = "🚀 Process & Upload";
+            // Read Thumbnail as Base64 then send payload
+            if (thumbFile) {
+                const reader = new FileReader();
+                reader.onload = async function(e) {
+                    await sendEditorPayload(config, newName, dest, e.target.result, btn, status);
+                };
+                reader.readAsDataURL(thumbFile);
+            } else {
+                await sendEditorPayload(config, newName, dest, "", btn, status);
             }
         }
     </script>
 </body>
 </html>
 """
-
 async def _dashboard_ui_handler(request):
     return web.Response(text=HTML_DASHBOARD, content_type='text/html', status=200)
 
@@ -12965,6 +13003,7 @@ async def _api_edit_media_handler(request):
     config = data.get("config", [])
     new_name = data.get("new_name", "output.mkv")
     dest = data.get("dest", "tg")
+    thumb_b64 = data.get("thumb", "")
     
     if not link or not config:
         return web.json_response({"status": "error", "message": "Missing link or config"})
@@ -12972,48 +13011,88 @@ async def _api_edit_media_handler(request):
     import time
     from pathlib import Path
     import shutil
+    import base64
     
-    temp_dir = Path(f"./temp_remux_{uid}_{int(time.time())}")
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    input_file = temp_dir / "input_media.dat"
-    output_file = temp_dir / sanitize_filename(new_name)
+    task_uuid = uuid.uuid4().hex[:8]
+    temp_dir = Path(f"./temp_remux_{uid}_{task_uuid}")
     
-    try:
-        is_tg = _is_tg_link(link)
-        if is_tg:
-            parsed = _parse_source_link(link)
-            uclient = USER_CLIENTS.get(uid)
-            if not uclient or not uclient.is_connected:
-                session_str = await db.get_session(uid)
-                u_api = await db.get_api_id(uid) or API_ID
-                u_hash = await db.get_api_hash(uid) or API_HASH
-                uclient = Client(f"User_{uid}", session_string=session_str, api_id=u_api, api_hash=u_hash, ipv6=False)
-                await uclient.start()
-                USER_CLIENTS[uid] = uclient
-            msg = await uclient.get_messages(parsed["chat_id"], parsed["msg_id"])
-            await uclient.download_media(msg, file_name=str(input_file))
-        else:
-            await full_download_http(link, str(input_file))
-            
-        await process_remux(str(input_file), str(output_file), config)
+    # 🟢 FIRE AND FORGET: Runs completely in the background to bypass Hugging Face 60s timeouts!
+    async def background_editor():
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        input_file = temp_dir / "input_media.dat"
+        output_file = temp_dir / sanitize_filename(new_name)
+        thumb_path = None
         
-        url = ""
-        if dest == "gofile":
-            url = await upload_to_gofile(str(output_file))
-        else:
-            sent_msg = await app.send_document(chat_id=uid, document=str(output_file), caption=f"✅ Remuxed: {new_name}")
-            url = f"https://t.me/c/{str(uid).replace('-100', '')}/{sent_msg.id}"
+        try:
+            status_msg = await app.send_message(uid, f"⚙️ **Media Editor Task Started!**\n\n**Target:** `{new_name}`\n⏳ Downloading source...")
             
-        return web.json_response({"status": "success", "url": url})
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)})
-    finally:
-        shutil.rmtree(str(temp_dir), ignore_errors=True)
+            # Save Base64 Thumbnail to disk
+            if thumb_b64:
+                try:
+                    thumb_data = base64.b64decode(thumb_b64.split(",")[1] if "," in thumb_b64 else thumb_b64)
+                    thumb_path = temp_dir / "thumb.jpg"
+                    with open(thumb_path, "wb") as f:
+                        f.write(thumb_data)
+                except Exception as e:
+                    logger.warning(f"Thumb decode failed: {e}")
+        
+            # 1. Download (Uses Worker Bots dynamically if available!)
+            is_tg = _is_tg_link(link)
+            if is_tg:
+                parsed = _parse_source_link(link)
+                working_pool, _ = await _get_working_tg_pool(uid, parsed["chat_id"], parsed["msg_id"])
+                client_to_use = working_pool[0] if working_pool else app
+                
+                msg = await get_client_msg(client_to_use, parsed["chat_id"], parsed["msg_id"])
+                await client_to_use.download_media(msg, file_name=str(input_file), progress=progress, progress_args=[status_msg, "down", task_uuid])
+            else:
+                await full_download_http(link, str(input_file))
+                
+            # 2. Remux
+            await status_msg.edit_text("⚙️ **Remuxing Tracks (Instant Copy)...**")
+            await process_remux(str(input_file), str(output_file), config)
+            
+            # 3. Upload
+            await status_msg.edit_text("☁️ **Uploading to Destination...**")
+            if dest == "gofile":
+                url = await upload_to_gofile(str(output_file))
+                await status_msg.edit_text(f"✅ **Success! Uploaded to GoFile.**\n\n🔗 **Link:** {url}", disable_web_page_preview=True)
+            else:
+                upload_chat_id = uid if dest == "tg" else dest
+                try: upload_chat_id = int(upload_chat_id)
+                except: pass
+                
+                kwargs = {
+                    "chat_id": upload_chat_id,
+                    "document": str(output_file),
+                    "caption": f"**{new_name}**" # 🟢 Clean caption, no "Remuxed:" prefix!
+                }
+                if thumb_path and thumb_path.exists():
+                    kwargs["thumb"] = str(thumb_path)
+                    
+                # Upload using App, fallback to User Session if App is not admin in target channel
+                sent_msg = await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
+                await status_msg.delete()
+                
+                if str(upload_chat_id) != str(uid):
+                    await app.send_message(uid, f"✅ **Media Editor Completed!**\nFile `{new_name}` was successfully uploaded to your selected chat.")
+                    
+        except Exception as e:
+            logger.error(f"Background Edit Error: {e}", exc_info=True)
+            try: await app.send_message(uid, f"❌ **Media Editor Failed:**\n`{str(e)}`")
+            except: pass
+        finally:
+            shutil.rmtree(str(temp_dir), ignore_errors=True)
+            
+    # Spawn task and immediately return 200 OK to the browser
+    asyncio.create_task(background_editor())
+    return web.json_response({"status": "success", "url": "Check your Telegram PM for the live progress bar!"})
 
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
-    app_web = web.Application()
+    # 🟢 FIX: Increased payload size to 50MB to accept High-Res Custom Thumbnails
+    app_web = web.Application(client_max_size=1024**2 * 50) 
     app_web.router.add_get("/api/network", _api_network_stats)
     app_web.router.add_get("/api/bg", _api_bg_proxy)
     app_web.router.add_get("/api/chat_details", _api_chat_details_handler) # 🟢 NEW: Chat Details Endpoint
