@@ -12903,7 +12903,6 @@ async def get_client_msg(client, chat_id, msg_id):
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     """Fetches a chunk continuously. Retries on transient errors with clean byte skipping."""
-    # 🟢 Align offset to 1MB chunks (Telegram MTProto requirement)
     ALIGNMENT = 1048576
     aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
     target_bytes = limit
@@ -12919,13 +12918,10 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
-            # Translate byte limits into Pyrogram MTProto Chunk Limits
-            chunk_limit = math.ceil(fetch_limit / ALIGNMENT)
-            chunk_offset = aligned_offset // ALIGNMENT
-
             async def fetch_continuous():
                 nonlocal skip_bytes
-                async for chunk in client.stream_media(msg, offset=chunk_offset, limit=chunk_limit):
+                # 🟢 CRITICAL FIX: Restored byte-level offsets! Pyrofork strictly expects bytes.
+                async for chunk in client.stream_media(msg, offset=aligned_offset, limit=fetch_limit):
                     if skip_bytes > 0:
                         if len(chunk) <= skip_bytes:
                             skip_bytes -= len(chunk)
@@ -12936,10 +12932,10 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
                     data.extend(chunk)
                     if len(data) >= target_bytes:
                         break
-                    
+                        
             import asyncio
-            # 🟢 Allow enough time for large blocks (e.g. 10MB chunk = 30 seconds max)
-            dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 2.5)
+            # 🟢 Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
+            dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 5.0)
             await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
                     
             if not data: 
@@ -12980,14 +12976,12 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     if not working_pool:
         working_pool = [app]
     
-    # 🟢 Determine safe concurrency
     safe_concurrency = len(working_pool)
     if concurrency is not None:
         safe_concurrency = min(concurrency, safe_concurrency)
     safe_concurrency = max(1, safe_concurrency)
 
-    # 🟢 Fixed chunk size to 3MB. 
-    # 1MB drops sockets. 10MB blocks FFprobe. 3MB is the perfect sweet spot!
+    # 🟢 Fixed chunk size to 3MB. Perfect balance for speed and memory.
     actual_chunk_size = 3 * 1024 * 1024
 
     range_start = int(start_byte)
@@ -13009,7 +13003,6 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     if not units:
         return
 
-    # 🟢 If only 1 client exists (User Session), run sequentially to avoid FloodWaits
     if safe_concurrency == 1:
         client = working_pool[0]
         for part, internal_offset, internal_limit in units:
@@ -13019,7 +13012,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                 raise
         return
 
-    # 🟢 Multi-Bot Parallel Path
+    # 🟢 Multi-Bot Parallel Path with Ghost Task Kill Switch
     cursor_idx = 0
     import asyncio
     tasks = []
@@ -13040,7 +13033,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         last_exc = exc
                 raise last_exc or RuntimeError("Telegram chunk fetch failed across all bots")
 
-            # Spawn workers
+            # 🟢 create_task() starts them all simultaneously and yields data instantly
             tasks = [asyncio.create_task(_fetch_with_failover(i, unit)) for i, unit in enumerate(batch)]
             
             for task in tasks:
@@ -13049,15 +13042,14 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                     yield result
                     
             cursor_idx += len(batch)
-            tasks.clear() # Clear task list once they are completed naturally
+            tasks.clear()
             
     finally:
-        # 🟢 THE KILL SWITCH: If the player skips or disconnects, 
-        # instantly cancel all active background worker bots to prevent API spam!
+        # 🟢 If you skip or pause, instantly kill all active worker bots!
         for task in tasks:
             if not task.done():
                 task.cancel()
-            
+
 USER_WORKER_BOTS = defaultdict(list)
 
 async def init_worker_bots(user_id=None):
