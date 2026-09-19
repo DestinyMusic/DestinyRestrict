@@ -1178,34 +1178,38 @@ def _split_file_smart(file_path, chunk_size):
     if file_size <= chunk_size:
         return [file_path]
 
+    # Attempt High-Speed Linux Binary Split
     if shutil.which("split"):
         try:
-            output_prefix = f"{file_path}.part"
+            output_prefix = f"{file_path}."
+            # Split normally creates .000, .001...
             cmd = ["split", "-b", str(chunk_size), "-d", "-a", "3", str(file_path), output_prefix]
             subprocess.run(cmd, check=True, capture_output=True)
-            parts = sorted(list(file_path.parent.glob(f"{file_path.name}.part*")))
+            
+            # Shift extensions to match MKV.001, MKV.002
+            split_files = sorted(list(file_path.parent.glob(f"{file_path.name}.[0-9][0-9][0-9]")), reverse=True)
+            for sf in split_files:
+                try:
+                    idx = int(sf.suffix.replace('.', ''))
+                    new_sf = sf.with_suffix(f".{idx + 1:03d}")
+                    sf.rename(new_sf)
+                except ValueError:
+                    pass
+                    
+            parts = sorted(list(file_path.parent.glob(f"{file_path.name}.[0-9][0-9][0-9]")))
             if parts: return parts
         except Exception as e: 
-            logger.debug(f"Linux 'split' failed, falling back... Error: {e}")
+            logger.debug(f"Linux 'split' failed, falling back to python... Error: {e}")
 
-    seven_z_exe = shutil.which("7z") or shutil.which("7za")
-    if seven_z_exe:
-        try:
-            output_archive = f"{file_path}.7z"
-            cmd = [seven_z_exe, "a", f"-v{chunk_size}b", "-mx0", output_archive, str(file_path)]
-            subprocess.run(cmd, check=True, capture_output=True)
-            parts = sorted(list(file_path.parent.glob(f"{file_path.name}.7z.*")))
-            if parts: return parts
-        except Exception as e: 
-            logger.debug(f"7z split failed, falling back... Error: {e}")
-
-    part_num = 0
+    # Fallback to Pure Python Binary Splitter
+    part_num = 1
     parts = []
     buffer_size = 2 * 1024 * 1024 
     
     with open(file_path, 'rb') as source:
         while True:
-            part_name = file_path.parent / f"{file_path.name}.part{part_num:03d}"
+            # Slices into .mkv.001, .mkv.002
+            part_name = file_path.parent / f"{file_path.name}.{part_num:03d}"
             current_chunk_size = 0
             with open(part_name, 'wb') as dest:
                 while current_chunk_size < chunk_size:
@@ -1219,6 +1223,7 @@ def _split_file_smart(file_path, chunk_size):
                 break
             parts.append(part_name)
             part_num += 1
+            
     return parts
     
 def progress(current, total, message, typ, task_uuid=None):
@@ -11435,12 +11440,12 @@ async def _run_ffprobe_json(input_url, fast=True):
     for probesize, analyzeduration in probe_pairs:
         cmd = [
             "ffprobe", "-v", "error", "-hide_banner",
-            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", # 🟢 FIX: Real User-Agent
-            "-rw_timeout", "120000000", # 🟢 FIX: 120s timeout for slow Cloudflare Workers
+            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
+            "-rw_timeout", "120000000", 
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
-            "format=duration:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
+            "format=duration,tags:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
             "stream_tags=language,title,handler_name:stream_disposition=default,forced",
             "-of", "json", input_url,
         ]
@@ -13252,8 +13257,8 @@ async def _api_edit_media_handler(request):
             await status_msg.edit_text("⚙️ **Remuxing Tracks (Instant Copy)...**")
             await process_remux(str(input_file), str(output_file), config, global_tags)
             
-            await status_msg.edit_text("☁️ **Uploading to Destination...**")
             if dest == "gofile":
+                await status_msg.edit_text("☁️ **Uploading to GoFile...**")
                 url = await upload_to_gofile(str(output_file))
                 await status_msg.edit_text(f"✅ **Success! Uploaded to GoFile.**\n\n🔗 **Link:** {url}", disable_web_page_preview=True)
             else:
@@ -13268,8 +13273,49 @@ async def _api_edit_media_handler(request):
                 }
                 if thumb_path and thumb_path.exists():
                     kwargs["thumb"] = str(thumb_path)
+
+                # 🟢 SMART UPLOAD ENGINE (>2GB & Premium Logic)
+                file_size = os.path.getsize(output_file)
+                split_limit = 2000 * 1024 * 1024 
+                
+                uclient = USER_CLIENTS.get(uid)
+                is_premium = False
+                
+                # Wake up user session if asleep to check Premium status
+                if not uclient or not uclient.is_connected:
+                    session_str = await db.get_session(uid)
+                    if session_str:
+                        u_api = await db.get_api_id(uid) or API_ID
+                        u_hash = await db.get_api_hash(uid) or API_HASH
+                        uclient = Client(f"User_{uid}", session_string=session_str, api_id=u_api, api_hash=u_hash, ipv6=False)
+                        await uclient.start()
+                        USER_CLIENTS[uid] = uclient
+                        
+                if uclient and uclient.is_connected:
+                    try:
+                        me = uclient.me or await uclient.get_me()
+                        is_premium = getattr(me, "is_premium", False)
+                    except: pass
+                
+                if file_size > split_limit and not is_premium:
+                    await status_msg.edit_text(f"✂️ **Splitting large file ({_pretty_bytes(file_size)})...**")
+                    parts = await split_file_python(str(output_file), chunk_size=1900*1024*1024)
                     
-                sent_msg = await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
+                    for i, part in enumerate(parts):
+                        await status_msg.edit_text(f"☁️ **Uploading Part {i+1}/{len(parts)}...**")
+                        kwargs["document"] = str(part)
+                        kwargs["caption"] = f"**{part.name}**"
+                        await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
+                        try: os.remove(part)
+                        except: pass
+                        
+                elif file_size > split_limit and is_premium:
+                    await status_msg.edit_text(f"☁️ **Uploading via Premium Session ({_pretty_bytes(file_size)})...**")
+                    await safe_send(uclient, uid, upload_chat_id, task_uuid, False, uclient.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
+                else:
+                    await status_msg.edit_text("☁️ **Uploading to Destination...**")
+                    await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
+                    
                 await status_msg.delete()
                 
                 if str(upload_chat_id) != str(uid):
