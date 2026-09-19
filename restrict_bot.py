@@ -3164,32 +3164,75 @@ async def process_custom_destination(client: Client, message: Message):
         dest_chat_id, dest_thread_id = _parse_chat_target(text)
 
         try:
+            # Resolve basic info
             chat = await client.get_chat(dest_chat_id)
             title = chat.title or chat.first_name or "Target Chat"
             if dest_thread_id: 
                 title += await get_topic_title(client, dest_chat_id, dest_thread_id)
 
-            bot_member = await client.get_chat_member(chat.id, "me")
-            if bot_member.status not in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
-                await message.reply(
-                    "❌ **Destination Error:** I am not an admin in that chat!\n\n"
-                    "Please add me to the destination chat/channel, promote me to an **Admin**, and then send the ID again."
-                )
-                return
-            
-            # --- NEW: ACTIVE DESTINATION TEST ---
+            # 🟢 CHECK ACCESS ACROSS ALL CLIENTS (Main Bot, Workers, User)
+            main_bot_access = False
             try:
-                test_msg = await client.send_message(
-                    chat_id=dest_chat_id,
-                    text="🔄 Testing Destination Accessibility...\n*(This message will self-destruct)*",
-                    message_thread_id=dest_thread_id
+                bot_member = await client.get_chat_member(chat.id, "me")
+                main_bot_access = bot_member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]
+            except Exception: pass
+
+            worker_bots = USER_WORKER_BOTS.get(user_id, [])
+            worker_access_count = 0
+            for wb in worker_bots:
+                try:
+                    if not getattr(wb, "is_connected", False): await wb.connect()
+                    wb_member = await wb.get_chat_member(chat.id, "me")
+                    if wb_member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
+                        worker_access_count += 1
+                except Exception: pass
+
+            user_access = False
+            uclient = USER_CLIENTS.get(user_id)
+            if uclient and getattr(uclient, "is_connected", False):
+                try:
+                    await uclient.get_chat(chat.id)
+                    user_access = True
+                except Exception: pass
+
+            # Failsafe: if it's a DM, bots/users can usually write to it without admin rights
+            is_dm = str(dest_chat_id).lstrip("-").isdigit() and not str(dest_chat_id).startswith("-100") and int(dest_chat_id) > 0
+            
+            if not is_dm and not main_bot_access and worker_access_count == 0 and not user_access:
+                await message.reply(
+                    "❌ **Destination Error:** Neither I, your Worker Bots, nor your User Session have admin access to that chat!\n\n"
+                    "Please add us to the destination chat/channel and promote us to **Admin**."
                 )
-                await asyncio.sleep(2)
-                await test_msg.delete()
-            except Exception as e:
-                await message.reply(f"❌ **Destination Write Error:** I am an admin, but I cannot send messages to that specific topic/chat! (Check topic permissions)\nError: `{e}`")
                 return
-            # ------------------------------------
+
+            if not is_dm and worker_bots and worker_access_count == 0:
+                await message.reply(
+                    f"⚠️ **Worker Bot Warning:** You have `{len(worker_bots)}` Worker Bots configured, but **none** of them are Admins in the destination.\n\n"
+                    "I will automatically fallback to your User Session for uploads. To maximize speed, please add your Worker Bots to the destination and make them Admins."
+                )
+
+            # --- ACTIVE DESTINATION TEST (using the best available client) ---
+            test_client = None
+            if worker_access_count > 0:
+                for wb in worker_bots:
+                    if getattr(wb, "is_connected", False):
+                        test_client = wb
+                        break
+            if not test_client and main_bot_access: test_client = client
+            if not test_client and user_access: test_client = uclient
+
+            if test_client:
+                try:
+                    test_msg = await test_client.send_message(
+                        chat_id=dest_chat_id,
+                        text="🔄 Testing Destination Accessibility...\n*(This message will self-destruct)*",
+                        message_thread_id=dest_thread_id
+                    )
+                    await asyncio.sleep(1.5)
+                    await test_msg.delete()
+                except Exception as e:
+                    await message.reply(f"❌ **Destination Write Error:** Access granted, but I cannot send messages to that specific topic/chat! (Check topic permissions)\nError: `{e}`")
+                    return
             
         except Exception as e:
             await message.reply(f"❌ **Could not access Destination.**\nMake sure I am added to the chat and given admin rights.\nError: `{e}`")
@@ -3198,7 +3241,7 @@ async def process_custom_destination(client: Client, message: Message):
         PENDING_TASKS[user_id]["dest_chat_id"] = chat.id
         PENDING_TASKS[user_id]["dest_thread_id"] = dest_thread_id
         PENDING_TASKS[user_id]["dest_title"] = title
-        PENDING_TASKS[user_id]["status"] = "waiting_speed_choice" # <<< FIX
+        PENDING_TASKS[user_id]["status"] = "waiting_speed_choice"
         await ask_for_speed(message)
 
     except ValueError:
@@ -4087,9 +4130,17 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 # ==============================================================================
 
 async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, dest_thread_id, msg, msg_type, user_id, task_uuid, delay):
+    # 🟢 Select an Upload Client (Worker Bot > Main Bot)
+    upload_client = client
+    worker_bots = USER_WORKER_BOTS.get(user_id, [])
+    if worker_bots:
+        connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
+        if connected_workers:
+            upload_client = connected_workers[int(time.time()) % len(connected_workers)]
+
     if msg_type == "Text":
         try:
-            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
+            await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
             return True
         except Exception:
             if acc:
@@ -4102,9 +4153,8 @@ async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, 
     try:
         await USER_FLOOD_LOCKS[user_id].wait_if_locked()
         
-        # Album Logic (Private)
         if msg.media_group_id:
-            fetcher = acc if acc else client
+            fetcher = acc if acc else upload_client
             try:
                 m_group = await fetcher.get_media_group(chat_id, msgid)
                 group_size = len(m_group)
@@ -4113,7 +4163,7 @@ async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, 
             except: group_size = 1
 
             try:
-                copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+                copy_res = await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             except Exception:
                 if acc:
                     copy_res = await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
@@ -4124,9 +4174,8 @@ async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, 
                 return True
             return False
 
-        # Single Copy
         try:
-            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             return True
         except Exception:
             if acc:
@@ -4145,9 +4194,17 @@ async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, 
     except Exception: return False
 
 async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, dest_thread_id, msg, msg_type, user_id, task_uuid, delay):
+    # 🟢 Select an Upload Client (Worker Bot > Main Bot)
+    upload_client = client
+    worker_bots = USER_WORKER_BOTS.get(user_id, [])
+    if worker_bots:
+        connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
+        if connected_workers:
+            upload_client = connected_workers[int(time.time()) % len(connected_workers)]
+
     if msg_type == "Text":
         try:
-            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
+            await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_message, chat_id=dest_chat_id, text=msg.text, entities=msg.entities, message_thread_id=dest_thread_id)
             return True
         except Exception:
             if acc:
@@ -4160,9 +4217,8 @@ async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, de
     try:
         await USER_FLOOD_LOCKS[user_id].wait_if_locked()
         
-        # Album Logic (Public)
         if msg.media_group_id:
-            try: m_group = await client.get_media_group(chat_id, msgid)
+            try: m_group = await upload_client.get_media_group(chat_id, msgid)
             except:
                 if acc:
                     try: m_group = await acc.get_media_group(chat_id, msgid)
@@ -4174,7 +4230,7 @@ async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, de
                 for m in m_group: batch_temp.SKIP_IDS[task_uuid].add(m.id)
 
             try:
-                copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+                copy_res = await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.copy_media_group, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
                 if not copy_res: raise ValueError("Bot copy None")
             except Exception:
                 if acc:
@@ -4186,9 +4242,8 @@ async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, de
                 return True
             return False
 
-        # Single Copy
         try:
-            copy_res = await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
+            copy_res = await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.copy_message, chat_id=dest_chat_id, from_chat_id=chat_id, message_id=msgid, message_thread_id=dest_thread_id)
             if not copy_res: raise ValueError("Bot copy returned None")
             return True
         except Exception:
@@ -4477,7 +4532,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                                         if dest_thread_id: kwargs["message_thread_id"] = dest_thread_id
                                         
                                         try:
-                                            await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_document, **kwargs)
+                                            await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_document, **kwargs)
                                         except Exception:
                                             if acc: await safe_send(acc, user_id, dest_chat_id, task_uuid, False, acc.send_document, **kwargs)
                                         break
@@ -4545,6 +4600,14 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
             p_mode = None
         
         upload_success = False
+
+        # 🟢 NEW: Select an Upload Client (Worker Bot > Main Bot)
+        upload_client = client
+        worker_bots = USER_WORKER_BOTS.get(user_id, [])
+        if worker_bots:
+            connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
+            if connected_workers:
+                upload_client = connected_workers[index % len(connected_workers)]
         
         async with SERVER_UPLOAD_LIMIT:
             async with USER_SEMAPHORES[user_id]:
@@ -4565,15 +4628,14 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         a_perf = getattr(msg_fresh.audio, "performer", None) if getattr(msg_fresh, "audio", None) else None
                         a_tit = getattr(msg_fresh.audio, "title", None) if getattr(msg_fresh, "audio", None) else None
 
-                        # 🟢 SMART AUDIO TAG EXTRACTOR: Fixes <unknown> artists!
                         if msg_type == "Audio":
                             if not a_perf or a_perf.lower() in ["unknown", "<unknown>"]:
                                 clean_name = os.path.splitext(safe_filename)[0]
                                 if " - " in clean_name:
                                     parts = clean_name.split(" - ", 1)
-                                    a_perf = parts[0].strip() # Artist is before the dash
+                                    a_perf = parts[0].strip() 
                                     if not a_tit or a_tit.lower() in ["unknown", "<unknown>", clean_name.lower()]:
-                                        a_tit = parts[1].strip() # Title is after the dash
+                                        a_tit = parts[1].strip()
                                 else:
                                     a_perf = "Unknown Artist"
                             if not a_tit or a_tit.lower() in ["unknown", "<unknown>"]:
@@ -4585,13 +4647,13 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
 
                         sent = False
                         try:
-                            if msg_type == "Document": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
-                            elif msg_type == "Video": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_video, video=file_path, duration=v_dur, width=v_w, height=v_h, progress=p_func, progress_args=p_args, **kwargs)
-                            elif msg_type == "Audio": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_audio, audio=file_path, duration=a_dur, performer=a_perf, title=a_tit, progress=p_func, progress_args=p_args, **kwargs)
-                            elif msg_type == "Photo": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_photo, photo=file_path, **kwargs)
-                            elif msg_type == "Voice": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
-                            elif msg_type == "Animation": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_animation, animation=file_path, **kwargs)
-                            elif msg_type == "Sticker": await safe_send(client, user_id, dest_chat_id, task_uuid, True, client.send_sticker, chat_id=dest_chat_id, sticker=file_path, message_thread_id=dest_thread_id)
+                            if msg_type == "Document": await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_document, document=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Video": await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_video, video=file_path, duration=v_dur, width=v_w, height=v_h, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Audio": await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_audio, audio=file_path, duration=a_dur, performer=a_perf, title=a_tit, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Photo": await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_photo, photo=file_path, **kwargs)
+                            elif msg_type == "Voice": await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_voice, voice=file_path, progress=p_func, progress_args=p_args, **kwargs)
+                            elif msg_type == "Animation": await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_animation, animation=file_path, **kwargs)
+                            elif msg_type == "Sticker": await safe_send(upload_client, user_id, dest_chat_id, task_uuid, True, upload_client.send_sticker, chat_id=dest_chat_id, sticker=file_path, message_thread_id=dest_thread_id)
                             else:
                                 raise ValueError(f"Unsupported upload type: {msg_type}")
                             sent = True
@@ -10100,7 +10162,6 @@ async def _api_add_task(request):
         
         if dest_str:
             dest_chat_id, dest_thread_id = _parse_chat_target(dest_str)
-            # 🟢 Auto-Resolve Destination & Topic for Web Tasks
             uclient = USER_CLIENTS.get(user_id, app)
             try:
                 d_chat = await uclient.get_chat(dest_chat_id)
@@ -10109,6 +10170,23 @@ async def _api_add_task(request):
                     dest_title += await get_topic_title(uclient, dest_chat_id, dest_thread_id)
             except:
                 dest_title = str(dest_chat_id)
+
+        # 🟢 NEW: Check Worker Bots access and warn via PM if missing!
+        worker_bots = USER_WORKER_BOTS.get(user_id, [])
+        is_dm = str(dest_chat_id).lstrip("-").isdigit() and not str(dest_chat_id).startswith("-100") and int(dest_chat_id) > 0
+        if worker_bots and not is_dm:
+            has_worker_access = False
+            for wb in worker_bots:
+                try:
+                    if not getattr(wb, "is_connected", False): await wb.connect()
+                    wb_member = await wb.get_chat_member(dest_chat_id, "me")
+                    if wb_member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
+                        has_worker_access = True
+                        break
+                except Exception: pass
+            if not has_worker_access:
+                try: await app.send_message(user_id, f"⚠️ **Worker Bot Warning:** You just started a Batch Task to `{dest_title}` via the Web UI, but your Worker Bots are not Admins there!\n\nI will fallback to your User Session. Add your worker bots as Admins for maximum speed.")
+                except Exception: pass
 
         if not await check_disk_space():
             return web.json_response({"status": "error", "message": "Server disk is almost full (<500MB). Please wait."})
@@ -10186,10 +10264,8 @@ async def _api_add_watcher(request):
         if is_restricted is None: is_restricted = False
 
         parsed = _parse_source_link(link)
-
         source_thread = parsed.get("topic_id")
         
-        # 🟢 FIX 1: Safely resolve Source & Destination Names (WITH TOPICS)
         user_client = USER_CLIENTS.get(user_id, app)
         try:
             if parsed["kind"] == "public":
@@ -10213,7 +10289,23 @@ async def _api_add_watcher(request):
                     dest_title += await get_topic_title(user_client, dest_chat_id, dest_thread_id)
             except: pass
 
-        # 🟢 FIX 2: Dynamically start the background listener if it's inactive
+        # 🟢 NEW: Check Worker Bots access and warn via PM if missing!
+        worker_bots = USER_WORKER_BOTS.get(user_id, [])
+        is_dm = str(dest_chat_id).lstrip("-").isdigit() and not str(dest_chat_id).startswith("-100") and int(dest_chat_id) > 0
+        if worker_bots and not is_dm:
+            has_worker_access = False
+            for wb in worker_bots:
+                try:
+                    if not getattr(wb, "is_connected", False): await wb.connect()
+                    wb_member = await wb.get_chat_member(dest_chat_id, "me")
+                    if wb_member.status in [enums.ChatMemberStatus.ADMINISTRATOR, enums.ChatMemberStatus.OWNER]:
+                        has_worker_access = True
+                        break
+                except Exception: pass
+            if not has_worker_access:
+                try: await app.send_message(user_id, f"⚠️ **Worker Bot Warning:** You just started a Live Watcher to `{dest_title}` via the Web UI, but your Worker Bots are not Admins there!\n\nI will fallback to your User Session. Add your worker bots as Admins for maximum forwarding speed.")
+                except Exception: pass
+
         if user_id not in USER_CLIENTS:
             user_session = await db.get_session(user_id)
             if user_session:
@@ -10224,7 +10316,6 @@ async def _api_add_watcher(request):
                 await new_client.start()
                 USER_CLIENTS[user_id] = new_client
 
-        # 🟢 FIX 3: Fetch the accurate last_msg_id to prevent catch-up floods
         last_msg_id = 0
         try:
             async for m in USER_CLIENTS.get(user_id, app).get_chat_history(source_id, limit=1):
@@ -14342,6 +14433,14 @@ async def watcher_worker_loop(wid_str):
             # permits to copy. Protected-content handling is left to the existing
             # permission-aware path below; this patch does not add any bypass.
             if not is_restricted and not is_content_protected:
+                # 🟢 Worker Bot Routing for Watcher Fast Copy
+                upload_client = app
+                worker_bots = USER_WORKER_BOTS.get(owner_id, [])
+                if worker_bots:
+                    connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
+                    if connected_workers:
+                        upload_client = connected_workers[int(time.time()) % len(connected_workers)]
+
                 if getattr(msg, "media_group_id", None):
                     group_cache_key = f"{owner_id}_{source_id}_{msg.media_group_id}_{dest_id}_{dest_thread}"
                     if WATCHER_MEDIA_GROUPS.get(group_cache_key):
@@ -14364,8 +14463,8 @@ async def watcher_worker_loop(wid_str):
 
                         try:
                             copy_res = await safe_send(
-                                app, owner_id, dest_id, None, True,
-                                app.copy_media_group,
+                                upload_client, owner_id, dest_id, None, True,
+                                upload_client.copy_media_group,
                                 chat_id=dest_id,
                                 from_chat_id=source_id,
                                 message_id=msg.id,
@@ -14391,8 +14490,8 @@ async def watcher_worker_loop(wid_str):
                     else:
                         try:
                             copy_res = await safe_send(
-                                app, owner_id, dest_id, None, True,
-                                app.copy_message,
+                                upload_client, owner_id, dest_id, None, True,
+                                upload_client.copy_message,
                                 chat_id=dest_id,
                                 from_chat_id=source_id,
                                 message_id=msg.id,
