@@ -76,7 +76,8 @@ from pyrogram.errors import (
     FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant,
     InviteHashExpired, UsernameNotOccupied, FileReferenceExpired, UserNotParticipant,
     ApiIdInvalid, PhoneNumberInvalid, PhoneCodeInvalid, PhoneCodeExpired,
-    SessionPasswordNeeded, PasswordHashInvalid, PeerIdInvalid, AuthKeyUnregistered, UserDeactivated
+    SessionPasswordNeeded, PasswordHashInvalid, PeerIdInvalid, AuthKeyUnregistered, UserDeactivated,
+    StopPropagation
 )
 from pyrogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, Message, 
@@ -488,6 +489,31 @@ class Database:
     async def get_all_active_tasks(self):
         return self.db.active_tasks.find({})
 
+    async def get_approved_users(self):
+        doc = await self.db.config.find_one({"_id": "access_control"})
+        return doc.get("approved_users", []) if doc else []
+
+    async def add_approved_user(self, user_id):
+        await self.db.config.update_one(
+            {"_id": "access_control"},
+            {"$addToSet": {"approved_users": int(user_id)}},
+            upsert=True
+        )
+
+    async def remove_approved_user(self, user_id):
+        await self.db.config.update_one(
+            {"_id": "access_control"},
+            {"$pull": {"approved_users": int(user_id)}},
+            upsert=True
+        )
+
+    async def is_user_approved(self, user_id):
+        if int(user_id) in ADMINS or int(user_id) in SUDOS:
+            return True
+        doc = await self.db.config.find_one({"_id": "access_control"})
+        approved = doc.get("approved_users", []) if doc else []
+        return int(user_id) in approved
+
 db = Database(DB_URI, DB_NAME)
 
 # ==============================================================================
@@ -529,7 +555,6 @@ app = Client(
     workers=bot_workers,
     sleep_threshold=120, 
     ipv6=False,
-    max_concurrent_updates=0,  # 🟢 FIX: Infinite queue to prevent dropped messages
     hide_password=True,        # 🟢 FIX: Keeps logs clean
     **get_transmission_kwargs(workers=bot_workers, is_bot=True) 
 )
@@ -559,6 +584,16 @@ async def global_command_reactor(client: Client, message: Message):
         await message.react(emoji=random.choice(REACTIONS), big=True)
     except Exception as e:
         logger.debug(f"Reaction failed for msg {message.id}: {e}")
+
+@app.on_message(filters.all, group=-2)
+async def access_control_guard(client: Client, message: Message):
+    if message.from_user:
+        user_id = message.from_user.id
+        if not await db.is_user_approved(user_id):
+            raise StopPropagation
+    elif message.sender_chat:
+        if not await db.is_user_approved(message.sender_chat.id):
+            raise StopPropagation
 
 BOT_START_TIME = time.time()
 WATCHER_LAST_RUN = {} # Tracks strict delays between live watcher messages
@@ -5399,6 +5434,7 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('theater', 'Media Theater')">🍿 Media Theater</div>             
             <div class="menu-item" onclick="switchView('editor', 'Media Editor')">🛠️ Media Editor</div>
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
+            <div class="menu-item" id="nav-admin" onclick="switchView('admin', 'Admin Panel')" style="display: none; color: var(--accent); border-left-color: var(--accent);">👑 Admin Panel</div>
         </div>
 
         <div class="profile-menu" id="profile-menu">
@@ -6152,6 +6188,27 @@ HTML_DASHBOARD = """
                 </div>
             </div>
                         
+            <div id="view-admin" class="view-section">
+                <div class="section-title">👑 Admin Control Panel</div>
+                <div class="card" style="margin-bottom: 20px;">
+                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Authorized Users</h3>
+                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Add Telegram User IDs to grant them access to the Bot and Web UI. If this list has users, everyone else is blocked. Admins are always allowed.</p>
+                    
+                    <div class="input-group">
+                        <label>Add User ID</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="number" id="admin-add-uid" placeholder="e.g. 123456789" style="flex: 1;">
+                            <button class="primary-btn" style="width: auto; padding: 0 24px; background: #10b981;" onclick="adminAddUser()">Add User</button>
+                        </div>
+                    </div>
+                    
+                    <h4 style="color: var(--accent); margin-top: 20px; margin-bottom: 10px; font-size: 13px;">Currently Approved Users</h4>
+                    <div id="admin-users-list" style="max-height: 300px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                        <div style="color: #64748b; font-size: 12px;">Loading...</div>
+                    </div>
+                </div>
+            </div>
+
             <div id="view-settings" class="view-section">
                 
                 <div class="section-title">Interface Settings</div>
@@ -6335,6 +6392,7 @@ HTML_DASHBOARD = """
     <script>
         let currentUser = localStorage.getItem('tg_uid') || null;
         let chatsLoaded = false;
+        let isAdminGlobal = false;
 
         // 🟢 NEW: Custom Liquid Glass Dropdown Engine
         function initCustomSelects() {
@@ -6552,6 +6610,10 @@ HTML_DASHBOARD = """
         }
         function toggleProfile() { document.getElementById('profile-menu').classList.toggle('show'); }
         function switchView(viewId, title) {
+            if (viewId === 'admin' && !isAdminGlobal) {
+                alert("⛔ Unauthorized: This area is restricted to Admins.");
+                return;
+            }
             document.querySelectorAll('.view-section').forEach(el => el.classList.remove('active'));
             document.getElementById('view-' + viewId).classList.add('active');
             document.querySelectorAll('.menu-item').forEach(el => el.classList.remove('active'));
@@ -6563,6 +6625,7 @@ HTML_DASHBOARD = """
             if (viewId === 'network') fetchNetworkStats();
             if (viewId === 'sos') loadSosStats();
             if (viewId === 'settings') loadWorkerTokens();
+            if (viewId === 'admin') loadAdminUsers();
             if (viewId === 'globe') setTimeout(initWorldGlobe, 300); // 🟢 Boot Globe when tab opens
         }
         
@@ -6926,6 +6989,59 @@ HTML_DASHBOARD = """
             URL.revokeObjectURL(url);
         }
 
+        async function loadAdminUsers() {
+            try {
+                const res = await fetch(`/api/admin/users?user_id=${currentUser}`);
+                const data = await res.json();
+                if (data.status === 'success') {
+                    const list = document.getElementById('admin-users-list');
+                    if (!data.users || data.users.length === 0) {
+                        list.innerHTML = '<div style="color: #94a3b8; font-size: 12px;">No specific users added. (Admins have default access)</div>';
+                        return;
+                    }
+                    list.innerHTML = data.users.map(uid => `
+                        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.3); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
+                            <div style="color: #fff; font-size: 14px; font-family: monospace;">${uid}</div>
+                            <button onclick="adminRemoveUser('${uid}')" style="background: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 6px 12px; font-size: 11px; font-weight: bold; cursor: pointer;">Remove</button>
+                        </div>
+                    `).join('');
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function adminAddUser() {
+            const targetId = document.getElementById('admin-add-uid').value;
+            if (!targetId) return alert("Enter a User ID first.");
+            const btn = document.querySelector('button[onclick="adminAddUser()"]');
+            btn.disabled = true; btn.innerText = "Adding...";
+            try {
+                const res = await fetch('/api/admin/users/add', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: currentUser, target_id: targetId})
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    document.getElementById('admin-add-uid').value = '';
+                    loadAdminUsers();
+                } else { alert("Error: " + data.message); }
+            } catch (e) { alert("Network error."); }
+            btn.disabled = false; btn.innerText = "Add User";
+        }
+
+        async function adminRemoveUser(targetId) {
+            if (!confirm(`Remove access for User ID ${targetId}?`)) return;
+            try {
+                const res = await fetch('/api/admin/users/remove', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: currentUser, target_id: targetId})
+                });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    loadAdminUsers();
+                } else { alert("Error: " + data.message); }
+            } catch (e) { alert("Network error."); }
+        }
+
         async function loadWorkerTokens() {
             if (!currentUser) return;
             try {
@@ -6960,6 +7076,11 @@ HTML_DASHBOARD = """
                 const res = await fetch(`/api/stats?user_id=${currentUser}`);
                 const data = await res.json();
                 
+                if (data.is_admin) {
+                    isAdminGlobal = true;
+                    document.getElementById('nav-admin').style.display = 'flex';
+                }
+
                 if (data.user_name) document.getElementById('profile-name').innerText = data.user_name;
                 document.getElementById('uptime').innerText = data.uptime;
                 document.getElementById('active-tasks').innerText = data.active_tasks;
@@ -10039,6 +10160,9 @@ async def _api_login_handler(request):
         user_id = int(data.get("user_id"))
         password = data.get("password")
         
+        if not await db.is_user_approved(user_id):
+            return web.json_response({"status": "error", "message": "⛔ Unauthorized: You are not allowed to access this dashboard."})
+            
         user = await db.col.find_one({"id": user_id})
         if not user:
             return web.json_response({"status": "error", "message": "Account not found! Please go to Telegram and send /start to the bot first."})
@@ -10185,10 +10309,12 @@ async def _api_stats_handler(request):
     user_doc = await db.col.find_one({"id": user_id})
     tg_session_active = bool(user_doc and user_doc.get("session"))
     user_name = user_doc.get("name", "User") if user_doc else "User"
+    is_admin = user_id in ADMINS or user_id in SUDOS
 
     return web.json_response({
         "uptime": uptime_str,
         "user_name": user_name,
+        "is_admin": is_admin,
         "ram": psutil.virtual_memory().percent,
         "cpu": psutil.cpu_percent(),
         "active_tasks": len(user_tasks),
@@ -11713,7 +11839,6 @@ async def _get_user_stream_client(user_id):
             api_hash=api_hash,
             workers=4,
             no_updates=False, # 🟢 FIX: This MUST be False so watchers actually receive updates!
-            max_concurrent_updates=0, # 🟢 FIX: Infinite queue
             ipv6=False,
         )
         await uclient.start()
@@ -13660,6 +13785,37 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/proxy/wiki", _api_proxy_wiki)
     app_web.router.add_get("/api/chat_details", _api_chat_details_handler)
     
+    # Admin Controls API
+    async def _api_admin_get_users(request):
+        try: uid = int(request.query.get("user_id", 0))
+        except: uid = 0
+        if uid not in ADMINS and uid not in SUDOS:
+            return web.json_response({"status": "error", "message": "Unauthorized"})
+        users = await db.get_approved_users()
+        return web.json_response({"status": "success", "users": users})
+
+    async def _api_admin_add_user(request):
+        data = await request.json()
+        uid = int(data.get("user_id", 0))
+        if uid not in ADMINS and uid not in SUDOS:
+            return web.json_response({"status": "error", "message": "Unauthorized"})
+        target = int(data.get("target_id", 0))
+        await db.add_approved_user(target)
+        return web.json_response({"status": "success", "message": f"User {target} added successfully!"})
+
+    async def _api_admin_remove_user(request):
+        data = await request.json()
+        uid = int(data.get("user_id", 0))
+        if uid not in ADMINS and uid not in SUDOS:
+            return web.json_response({"status": "error", "message": "Unauthorized"})
+        target = int(data.get("target_id", 0))
+        await db.remove_approved_user(target)
+        return web.json_response({"status": "success", "message": f"User {target} removed!"})
+
+    app_web.router.add_get("/api/admin/users", _api_admin_get_users)
+    app_web.router.add_post("/api/admin/users/add", _api_admin_add_user)
+    app_web.router.add_post("/api/admin/users/remove", _api_admin_remove_user)
+
     # Stop Media Task API
     async def _api_kill_stream(request):
         try:
