@@ -5372,6 +5372,7 @@ HTML_DASHBOARD = """
             <div class="menu-item" onclick="switchView('mediainfo', 'Media Inspector')">🔍 Media Inspector</div>
             <div class="menu-item" onclick="switchView('spectrogram', 'Audio Spectrogram')">📉 Audio Spectrogram</div>
             <div class="menu-item" onclick="switchView('theater', 'Media Theater')">🍿 Media Theater</div>             
+            <div class="menu-item" onclick="switchView('editor', 'Media Editor')">🛠️ Media Editor</div>
             <div class="menu-item" onclick="switchView('settings', 'Settings')">⚙️ Settings</div>
         </div>
 
@@ -5794,7 +5795,6 @@ HTML_DASHBOARD = """
                         <div style="display: flex; gap: 8px;">
                             <input type="text" id="theater-stream-url" placeholder="https://t.me/c/123/456 or https://domain.com/movie.mkv" style="flex: 1;">
                             <button class="primary-btn" id="theater-load-btn" style="width: auto; padding: 0 24px;" onclick="loadTheaterMedia()">Load & Play</button>
-                            <button class="primary-btn" style="width: auto; padding: 0 15px; background: #eab308; color: #000;" onclick="openRemuxModal()">🛠 Edit & Upload</button>
                             <button class="primary-btn" style="width: auto; padding: 0 15px; background: #ef4444;" onclick="cancelTheaterStream()">Stop</button>
                         </div>
                     </div>
@@ -6050,7 +6050,48 @@ HTML_DASHBOARD = """
                     <div id="spec-html" style="font-family: monospace; font-size: 13px; color: var(--text); overflow-x: auto; white-space: pre-wrap; line-height: 1.5; text-align: left;"></div>
                 </div>
             </div>
-            
+
+            <!-- ========================================== -->
+            <!-- NEW DEDICATED MEDIA EDITOR PAGE            -->
+            <!-- ========================================== -->
+            <div id="view-editor" class="view-section">
+                <div class="section-title">Media Track Editor & Remuxer</div>
+                
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="input-group">
+                        <label>Target Media Link (Telegram or Direct URL)</label>
+                        <div style="display: flex; gap: 8px;">
+                            <input type="text" id="editor-stream-url" placeholder="https://t.me/c/123/456 or https://domain.com/movie.mkv" style="flex: 1;">
+                            <button class="primary-btn" id="editor-load-btn" style="width: auto; padding: 0 24px; background: #8b5cf6;" onclick="loadEditorMedia()">Analyze Tracks</button>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="card" id="editor-workspace" style="display: none; border-color: var(--accent);">
+                    <h3 style="margin-top: 0; color: #fff; font-size: 16px; margin-bottom: 15px;">🛠 Inspect & Edit Tracks</h3>
+                    
+                    <div id="editor-tracks-container" style="max-height: 400px; overflow-y: auto; margin-bottom: 20px; display: flex; flex-direction: column; gap: 10px; padding-right: 5px;">
+                        <!-- Dynamic Tracks Load Here -->
+                    </div>
+
+                    <div class="input-group" style="margin-top: 15px;">
+                        <label>New File Name (e.g. Edited_Movie.mkv)</label>
+                        <input type="text" id="editor-filename" placeholder="Output.mkv">
+                    </div>
+
+                    <div class="input-group">
+                        <label>Upload Destination</label>
+                        <select id="editor-dest" class="pop-select">
+                            <option value="tg">Telegram (Saved Messages)</option>
+                            <option value="gofile">GoFile.io (Public Link)</option>
+                        </select>
+                    </div>
+
+                    <button class="primary-btn" id="editor-submit-btn" style="margin-top: 10px;" onclick="submitEditorTask()">🚀 Process & Upload</button>
+                    <div id="editor-status" style="margin-top: 15px; font-size: 13px; font-weight: bold; color: var(--accent); text-align: center; display: none;"></div>
+                </div>
+            </div>
+                        
             <div id="view-settings" class="view-section">
                 
                 <div class="section-title">Interface Settings</div>
@@ -6228,36 +6269,6 @@ HTML_DASHBOARD = """
                     <button type="submit" class="primary-btn" style="flex:1; margin:0;">Launch Task</button>
                 </div>
             </form>
-        </div>
-    </div>
-
-    <!-- REMUX MODAL -->
-    <div class="modal" id="remuxModal" style="z-index: 400;">
-        <div class="modal-content" style="max-width: 600px; padding: 25px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h3 style="margin: 0; color: #fff; font-size: 16px;">🛠 Inspect & Edit Tracks</h3>
-                <button type="button" onclick="closeRemuxModal()" class="btn-cancel" style="padding: 6px 12px; width: auto; margin: 0;">Close ✕</button>
-            </div>
-            
-            <div id="remux-tracks-container" style="max-height: 350px; overflow-y: auto; margin-bottom: 20px; display: flex; flex-direction: column; gap: 10px;">
-                <!-- Dynamic Tracks Load Here -->
-            </div>
-
-            <div class="input-group">
-                <label>New File Name (e.g. Movie.mkv)</label>
-                <input type="text" id="remux-filename" placeholder="Output.mkv">
-            </div>
-
-            <div class="input-group">
-                <label>Upload Destination</label>
-                <select id="remux-dest" class="pop-select">
-                    <option value="tg">Telegram (Saved Messages)</option>
-                    <option value="gofile">GoFile.io (Public Link)</option>
-                </select>
-            </div>
-
-            <button class="primary-btn" id="remux-submit-btn" onclick="submitRemux()">🚀 Process & Upload</button>
-            <div id="remux-status" style="margin-top: 15px; font-size: 13px; font-weight: bold; color: var(--accent); text-align: center; display: none;"></div>
         </div>
     </div>
 
@@ -9503,68 +9514,92 @@ HTML_DASHBOARD = """
         }
 
         // ======================================================================
-        // MEDIA EDITING & REMUXING (100% Safe String Format)
+        // DEDICATED MEDIA EDITOR TAB (Python-Safe Strings)
         // ======================================================================
-        function openRemuxModal() {
-            if (!window.currentProbeData || !window.currentProbeData.streams) {
-                return alert("Please click 'Load & Play' first to inspect the media!");
+        async function loadEditorMedia() {
+            const link = document.getElementById('editor-stream-url').value.trim();
+            if (!link) return alert('Provide a valid media link!');
+            
+            const btn = document.getElementById('editor-load-btn');
+            const workspace = document.getElementById('editor-workspace');
+            const container = document.getElementById('editor-tracks-container');
+            const statusBox = document.getElementById('editor-status');
+            
+            btn.innerText = '⏳ Probing...';
+            btn.disabled = true;
+            workspace.style.display = 'none';
+            statusBox.style.display = 'none';
+            
+            try {
+                const res = await fetch('/api/media_probe?user_id=' + encodeURIComponent(currentUser) + '&link=' + encodeURIComponent(link));
+                const data = await res.json();
+                
+                if (data.status !== 'success') {
+                    throw new Error(data.message || 'Probe failed');
+                }
+                
+                window.editorProbeData = data;
+                window.editorMediaLink = link;
+                container.innerHTML = '';
+                
+                data.streams.forEach(function(s) {
+                    const type = s.codec_type || 'unknown';
+                    const codec = s.codec_name || '';
+                    const idx = s.index;
+                    const lang = (s.tags && (s.tags.language || s.tags.LANGUAGE)) || '';
+                    const title = (s.tags && (s.tags.title || s.tags.TITLE)) || '';
+                    
+                    let color = '#f59e0b';
+                    if (type === 'video') color = '#38bdf8';
+                    if (type === 'audio') color = '#10b981';
+                    
+                    let langText = lang ? '(' + lang + ')' : '';
+                    
+                    let htmlStr = '<div style="padding: 12px; margin: 0; background: rgba(0,0,0,0.4); border: 1px solid var(--card-border); border-left: 4px solid ' + color + '; display: flex; flex-direction: column; gap: 8px; border-radius: 12px;">';
+                    htmlStr += '<div style="display: flex; justify-content: space-between; align-items: center;">';
+                    htmlStr += '<label style="color: #fff; font-weight: bold; font-size: 13px; display: flex; align-items: center; gap: 8px;">';
+                    htmlStr += '<input type="checkbox" id="edit-keep-' + idx + '" checked style="width: 16px; height: 16px; accent-color: var(--accent);"> ';
+                    htmlStr += 'Track ' + idx + ' [' + type.toUpperCase() + ']';
+                    htmlStr += '</label>';
+                    htmlStr += '<span style="color: var(--subtext); font-size: 11px;">' + codec + ' ' + langText + '</span>';
+                    htmlStr += '</div>';
+                    htmlStr += '<div style="display: flex; gap: 10px;">';
+                    htmlStr += '<input type="text" id="edit-title-' + idx + '" placeholder="New Title..." value="' + title + '" style="flex: 2; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    htmlStr += '<input type="number" id="edit-delay-' + idx + '" placeholder="Delay (ms)" value="0" style="flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    htmlStr += '</div></div>';
+                    
+                    container.innerHTML += htmlStr;
+                });
+                
+                document.getElementById('editor-filename').value = data.file_name || 'output.mkv';
+                workspace.style.display = 'block';
+                
+                // Re-initialize custom glass dropdowns for the destination selector
+                initCustomSelects();
+                
+            } catch (err) {
+                alert("Analysis failed: " + err.message);
+            } finally {
+                btn.innerText = 'Analyze Tracks';
+                btn.disabled = false;
             }
-            const container = document.getElementById('remux-tracks-container');
-            container.innerHTML = '';
-            
-            window.currentProbeData.streams.forEach(function(s) {
-                const type = s.codec_type || 'unknown';
-                const codec = s.codec_name || '';
-                const idx = s.index;
-                const lang = (s.tags && (s.tags.language || s.tags.LANGUAGE)) || '';
-                const title = (s.tags && (s.tags.title || s.tags.TITLE)) || '';
-                
-                let color = '#f59e0b';
-                if (type === 'video') color = '#38bdf8';
-                if (type === 'audio') color = '#10b981';
-                
-                let langText = lang ? '(' + lang + ')' : '';
-                
-                let htmlStr = '<div class="card" style="padding: 12px; margin: 0; background: rgba(0,0,0,0.4); border-left: 4px solid ' + color + '; display: flex; flex-direction: column; gap: 8px;">';
-                htmlStr += '<div style="display: flex; justify-content: space-between; align-items: center;">';
-                htmlStr += '<label style="color: #fff; font-weight: bold; font-size: 13px; display: flex; align-items: center; gap: 8px;">';
-                htmlStr += '<input type="checkbox" id="keep-trk-' + idx + '" checked style="width: 16px; height: 16px; accent-color: var(--accent);"> ';
-                htmlStr += 'Track ' + idx + ' [' + type.toUpperCase() + ']';
-                htmlStr += '</label>';
-                htmlStr += '<span style="color: var(--subtext); font-size: 11px;">' + codec + ' ' + langText + '</span>';
-                htmlStr += '</div>';
-                htmlStr += '<div style="display: flex; gap: 10px;">';
-                htmlStr += '<input type="text" id="title-trk-' + idx + '" placeholder="New Title..." value="' + title + '" style="flex: 2; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
-                htmlStr += '<input type="number" id="delay-trk-' + idx + '" placeholder="Delay (ms)" value="0" style="flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
-                htmlStr += '</div></div>';
-                
-                container.innerHTML += htmlStr;
-            });
-            
-            document.getElementById('remux-filename').value = window.currentProbeData.file_name || 'output.mkv';
-            document.getElementById('remuxModal').classList.add('show');
-            initCustomSelects();
         }
 
-        function closeRemuxModal() {
-            document.getElementById('remuxModal').classList.remove('show');
-        }
-
-        async function submitRemux() {
-            const btn = document.getElementById('remux-submit-btn');
-            const status = document.getElementById('remux-status');
-            const dest = document.getElementById('remux-dest').value;
-            const newName = document.getElementById('remux-filename').value;
+        async function submitEditorTask() {
+            const btn = document.getElementById('editor-submit-btn');
+            const status = document.getElementById('editor-status');
+            const dest = document.getElementById('editor-dest').value;
+            const newName = document.getElementById('editor-filename').value;
             
             let config = [];
-            window.currentProbeData.streams.forEach(function(s) {
+            window.editorProbeData.streams.forEach(function(s) {
                 const idx = s.index;
-                const cb = document.getElementById('keep-trk-' + idx);
+                const cb = document.getElementById('edit-keep-' + idx);
                 if (cb && cb.checked) {
                     config.push({
                         index: idx,
-                        title: document.getElementById('title-trk-' + idx).value,
-                        delay: document.getElementById('delay-trk-' + idx).value || 0
+                        title: document.getElementById('edit-title-' + idx).value,
+                        delay: document.getElementById('edit-delay-' + idx).value || 0
                     });
                 }
             });
@@ -9582,7 +9617,7 @@ HTML_DASHBOARD = """
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         user_id: currentUser,
-                        link: activeMediaLink,
+                        link: window.editorMediaLink,
                         config: config,
                         new_name: newName,
                         dest: dest
