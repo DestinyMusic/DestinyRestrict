@@ -726,31 +726,59 @@ def _parse_chat_target(text: str):
 
 def _parse_source_link(src_link: str):
     raw = (src_link or "").strip()
-    
     msg_range = None
-    
-    # 🟢 Range handling logic
+
+    # 1. First, extract the range if it exists (e.g. 190171 - 192592)
     if "," in raw:
         links = [l.strip() for l in raw.split(",")]
         raw = links[0] 
         last_link = links[-1]
         try:
-            start_id = int(raw.rstrip("/").split("/")[-1].split("?")[0])
-            end_id = int(last_link.rstrip("/").split("/")[-1].split("?")[0])
+            start_id = int(re.search(r"(\d+)(?:\?|$)", raw.rstrip("/").split("/")[-1]).group(1))
+            end_id = int(re.search(r"(\d+)(?:\?|$)", last_link.rstrip("/").split("/")[-1]).group(1))
             if start_id <= end_id:
                 msg_range = (start_id, end_id)
         except: pass
     else:
-        m = re.search(r"/(\d+)\s*(?:-|to)\s*(\d+)$", raw, re.IGNORECASE)
+        # Catch formats like ...190171 - 192592
+        m = re.search(r"(?:/|=|%3D)(\d+)\s*(?:-|to)\s*(\d+)$", raw, re.IGNORECASE)
         if m:
             try:
                 start_id = int(m.group(1))
                 end_id = int(m.group(2))
                 if start_id <= end_id:
                     msg_range = (start_id, end_id)
-                raw = raw[:m.start(0)] + "/" + m.group(1) 
+                # Clean the tail so the base link works normally
+                if "=" in m.group(0):
+                    raw = raw[:m.start(0)] + f"={m.group(1)}"
+                else:
+                    raw = raw[:m.start(0)] + f"/{m.group(1)}"
             except: pass
 
+    # 2. Handle native tg://openmessage?user_id=...&message_id=...
+    if raw.startswith("tg://openmessage") or raw.startswith("tg://resolve"):
+        from urllib.parse import urlparse, parse_qs
+        parsed_url = urlparse(raw)
+        qs = parse_qs(parsed_url.query)
+        chat_target = qs.get("user_id", qs.get("domain", [None]))[0]
+        msg_id = qs.get("message_id", qs.get("post", [None]))[0]
+        
+        if chat_target and str(chat_target).lstrip("-").isdigit():
+            chat_target = int(chat_target)
+            
+        if msg_id and str(msg_id).isdigit():
+            msg_id = int(msg_id)
+            
+        return {
+            "kind": "private" if isinstance(chat_target, int) else "public",
+            "join_target": chat_target,
+            "chat_id": chat_target,
+            "topic_id": None,
+            "msg_id": msg_id,
+            "msg_range": msg_range,
+        }
+
+    # 3. Standard HTTP t.me links
     if "t.me/" in raw:
         raw = raw.split("t.me/")[-1]
     elif "telegram.me/" in raw:
@@ -931,7 +959,6 @@ async def check_link_restriction(user_id, link_text):
     if link_text.startswith("+") or "joinchat" in link_text:
         return False, "🔗 **Invite link detected.** Join the chat first before checking restrictions."
 
-    # 🟢 FIX: Use unified URL parser to handle all ID/Username edge cases safely
     parsed = _parse_source_link(link_text)
     if not parsed:
         return None, "⚠️ **Could not analyze link format.**"
@@ -944,7 +971,7 @@ async def check_link_restriction(user_id, link_text):
 
     is_private = False
     
-    # Force User Session if it's a private group, a numeric user/bot ID, or a bot username
+    # 🟢 Force User Session if it's a private group, a numeric user/bot ID, or a bot username
     if parsed.get("kind") == "private_c" or isinstance(chat_id, int) or (isinstance(chat_id, str) and chat_id.lower().endswith("bot")):
         is_private = True
         
@@ -1035,18 +1062,18 @@ async def check_link_restriction(user_id, link_text):
                 status_msg = "🔓 **Chat is PUBLIC/UNRESTRICTED**"
 
     except Exception as e:
-        err_str = str(e)
-        if "CHANNEL_PRIVATE" in err_str or "USER_NOT_PARTICIPANT" in err_str:
+        err_str = str(e).lower()
+        if "channel_private" in err_str or "user_not_participant" in err_str:
             status_msg = "⚠️ **Private Chat:** I can't check yet (You need to join first)."
-        elif "USERNAME_NOT_OCCUPIED" in err_str or "USERNAME_INVALID" in err_str or "PEER_ID_INVALID" in err_str:
+        elif "username_not_occupied" in err_str or "username_invalid" in err_str or "peer_id_invalid" in err_str:
             if check_client != app:
                 return None, f"❌ **Telegram Blocked Access:** Even your logged account cannot see this! It may be geo-blocked or deleted."
             else:
                 return None, f"❌ **Bot Blocked:** The bot cannot see this source. \n\n💡 **FIX:** Please use `/login` to link your account, and I will resolve it using your session!"
-        elif "AuthKeyUnregistered" in err_str or "SessionRevoked" in err_str:
+        elif "authkeyunregistered" in err_str or "sessionrevoked" in err_str:
             return None, f"❌ **Session Expired:** Your login session is invalid. Please run `/logout` and then `/login` again."
         else:
-            return None, f"❌ **Check Failed:** `{err_str[:50]}...`\nPlease ensure the link is active and valid."
+            return None, f"❌ **Check Failed:** `{str(e)[:50]}...`\nPlease ensure the link is active and valid."
     finally:
         if is_temp_client:
             try: await check_client.disconnect()
@@ -3905,6 +3932,15 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                     failed_count += 1
                     is_success = False
 
+                # 🟢 [NEW] Feed live stats to Web UI!
+                if task_uuid in ACTIVE_PROCESSES.get(user_id, {}):
+                    ACTIVE_PROCESSES[user_id][task_uuid].update({
+                        "current": index,
+                        "success": success_count,
+                        "skipped": skipped_count,
+                        "failed": failed_count
+                    })
+
                 if index < total_count:
                     if is_success:
                         elapsed_time = time.time() - loop_start_time
@@ -4285,6 +4321,10 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
     safe_filename = sanitize_filename(original_filename)
     if not safe_filename.strip(): safe_filename = f"{msgid}.dat"
     file_path_to_save = task_folder_path / safe_filename
+
+    # 🟢 [NEW] Save current file name to active processes for Web UI
+    if task_uuid and user_id in ACTIVE_PROCESSES and task_uuid in ACTIVE_PROCESSES[user_id]:
+        ACTIVE_PROCESSES[user_id][task_uuid]["current_file"] = safe_filename
 
     # 🟢 [FIX] Wipe previous file's progress so stale numbers NEVER carry over!
     if task_uuid:
@@ -6884,6 +6924,15 @@ HTML_DASHBOARD = """
                     if (t.phase === 'Processing' && t.batch_total > 0) {
                         bottomRow = `<span>${batchStr}</span><span></span>`;
                     }
+                    
+                    // 🟢 NEW: File Name and Stats UI Integration
+                    let fileNameStr = t.current_file ? `<div style="font-size: 11px; color: #38bdf8; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">📄 <b>${t.current_file}</b></div>` : '';
+                    
+                    let statsRow = `<div style="display: flex; gap: 12px; margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--subtext);">
+                        <span style="color: #10b981;">✅ Success: ${t.success || 0}</span>
+                        <span style="color: #f59e0b;">⏭ Skipped: ${t.skipped || 0}</span>
+                        <span style="color: #ef4444;">❌ Failed: ${t.failed || 0}</span>
+                    </div>`;
 
                     newDlHtml += `
                         <div class="task-row" style="flex-direction: column; align-items: stretch; gap: 10px; padding: 20px;">
@@ -6894,12 +6943,14 @@ HTML_DASHBOARD = """
                             <div style="font-size: 11px; color: var(--accent); margin-bottom: 2px;">
                                 ${t.phase} ➔ ${t.dest}
                             </div>
+                            ${fileNameStr}
                             <div style="background: rgba(255,255,255,0.1); border-radius: 8px; width: 100%; height: 16px; overflow: hidden; position: relative;">
                                 <div style="background: linear-gradient(90deg, var(--accent), #38bdf8); height: 100%; width: ${t.percent || 0}%; transition: width 0.5s ease;"></div>
                             </div>
                             <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--subtext); font-family: monospace;">
                                 ${bottomRow}
                             </div>
+                            ${statsRow}
                         </div>
                     `;
                 });
@@ -6913,9 +6964,13 @@ HTML_DASHBOARD = """
                 data.watchers.forEach(w => {
                     newWListHtml += `
                         <div class="task-row">
-                            <div>
-                                <div style="font-weight: 700; color: #fff; font-size: 14px;">📡 ${w.source}</div>
-                                <div style="font-size: 11px; color: #64748b; margin-top: 4px;">To: ${w.dest} | Detected: ${w.detected} | Success: ${w.success}</div>
+                            <div style="flex: 1; padding-right: 15px;">
+                                <div style="font-weight: 700; color: #fff; font-size: 14px; word-break: break-word;">📡 ${w.source}</div>
+                                <div style="font-size: 11px; color: var(--accent); margin-top: 4px;">Destination: ${w.dest}</div>
+                                <div style="display: flex; gap: 12px; margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--subtext);">
+                                    <span style="color: #38bdf8;">📡 Detected: ${w.detected}</span>
+                                    <span style="color: #10b981;">✅ Forwarded: ${w.success}</span>
+                                </div>
                             </div>
                             <button class="task-kill" onclick="cancelWatcher('${w.id}')">REMOVE</button>
                         </div>
@@ -9986,7 +10041,11 @@ async def _api_stats_handler(request):
             "eta": eta,
             "file_current": file_current,
             "file_total": file_total,
-            "percent": percent
+            "percent": percent,
+            "success": info.get("success", 0),
+            "skipped": info.get("skipped", 0),
+            "failed": info.get("failed", 0),
+            "current_file": info.get("current_file", "")
         })
 
     # User-specific watchers
