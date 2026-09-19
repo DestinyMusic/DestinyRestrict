@@ -3413,7 +3413,7 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
                 session_string=user_session,
                 api_id=u_api,
                 api_hash=u_hash,
-                workers=4,
+                workers=100, # 🟢 FIX: Prevent queue overload
                 ipv6=False
             )
             new_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
@@ -10758,7 +10758,7 @@ async def _api_chats_handler(request):
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
             uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
@@ -11024,7 +11024,7 @@ async def _api_topics_handler(request):
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
             uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
@@ -11080,7 +11080,7 @@ async def _api_chat_details_handler(request):
         try:
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
-            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+            uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
             uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
@@ -11180,7 +11180,7 @@ async def _api_mediainfo_web_handler(request):
                 try:
                     api_id = await db.get_api_id(uid) or API_ID
                     api_hash = await db.get_api_hash(uid) or API_HASH
-                    uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
+                    uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
                     uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
                     await uclient.start()
                     USER_CLIENTS[uid] = uclient
@@ -11908,8 +11908,8 @@ async def _get_user_stream_client(user_id):
             session_string=session_str,
             api_id=api_id,
             api_hash=api_hash,
-            workers=4,
-            no_updates=False, # 🟢 FIX: This MUST be False so watchers actually receive updates!
+            workers=100, # 🟢 FIX: Massive worker pool to instantly clear background channel noise
+            no_updates=False, 
             ipv6=False,
         )
         await uclient.start()
@@ -15086,7 +15086,7 @@ async def main():
                 session_string=user_session, 
                 api_id=u_api, 
                 api_hash=u_hash, 
-                workers=4, 
+                workers=100, # 🟢 FIX: Prevent queue overload on startup
                 ipv6=False,
                 no_updates=False 
             )
