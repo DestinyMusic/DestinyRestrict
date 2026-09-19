@@ -4400,6 +4400,9 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
     if not safe_filename.strip(): safe_filename = f"{msgid}.dat"
     file_path_to_save = task_folder_path / safe_filename
 
+    # 🟢 DEFINED EARLY: Define fetcher first before we use it in the UI label!
+    fetcher = acc if acc else client
+
     # 🟢 [NEW] Save current file name to active processes for Web UI
     if task_uuid and user_id in ACTIVE_PROCESSES and task_uuid in ACTIVE_PROCESSES[user_id]:
         ACTIVE_PROCESSES[user_id][task_uuid]["current_file"] = safe_filename
@@ -4424,7 +4427,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
 
     split_limit = 2000 * 1024 * 1024 
     is_premium = False
-    fetcher = acc if acc else client
+    
     try:
         if acc:
             me = acc.me if acc.me else await acc.get_me()
