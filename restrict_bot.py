@@ -11394,6 +11394,31 @@ async def resolve_direct_link(url):
 
         import re
         result = original
+
+        # ==========================================
+        # 🟢 NEW: WZML DIRECT LINK GENERATOR INTEGRATION
+        # ==========================================
+        try:
+            from extractor import direct_link_generator
+            import asyncio
+            
+            # Run the synchronous scraper safely in a background thread
+            wzml_result = await asyncio.to_thread(direct_link_generator, original)
+            
+            # Handle the different output formats WZML returns (Tuples, Dicts, or Strings)
+            if isinstance(wzml_result, tuple):
+                wzml_result = wzml_result[0]
+            elif isinstance(wzml_result, dict) and "contents" in wzml_result and len(wzml_result["contents"]) > 0:
+                wzml_result = wzml_result["contents"][0]["url"]
+                
+            if isinstance(wzml_result, str) and wzml_result.startswith("http") and wzml_result != original:
+                logger.info(f"✨ WZML Extractor successfully bypassed: {original} -> {wzml_result[:60]}...")
+                result = wzml_result
+        except Exception as e:
+            # If WZML fails or doesn't support the link, it falls back silently to your existing code
+            logger.debug(f"WZML Extractor skipped/failed for {original}: {e}")
+        # ==========================================
+
         session = await _get_direct_http_session()
 
         # 1. Pixeldrain Auto-Bypass
