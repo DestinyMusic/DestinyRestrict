@@ -497,14 +497,18 @@ db = Database(DB_URI, DB_NAME)
 import inspect
 import os
 
-def get_transmission_kwargs(workers: int = 8) -> dict:
+def get_transmission_kwargs(workers: int = 8, is_bot: bool = False) -> dict:
     """
     Dynamically detects fork support for concurrent transmissions.
-    Uses MAX_CONCURRENT_TRANSMISSIONS from .env, or scales automatically via CPU cores.
+    Strictly forces User Sessions to 1 to prevent MTProto Bufferbloat disconnects.
     """
     sig = inspect.signature(Client.__init__)
     if "max_concurrent_transmissions" not in sig.parameters:
         return {}
+
+    # 🟢 CRITICAL FIX: User sessions MUST use 1 concurrent transmission
+    if not is_bot:
+        return {"max_concurrent_transmissions": 1}
 
     env_val = os.environ.get("MAX_CONCURRENT_TRANSMISSIONS", "").strip()
     if env_val.isdigit() and int(env_val) > 0:
@@ -517,15 +521,17 @@ def get_transmission_kwargs(workers: int = 8) -> dict:
 
 bot_workers = min(32, (os.cpu_count() or 2) * 8)
 
+bot_workers = min(32, (os.cpu_count() or 2) * 8)
+
 app = Client(
     name="RestrictedBot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     workers=bot_workers,
-    sleep_threshold=20,
+    sleep_threshold=120, # 🟢 Increased to 120s to survive chunk delays
     ipv6=False,
-    **get_transmission_kwargs(workers=bot_workers)
+    **get_transmission_kwargs(workers=bot_workers, is_bot=True) # 🟢 Set is_bot=True
 )
 
 import random
@@ -1226,18 +1232,11 @@ def _split_file_smart(file_path, chunk_size):
             
     return parts
     
-def progress(current, total, message, typ, task_uuid=None):
+def progress(current, total, typ, task_uuid=None):
     if task_uuid and CANCEL_FLAGS.get(task_uuid):
         raise Exception("CANCELLED_BY_USER")
 
-    try:
-        msg_id = int(message.id)
-    except:
-        try:
-            msg_id = int(message)
-        except:
-            return
-    key = f"{msg_id}:{typ}"
+    key = f"{task_uuid}:{typ}" if task_uuid else "unknown"
     now = time.time()
     if key not in PROGRESS:
         PROGRESS[key] = {
@@ -1259,90 +1258,6 @@ def progress(current, total, message, typ, task_uuid=None):
         rec["last_current"] = current
         if speed > 0 and total > current:
             rec["eta"] = (total - current) / speed
-            
-async def downstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = ""):
-    msg_id = status_message.id
-    key = f"{msg_id}:down"
-    last_text = ""
-    while True:
-        rec = PROGRESS.get(key)
-        if not rec:
-            await asyncio.sleep(1)
-            continue
-        if rec["current"] == rec["total"] and rec["total"] > 0:
-            break
-            
-        now = time.time()
-        last_edit = LAST_UI_EDIT.get(msg_id, 0)
-        time_since_edit = now - last_edit
-
-        # 🟢 Global Clock: Has it been 30 seconds across the entire batch?
-        if time_since_edit >= 30 or last_edit == 0:
-            header_section = f"{header_text}\n" if header_text else ""
-            status = (
-                f"📥 **Downloading File ({index}/{total_count})**\n"
-                f"└ 📂 `{max(0, total_count-index)}` remaining\n\n"
-                f"**{rec.get('percent', 0):.1f}%** │ `{generate_bar(rec.get('percent', 0), length=12)}`\n\n"
-                f"{header_section}"
-                f"🚀 **Speed:** `{_pretty_bytes(rec.get('speed', 0))}/s`\n"
-                f"💾 **Size:** `{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}`\n"
-                f"⏳ **ETA:** `{get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)}`"
-            )
-
-            if status != last_text:
-                try:
-                    await client.edit_message_text(chat, msg_id, status)
-                    last_text = status
-                    LAST_UI_EDIT[msg_id] = time.time()
-                except FloodWait as e:
-                    logger.warning(f"UI Rate Limit ({e.value}s). Pushing next UI update to future.")
-                    LAST_UI_EDIT[msg_id] = time.time() + e.value
-                except Exception as e:
-                    logger.debug(f"Progress bar edit skipped: {e}")
-        
-        await asyncio.sleep(2)
-            
-async def upstatus(client: Client, status_message: Message, chat, index: int, total_count: int, header_text: str = ""):
-    msg_id = status_message.id
-    key = f"{msg_id}:up"
-    last_text = ""
-    while True:
-        rec = PROGRESS.get(key)
-        if not rec:
-            await asyncio.sleep(1)
-            continue
-        if rec["current"] == rec["total"] and rec["total"] > 0:
-            break
-            
-        now = time.time()
-        last_edit = LAST_UI_EDIT.get(msg_id, 0)
-        time_since_edit = now - last_edit
-
-        # 🟢 Global Clock: Has it been 30 seconds across the entire batch?
-        if time_since_edit >= 30 or last_edit == 0:
-            header_section = f"{header_text}\n" if header_text else ""
-            status = (
-                f"☁️ **Uploading File ({index}/{total_count})**\n"
-                f"└ 📤 `{max(0, total_count-index)}` remaining\n\n"
-                f"**{rec.get('percent', 0):.1f}%** │ `{generate_bar(rec.get('percent', 0), length=12)}`\n\n"
-                f"{header_section}"
-                f"🚀 **Speed:** `{_pretty_bytes(rec.get('speed', 0))}/s`\n"
-                f"💾 **Size:** `{_pretty_bytes(rec.get('current', 0))} / {_pretty_bytes(rec.get('total', 0))}`\n"
-                f"⏳ **ETA:** `{get_readable_time(int(rec.get('eta', 0)) if rec.get('eta') else 0)}`"
-            )
-
-            if status != last_text:
-                try:
-                    await client.edit_message_text(chat, msg_id, status)
-                    last_text = status
-                    LAST_UI_EDIT[msg_id] = time.time()
-                except FloodWait as e:
-                    logger.warning(f"UI Rate Limit ({e.value}s). Pushing next UI update to future.")
-                    LAST_UI_EDIT[msg_id] = time.time() + e.value
-                except Exception as e:
-                    logger.debug(f"Progress bar edit skipped: {e}")
-        
-        await asyncio.sleep(2)
             
 def get_message_type(msg: Message):
     if msg.document: return "Document"
@@ -3445,17 +3360,11 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
     )
 
     initial_text = (
-        f"👀 **Live Watcher Dashboard**\n\n"
+        f"📡 **Live Watcher Started!**\n\n"
         f"**Source:** `{source_title}`\n"
         f"**Destination:** `{data.get('dest_title', str(data.get('dest_chat_id')))}`\n"
-        f"**Delay:** `{delay}s` | **Restricted:** `{'Yes' if data['is_restricted'] else 'No'}`\n"
         f"**Filters:** `{', '.join(data.get('allowed_types', []))}`\n\n"
-        f"📊 **Session Statistics:**\n"
-        f"├ 📡 **Detected:** `0`\n"
-        f"├ ✅ **Success:** `0`\n"
-        f"├ ⏭ **Skipped:** `0`\n"
-        f"└ ❌ **Failed:** `0`\n\n"
-        f"*(Updates dynamically every 30s)*"
+        f"🌐 **Track live statistics for this Watcher in the Web Dashboard!**"
     )
     
     try:
@@ -3833,13 +3742,13 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                     api_id=api_id, 
                     no_updates=True,
                     workers=user_workers,
-                    sleep_threshold=60,
+                    sleep_threshold=120, # 🟢 Increased
                     ipv6=False,
-                    **get_transmission_kwargs(workers=user_workers)
+                    **get_transmission_kwargs(workers=user_workers, is_bot=False) # 🟢 Force 1 concurrent
                 )
                 await acc.start()
                 is_temp_acc = True
-            
+
             try:
                 source_ref = parsed_source.get("chat_id")
                 if source_ref is None:
@@ -3922,19 +3831,10 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
             if message and message.message_thread_id:
                 kwargs_status["message_thread_id"] = message.message_thread_id
 
-            if is_restricted:
-                status_message = await client.send_message(
-                    text=f"⚡ **Initializing Task...**\n{status_text_header}\nSource: {source_title}\nTotal Files: {total_count}",
-                    **kwargs_status
-                )
-            else:
-                status_message = await client.send_message(
-                    text=f"{status_text_header}\n\n{generate_bar(0)}\n\n"
-                    f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
-                    f"**Total:** {total_count}\n**Processed:** 0\n**Success:** 0 | **Skipped:** 0\n**Failed:** 0\n**ETA:** ...",
-                    **kwargs_status
-                )
-
+            status_message = await client.send_message(
+                text=f"🚀 **Batch Task Started!**\n{status_text_header}\n**Source:** {source_title}\n**Destination:** {dest_title}\n**Total Items:** {total_count}\n\n🌐 **Track live progress and speed in the Web Dashboard!**",
+                **kwargs_status
+            )
             last_update_time = time.time()
             # 🟢 Deleted the old hardcoded inner_header line here!
 
@@ -4031,27 +3931,7 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                         await asyncio.sleep(0.05)
 
                 if not is_restricted:
-                    current_now = time.time()
-                    if (current_now - last_update_time >= 30) or index == total_count:
-                        elapsed = current_now - start_time
-                        percent = (index / total_count) * 100
-                        eta_str = get_readable_time(int(((total_count - index) / (index / elapsed)))) if index > 0 else "..."
-                        
-                        try:
-                            await status_message.edit_text(
-                                f"{status_text_header}\n\n{generate_bar(percent)}\n\n"
-                                f"**Source:** {source_title}\n**Destination :** {dest_title}\n"
-                                f"**Total:** {total_count}\n**Processed:** {index}\n"
-                                f"**Success:** {success_count} | **Skipped:** {skipped_count}\n"
-                                f"**Failed:** {failed_count}\n**ETA:** {eta_str}"
-                            )
-                            last_update_time = current_now
-                        except FloodWait as e:
-                            logger.warning(f"Dashboard UI rate-limited. Silently skipping update to protect transfer.")
-                            # Push the next UI update check far into the future so it stops spamming
-                            last_update_time = current_now + min(e.value, 600)
-                        except Exception as e: 
-                            logger.debug(f"Failed to edit master dashboard: {e}")
+                    pass # Web UI handles progress, no Telegram edits needed
                     
         except Exception as e:
             await send_log(f"❌ **Task Crashed**\nUser: `{user_id}`\nError: `{e}`")
@@ -4424,13 +4304,9 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
     file_path_to_save = task_folder_path / safe_filename
 
     # 🟢 [FIX] Wipe previous file's progress so stale numbers NEVER carry over!
-    if status_message:
-        PROGRESS.pop(f"{status_message.id}:down", None)
-        PROGRESS.pop(f"{status_message.id}:up", None)
-
-    down_task = None
-    if status_message:
-        down_task = asyncio.create_task(downstatus(client, status_message, status_message.chat.id, index, total_count, header_text))
+    if task_uuid:
+        PROGRESS.pop(f"{task_uuid}:down", None)
+        PROGRESS.pop(f"{task_uuid}:up", None)
         
     file_path = None
     ph_path = None
@@ -4469,8 +4345,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                                 if status_message: await status_message.edit_text(f"🚀 **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
                             except FloodWait: pass
                         async with USER_DOWNLOAD_SEMAPHORES[user_id]:
-                            file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
-                        if down_task and not down_task.done(): down_task.cancel()
+                            file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=["down", task_uuid])
                         
                         try:
                             if status_message: await status_message.edit_text(f"☁️ **Uploading via Premium Session...**")
@@ -4478,8 +4353,6 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         
                         bot_id = client.me.id if getattr(client, "me", None) else int(BOT_TOKEN.split(":")[0])
                         log_chat_id, log_topic_id = await get_fallback_log_chat(acc, user_id, bot_id=bot_id)
-                        
-                        up_task = asyncio.create_task(upstatus(client, status_message, status_message.chat.id, index, total_count, header_text)) if status_message else None
                         
                         # --- 🟢 RICH CAPTION EXTRACTION ---
                         custom_cap = await build_rich_caption(file_path, msg_type, msg_fresh)
@@ -4521,7 +4394,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                             if log_topic_id: kwargs["message_thread_id"] = log_topic_id
                             if caption_entities: kwargs["caption_entities"] = caption_entities
                             if p_mode: kwargs["parse_mode"] = p_mode
-                            p_args = [status_message, "up", task_uuid]
+                            p_args = ["up", task_uuid]
                             
                             if "Document" == msg_type: sent_msg = await acc.send_document(document=file_path, progress=progress, progress_args=p_args, **kwargs)
                             elif "Video" == msg_type: sent_msg = await acc.send_video(video=file_path, duration=v_dur, width=v_w, height=v_h, progress=progress, progress_args=p_args, **kwargs)
@@ -4537,7 +4410,6 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         except Exception as up_err:
                             raise up_err
                         finally:
-                            if up_task and not up_task.done(): up_task.cancel()
                             try:
                                 if file_path and os.path.exists(file_path): os.remove(file_path)
                             except Exception: pass
@@ -4548,8 +4420,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                                 if status_message: await status_message.edit_text(f"✂️ **Large File ({_pretty_bytes(file_size)})**\n⏳ Waiting in Download Queue...")
                             except FloodWait: pass
                         async with USER_DOWNLOAD_SEMAPHORES[user_id]:
-                            file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid])
-                        if down_task and not down_task.done(): down_task.cancel()
+                            file_path = await fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=["down", task_uuid])
                         
                         try:
                             if status_message: await status_message.edit_text(f"✂️ **Splitting large file ({_pretty_bytes(file_size)})...**")
@@ -4568,9 +4439,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
 
                         parts = await split_file_python(file_path, chunk_size=1900*1024*1024)
                         
-                        if status_message and f"{status_message.id}:up" in PROGRESS: del PROGRESS[f"{status_message.id}:up"]
-
-                        up_task = asyncio.create_task(upstatus(client, status_message, status_message.chat.id, index, total_count, header_text)) if status_message else None
+                        if task_uuid and f"{task_uuid}:up" in PROGRESS: del PROGRESS[f"{task_uuid}:up"]
                     
                     async with USER_SEMAPHORES[user_id]:
                         async with SERVER_UPLOAD_LIMIT:
@@ -4598,7 +4467,6 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                                     if os.path.exists(part): os.remove(part)
                                 except Exception: pass
                     
-                    if up_task and not up_task.done(): up_task.cancel()
                     try:
                         if file_path and os.path.exists(file_path): os.remove(file_path)
                     except Exception: pass
@@ -4611,7 +4479,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                             except FloodWait: pass
                         async with USER_DOWNLOAD_SEMAPHORES[user_id]:
                             file_path = await asyncio.wait_for(
-                                fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=[status_message, "down", task_uuid]),
+                                fetcher.download_media(msg_fresh, file_name=str(file_path_to_save), progress=progress, progress_args=["down", task_uuid]),
                                 timeout=1200
                             )
                     except asyncio.TimeoutError:
@@ -4635,15 +4503,12 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                 if "CANCELLED" in str(e): return False
                 await asyncio.sleep(5)
 
-        if down_task and not down_task.done(): down_task.cancel()
-        
         if not download_success: return False
         if (batch_temp.IS_BATCH.get(user_id) and not is_w_task) or (task_uuid and CANCEL_FLAGS.get(task_uuid)): return False
 
-        if status_message:
-            PROGRESS.pop(f"{status_message.id}:up", None)
-            PROGRESS.pop(f"{status_message.id}:down", None)
-        up_task = asyncio.create_task(upstatus(client, status_message, status_message.chat.id, index, total_count, header_text)) if status_message else None
+        if task_uuid:
+            PROGRESS.pop(f"{task_uuid}:up", None)
+            PROGRESS.pop(f"{task_uuid}:down", None)
         
         # --- 🟢 RICH CAPTION EXTRACTION FOR NORMAL FILES ---
         custom_cap = await build_rich_caption(file_path, msg_type, msg_fresh)
@@ -4670,8 +4535,8 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         if p_mode: kwargs["parse_mode"] = p_mode
                         if ph_path and os.path.exists(ph_path): kwargs["thumb"] = ph_path
                             
-                        p_args = [status_message, "up", task_uuid] if status_message else None
-                        p_func = progress if status_message else None
+                        p_args = ["up", task_uuid]
+                        p_func = progress
 
                         a_dur = getattr(msg_fresh.audio, "duration", 0) if getattr(msg_fresh, "audio", None) else 0
                         a_perf = getattr(msg_fresh.audio, "performer", None) if getattr(msg_fresh, "audio", None) else None
@@ -4731,7 +4596,6 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
                         if "CANCELLED" in str(e): break
                         break
         
-        if up_task and not up_task.done(): up_task.cancel()
         return upload_success
 
     finally:
@@ -7008,19 +6872,55 @@ HTML_DASHBOARD = """
                 
                 const dlList = document.getElementById('downloads-list');
                 let newDlHtml = data.tasks.length ? '' : '<div style="color: #64748b;">No active downloads.</div>';
+                
+                // Helper functions
+                const formatBytesTask = (bytes) => {
+                    if (!bytes || bytes === 0) return '0 B';
+                    const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'], i = Math.floor(Math.log(bytes) / Math.log(k));
+                    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+                };
+                const formatTimeTask = (seconds) => {
+                    if (!seconds) return '0s';
+                    const h = Math.floor(seconds / 3600);
+                    const m = Math.floor((seconds % 3600) / 60);
+                    const s = Math.floor(seconds % 60);
+                    let res = '';
+                    if (h > 0) res += h + 'h ';
+                    if (m > 0) res += m + 'm ';
+                    res += s + 's';
+                    return res;
+                };
+
                 data.tasks.forEach(t => {
+                    let speedStr = t.speed > 0 ? formatBytesTask(t.speed) + '/s' : '';
+                    let etaStr = t.eta > 0 ? 'ETA: ' + formatTimeTask(t.eta) : '';
+                    let fileProgStr = t.file_total > 0 ? `${formatBytesTask(t.file_current)} / ${formatBytesTask(t.file_total)}` : '';
+                    let batchStr = t.batch_total > 0 ? `Item ${t.batch_current} of ${t.batch_total}` : '';
+                    
+                    let bottomRow = `<span>${fileProgStr}</span><span>${speedStr} ${etaStr ? '| ' + etaStr : ''}</span>`;
+                    if (t.phase === 'Processing' && t.batch_total > 0) {
+                        bottomRow = `<span>${batchStr}</span><span></span>`;
+                    }
+
                     newDlHtml += `
-                        <div class="task-row">
-                            <div>
+                        <div class="task-row" style="flex-direction: column; align-items: stretch; gap: 10px; padding: 20px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center;">
                                 <div style="font-weight: 700; color: #fff; font-size: 14px; word-break: break-all;">${t.name}</div>
-                                <div style="font-size: 11px; color: var(--accent); margin-top: 4px;">Destination: ${t.dest} | Progress: ${t.current}/${t.total} (${t.percent}%)</div>
+                                <button class="task-kill" onclick="cancelTask('${t.id}')">CANCEL</button>
                             </div>
-                            <button class="task-kill" onclick="cancelTask('${t.id}')">CANCEL</button>
+                            <div style="font-size: 11px; color: var(--accent); margin-bottom: 2px;">
+                                ${t.phase} ➔ ${t.dest}
+                            </div>
+                            <div style="background: rgba(255,255,255,0.1); border-radius: 8px; width: 100%; height: 16px; overflow: hidden; position: relative;">
+                                <div style="background: linear-gradient(90deg, var(--accent), #38bdf8); height: 100%; width: ${t.percent || 0}%; transition: width 0.5s ease;"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--subtext); font-family: monospace;">
+                                ${bottomRow}
+                            </div>
                         </div>
                     `;
                 });
                 
-                // 🟢 FIX: Only update DOM if HTML actually changed (Prevents TV lag spikes)
                 if (dlList.innerHTML !== newDlHtml) {
                     dlList.innerHTML = newDlHtml;
                 }
@@ -10059,9 +9959,35 @@ async def _api_stats_handler(request):
     for t_id, info in user_tasks.items():
         tot = info.get("total", 0)
         curr = info.get("current", 0)
-        pct = round((curr / tot * 100), 1) if tot > 0 else 0
         
-        # 🟢 Use Real Source Name instead of Raw Link
+        prog_down = PROGRESS.get(f"{t_id}:down")
+        prog_up = PROGRESS.get(f"{t_id}:up")
+        
+        phase = "Processing"
+        speed = 0
+        eta = 0
+        file_current = 0
+        file_total = 0
+        percent = 0.0
+
+        if prog_up and prog_up["current"] > 0 and prog_up["current"] < prog_up["total"]:
+            phase = "Uploading"
+            speed = prog_up["speed"]
+            eta = prog_up["eta"]
+            file_current = prog_up["current"]
+            file_total = prog_up["total"]
+            percent = prog_up.get("percent", 0.0)
+        elif prog_down and prog_down["current"] > 0 and prog_down["current"] < prog_down["total"]:
+            phase = "Downloading"
+            speed = prog_down["speed"]
+            eta = prog_down["eta"]
+            file_current = prog_down["current"]
+            file_total = prog_down["total"]
+            percent = prog_down.get("percent", 0.0)
+        else:
+            if tot > 0:
+                percent = (curr / tot * 100)
+
         src_name = info.get("source_title")
         if not src_name or src_name == "Unknown Source":
             src_name = info.get("item", "Task")
@@ -10070,9 +9996,14 @@ async def _api_stats_handler(request):
             "id": t_id,
             "name": src_name,
             "dest": info.get("dest_title_name", "DM"),
-            "current": curr,
-            "total": tot,
-            "percent": pct
+            "batch_current": curr,
+            "batch_total": tot,
+            "phase": phase,
+            "speed": speed,
+            "eta": eta,
+            "file_current": file_current,
+            "file_total": file_total,
+            "percent": percent
         })
 
     # User-specific watchers
@@ -13291,10 +13222,9 @@ async def _api_editor_progress(request):
     
     # Bridge the Telegram progress stats into the Web Dashboard
     if state["status_msg_id"]:
-        msg_id = state["status_msg_id"]
         typ = "down" if state["phase"] == "Downloading" else ("up" if state["phase"] == "Uploading" else None)
         if typ:
-            prog = PROGRESS.get(f"{msg_id}:{typ}")
+            prog = PROGRESS.get(f"{task_uuid}:{typ}")
             if prog:
                 resp["percent"] = prog.get("percent", 0)
                 resp["speed"] = prog.get("speed", 0)
@@ -13379,7 +13309,7 @@ async def _api_edit_media_handler(request):
                 client_to_use = working_pool[0] if working_pool else app
                 
                 msg = await get_client_msg(client_to_use, parsed["chat_id"], parsed["msg_id"])
-                await client_to_use.download_media(msg, file_name=str(input_file), progress=progress, progress_args=[status_msg, "down", task_uuid])
+                await client_to_use.download_media(msg, file_name=str(input_file), progress=progress, progress_args=["down", task_uuid])
             else:
                 await full_download_http(link, str(input_file))
                 
@@ -13418,7 +13348,15 @@ async def _api_edit_media_handler(request):
                     if session_str:
                         u_api = await db.get_api_id(uid) or API_ID
                         u_hash = await db.get_api_hash(uid) or API_HASH
-                        uclient = Client(f"User_{uid}", session_string=session_str, api_id=u_api, api_hash=u_hash, ipv6=False)
+                        uclient = Client(
+                            f"User_{uid}", 
+                            session_string=session_str, 
+                            api_id=u_api, 
+                            api_hash=u_hash, 
+                            ipv6=False,
+                            sleep_threshold=120,
+                            **get_transmission_kwargs(workers=4, is_bot=False) # 🟢 Force 1 concurrent
+                        )
                         await uclient.start()
                         USER_CLIENTS[uid] = uclient
                         
@@ -13440,16 +13378,16 @@ async def _api_edit_media_handler(request):
                         await status_msg.edit_text(f"☁️ **Uploading Part {i+1}/{len(parts)}...**")
                         kwargs["document"] = str(part)
                         kwargs["caption"] = f"**{part.name}**"
-                        await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
+                        await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=["up", task_uuid], **kwargs)
                         try: os.remove(part)
                         except: pass
                         
                 elif file_size > split_limit and is_premium:
                     await status_msg.edit_text(f"☁️ **Uploading via Premium Session ({_pretty_bytes(file_size)})...**")
-                    await safe_send(uclient, uid, upload_chat_id, task_uuid, False, uclient.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
+                    await safe_send(uclient, uid, upload_chat_id, task_uuid, False, uclient.send_document, progress=progress, progress_args=["up", task_uuid], **kwargs)
                 else:
                     await status_msg.edit_text("☁️ **Uploading to Destination...**")
-                    await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
+                    await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=["up", task_uuid], **kwargs)
                     
                 await status_msg.delete()
                 
@@ -14586,60 +14524,6 @@ async def user_watcher_handler(client, message):
 # ==============================================================================
 import datetime
 
-WATCHER_RENDER_CACHE = {}
-WATCHER_LAST_EDIT = {}
-
-async def watcher_dashboard_updater():
-    while True:
-        await asyncio.sleep(30)
-        try:
-            # Find all watchers that have a linked dashboard message
-            cursor = db.db.watchers.find({"dashboard_chat": {"$ne": None}, "dashboard_msg": {"$ne": None}})
-            async for w in cursor:
-                wid = str(w["_id"])
-                current_stats = w.get("stats", {})
-                
-                now = time.time()
-                last_edit = WATCHER_LAST_EDIT.get(wid, 0)
-                
-                # Compare to memory cache
-                cached = WATCHER_RENDER_CACHE.get(wid)
-                stats_changed = (cached != current_stats)
-                
-                # Only edit message if stats changed, OR force a heartbeat edit every 3 minutes
-                if not stats_changed and (now - last_edit) < 180:
-                    continue 
-
-                WATCHER_RENDER_CACHE[wid] = dict(current_stats)
-                WATCHER_LAST_EDIT[wid] = now
-                
-                time_str = datetime.datetime.now().strftime("%I:%M:%S %p")
-
-                text = (
-                    f"👀 **Live Watcher Dashboard**\n\n"
-                    f"**Source:** `{w.get('source_title')}`\n"
-                    f"**Destination:** `{w.get('dest_title')}`\n"
-                    f"**Delay:** `{w.get('delay')}s` | **Restricted:** `{'Yes' if w.get('is_restricted') else 'No'}`\n"
-                    f"**Filters:** `{', '.join(w.get('allowed_types', []))}`\n\n"
-                    f"📊 **Session Statistics:**\n"
-                    f"├ 📡 **Detected:** `{current_stats.get('detected', 0)}`\n"
-                    f"├ ✅ **Success:** `{current_stats.get('success', 0)}`\n"
-                    f"├ ⏭ **Skipped:** `{current_stats.get('skipped', 0)}`\n"
-                    f"└ ❌ **Failed:** `{current_stats.get('failed', 0)}`\n\n"
-                    f"*(📡 Listening for new messages...)*\n"
-                    f"⏱ **Last Synced:** `{time_str}`"
-                )
-                try:
-                    await app.edit_message_text(
-                        chat_id=w["dashboard_chat"],
-                        message_id=w["dashboard_msg"],
-                        text=text
-                    )
-                except Exception as e:
-                    if "MESSAGE_NOT_MODIFIED" in str(e): pass 
-        except Exception as e:
-            logger.error(f"Dashboard updater error: {e}")
-
 # ==============================================================================
 # --- MAIN ENTRY POINT ---
 # ==============================================================================
@@ -14757,11 +14641,8 @@ async def main():
     # Initialize per-user worker bots on startup
     await init_worker_bots()
 
-    # Start both the Koyeb health check AND the Live Dashboard Updater
+    # Start the web health check
     asyncio.create_task(start_koyeb_health_check())
-    asyncio.create_task(watcher_dashboard_updater())
-
-    logger.info("📊 Live Watcher Dashboard Updater Started")
     
     # ==========================================
     # --- 🟢 WATCHER CATCH-UP ENGINE ---
