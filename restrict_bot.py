@@ -521,17 +521,17 @@ def get_transmission_kwargs(workers: int = 8, is_bot: bool = False) -> dict:
 
 bot_workers = min(32, (os.cpu_count() or 2) * 8)
 
-bot_workers = min(32, (os.cpu_count() or 2) * 8)
-
 app = Client(
     name="RestrictedBot",
     api_id=API_ID,
     api_hash=API_HASH,
     bot_token=BOT_TOKEN,
     workers=bot_workers,
-    sleep_threshold=120, # 🟢 Increased to 120s to survive chunk delays
+    sleep_threshold=120, 
     ipv6=False,
-    **get_transmission_kwargs(workers=bot_workers, is_bot=True) # 🟢 Set is_bot=True
+    max_concurrent_updates=0,  # 🟢 FIX: Infinite queue to prevent dropped messages
+    hide_password=True,        # 🟢 FIX: Keeps logs clean
+    **get_transmission_kwargs(workers=bot_workers, is_bot=True) 
 )
 
 import random
@@ -11712,7 +11712,8 @@ async def _get_user_stream_client(user_id):
             api_id=api_id,
             api_hash=api_hash,
             workers=4,
-            no_updates=True,
+            no_updates=False, # 🟢 FIX: This MUST be False so watchers actually receive updates!
+            max_concurrent_updates=0, # 🟢 FIX: Infinite queue
             ipv6=False,
         )
         await uclient.start()
