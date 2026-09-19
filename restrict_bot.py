@@ -14498,6 +14498,19 @@ async def watcher_worker_loop(wid_str):
 
             if not is_restricted and not is_content_protected:
                 if getattr(msg, "media_group_id", None):
+                    group_cache_key = f"{owner_id}_{source_id}_{msg.media_group_id}_{dest_id}_{dest_thread}"
+                    if WATCHER_MEDIA_GROUPS.get(group_cache_key):
+                        await db.db.watchers.update_one(
+                            {"_id": watcher_db_id},
+                            {"$max": {"last_msg_id": int(msg.id)}}
+                        )
+                        continue
+                    WATCHER_MEDIA_GROUPS[group_cache_key] = True
+
+                try:
+                    await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
+
+                    if getattr(msg, "media_group_id", None):
                         try:
                             m_group = await fetcher.get_media_group(source_id, msg.id)
                         except Exception:
@@ -14663,8 +14676,7 @@ async def watcher_worker_loop(wid_str):
             logger.error(f"Fatal error in watcher worker {wid_str}: {outer_e}", exc_info=True)
         finally:
             queue.task_done()
-
-
+            
 async def process_watcher_message(client, message):
     chat_id = message.chat.id
     topic_id = getattr(message, "message_thread_id", None)
