@@ -12892,64 +12892,9 @@ async def get_client_msg(client, chat_id, msg_id):
         CLIENT_MSG_CACHE[key] = msg
     return CLIENT_MSG_CACHE[key]
 
-# 🟢 NEW: Global Smart RAM Cache for FFmpeg Micro-Requests
-TG_CHUNK_CACHE = {}
-TG_CHUNK_CACHE_MAX_SIZE = 128
-TG_CHUNK_LOCKS = defaultdict(asyncio.Lock)
-
-async def _get_cached_tg_chunk_pool(user_id, working_pool, chat_id, msg_id, chunk_index):
-    cache_key = (user_id, chat_id, msg_id, chunk_index)
-    async with TG_CHUNK_LOCKS[cache_key]:
-        if cache_key in TG_CHUNK_CACHE:
-            return TG_CHUNK_CACHE[cache_key]
-            
-        data = bytearray()
-        import random
-        import asyncio
-        # Randomize start bot to spread FFprobe metadata load evenly
-        start_bot_idx = random.randint(0, max(0, len(working_pool) - 1))
-        
-        # Try every bot in the pool up to 2 times
-        for attempt in range(len(working_pool) * 2):
-            client = working_pool[(start_bot_idx + attempt) % len(working_pool)]
-            try:
-                if not getattr(client, "is_connected", False):
-                    await client.connect()
-                    
-                msg = await get_client_msg(client, chat_id, msg_id)
-                data.clear()
-                
-                async def fetch_1mb():
-                    async for chunk in client.stream_media(msg, offset=chunk_index, limit=1):
-                        data.extend(chunk)
-                        
-                # 🟢 THE KILL SWITCH: If Pyrogram's socket freezes, forcefully kill it after 8 seconds 
-                # and immediately switch to the next bot! No more 30-second frozen players!
-                await asyncio.wait_for(fetch_1mb(), timeout=8.0)
-                
-                if data:
-                    break # Success!
-            except asyncio.TimeoutError:
-                logger.debug(f"Bot {getattr(client, 'name', 'Client')} timed out. Rotating...")
-                continue
-            except Exception as e:
-                logger.debug(f"Bot {getattr(client, 'name', 'Client')} failed: {e}. Rotating...")
-                continue
-                
-        if not data:
-            raise ValueError(f"Failed to fetch chunk {chunk_index} across all bots.")
-            
-        chunk_bytes = bytes(data)
-        TG_CHUNK_CACHE[cache_key] = chunk_bytes
-        
-        if len(TG_CHUNK_CACHE) > TG_CHUNK_CACHE_MAX_SIZE:
-            TG_CHUNK_CACHE.pop(next(iter(TG_CHUNK_CACHE)))
-            
-        await asyncio.sleep(0.01) # Prevent event loop starvation
-        return chunk_bytes
-
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Legacy strict fetcher for Downloads. Wrapped with timeout to prevent hangs."""
+    """Fetches a chunk continuously. Retries on transient errors with clean byte skipping."""
+    # 🟢 Align offset to 1MB chunks (Telegram MTProto requirement)
     ALIGNMENT = 1048576
     aligned_offset = (offset // ALIGNMENT) * ALIGNMENT
     target_bytes = limit
@@ -12965,9 +12910,13 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
-            async def fetch_legacy():
+            # Translate byte limits into Pyrogram MTProto Chunk Limits
+            chunk_limit = math.ceil(fetch_limit / ALIGNMENT)
+            chunk_offset = aligned_offset // ALIGNMENT
+
+            async def fetch_continuous():
                 nonlocal skip_bytes
-                async for chunk in client.stream_media(msg, offset=aligned_offset, limit=fetch_limit):
+                async for chunk in client.stream_media(msg, offset=chunk_offset, limit=chunk_limit):
                     if skip_bytes > 0:
                         if len(chunk) <= skip_bytes:
                             skip_bytes -= len(chunk)
@@ -12976,10 +12925,13 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
                             chunk = chunk[skip_bytes:]
                             skip_bytes = 0
                     data.extend(chunk)
+                    if len(data) >= target_bytes:
+                        break
                     
             import asyncio
-            # Force Pyrogram to give up if socket is dead
-            await asyncio.wait_for(fetch_legacy(), timeout=12.0)
+            # 🟢 Allow enough time for large blocks (e.g. 10MB chunk = 30 seconds max)
+            dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 2.5)
+            await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
                     
             if not data: 
                 raise ValueError("EOF Reached or Empty Chunk")
@@ -12993,9 +12945,10 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             
     raise TimeoutError("Exceeded max retries for chunk")
 
-async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1048576, concurrency=4):
-    """Ultra-Stable Continuous Stream Generator with Auto-Recovery and Bot Rotation."""
-    if total_length <= 0: return
+async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=5 * 1024 * 1024, concurrency=None):
+    """Fast Telegram range generator with cached client selection and 10MB continuous work units."""
+    if total_length <= 0:
+        return
 
     working_pool = []
     user_id = 0
@@ -13017,41 +12970,74 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
 
     if not working_pool:
         working_pool = [app]
+    
+    # 🟢 Determine safe concurrency
+    safe_concurrency = len(working_pool)
+    if concurrency is not None:
+        safe_concurrency = min(concurrency, safe_concurrency)
+    safe_concurrency = max(1, safe_concurrency)
 
-    bytes_needed = total_length
-    current_offset = start_byte
+    # 🟢 CRITICAL: Increase chunk size to 10MB if we have worker bots. 
+    # This prevents the "Connection closed by server" API spam!
+    actual_chunk_size = chunk_size if safe_concurrency == 1 else (10 * 1024 * 1024)
 
+    range_start = int(start_byte)
+    range_end = range_start + int(total_length)
+    units = []
+    
     for part in msg_parts:
-        if bytes_needed <= 0: break
-        if part["start"] <= current_offset < part["end"]:
-            internal_offset = current_offset - part["start"]
-            internal_limit = min(bytes_needed, part["size"] - internal_offset)
-            bytes_yielded_this_part = 0
-            
-            while bytes_yielded_this_part < internal_limit:
-                current_byte_offset = internal_offset + bytes_yielded_this_part
-                CHUNK_SIZE = 1048576
-                chunk_index = current_byte_offset // CHUNK_SIZE
-                skip_bytes = current_byte_offset % CHUNK_SIZE
-                remaining_bytes = internal_limit - bytes_yielded_this_part
-                
-                import asyncio
-                # 🟢 Pass the ENTIRE pool into the smart cache so it can rotate bots instantly!
-                chunk_task = asyncio.create_task(_get_cached_tg_chunk_pool(user_id, working_pool, chat_id, part["msg_id"], chunk_index))
-                chunk_data = await asyncio.shield(chunk_task)
-                
-                if skip_bytes > 0:
-                    chunk_data = chunk_data[skip_bytes:]
-                    
-                chunk_to_yield = chunk_data[:remaining_bytes]
-                if chunk_to_yield:
-                    yield chunk_to_yield
-                    bytes_yielded_this_part += len(chunk_to_yield)
-                    
-                await asyncio.sleep(0.001) 
-                        
-            current_offset += internal_limit
-            bytes_needed -= internal_limit
+        p_start = int(part["start"])
+        p_end = int(part["end"])
+        if p_end <= range_start or p_start >= range_end:
+            continue
+        cursor = max(range_start, p_start)
+        limit_end = min(range_end, p_end)
+        while cursor < limit_end:
+            take = min(int(actual_chunk_size), limit_end - cursor)
+            units.append((part, cursor - p_start, take))
+            cursor += take
+
+    if not units:
+        return
+
+    # 🟢 If only 1 client exists (User Session), run sequentially to avoid FloodWaits
+    if safe_concurrency == 1:
+        client = working_pool[0]
+        for part, internal_offset, internal_limit in units:
+            try:
+                yield await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
+            except Exception:
+                raise
+        return
+
+    # 🟢 Multi-Bot Parallel Path
+    cursor_idx = 0
+    import asyncio
+    while cursor_idx < len(units):
+        batch = units[cursor_idx:cursor_idx + safe_concurrency]
+
+        async def _fetch_with_failover(unit_idx, unit):
+            part, internal_offset, internal_limit = unit
+            preferred = working_pool[unit_idx % len(working_pool)]
+            candidates = [preferred] + [c for c in working_pool if c is not preferred]
+            last_exc = None
+            for client in candidates:
+                try:
+                    return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
+                except Exception as exc:
+                    last_exc = exc
+            raise last_exc or RuntimeError("Telegram chunk fetch failed across all bots")
+
+        results = await asyncio.gather(
+            *[_fetch_with_failover(i, unit) for i, unit in enumerate(batch)],
+            return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, Exception):
+                raise result
+            if result:
+                yield result
+        cursor_idx += len(batch)
             
 USER_WORKER_BOTS = defaultdict(list)
 
