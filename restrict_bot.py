@@ -1093,19 +1093,25 @@ async def upload_to_gofile(file_path: str):
                     return upload_data["data"]["downloadPage"]
                 raise Exception(f"GoFile Error: {upload_data}")
 
-async def process_remux(input_file, output_file, stream_config):
+async def process_remux(input_file, output_file, stream_config, global_meta=None):
     """Instantly reshuffles, delays, adds external tracks, and renames streams without re-encoding."""
     base_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     inputs = ["-i", input_file]
     input_paths = [input_file]
     maps_and_meta = []
     
+    # 🟢 NEW: Wipe all existing MKV junk and apply clean custom metadata!
+    if global_meta is not None:
+        maps_and_meta.extend(["-map_metadata", "-1"])
+        for k, v in global_meta.items():
+            if str(v).strip() != "":
+                maps_and_meta.extend(["-metadata", f"{k}={v.strip()}"])
+    
     out_idx = 0
     for track in stream_config:
         delay_ms = int(track.get("delay", 0))
         delay_sec = delay_ms / 1000.0
 
-        # Handle External Track Injections
         if track.get("type") in ["ext_audio", "ext_sub"]:
             ext_file = track.get("local_path")
             if not ext_file or not os.path.exists(ext_file):
@@ -1129,8 +1135,6 @@ async def process_remux(input_file, output_file, stream_config):
                 maps_and_meta.extend([f"-metadata:s:{out_idx}", f"language={track['lang']}"])
                 
             out_idx += 1
-        
-        # Handle Original File Tracks
         else:
             if delay_ms != 0:
                 inputs.extend(["-itsoffset", str(delay_sec), "-i", input_file])
@@ -6097,35 +6101,20 @@ HTML_DASHBOARD = """
                 <div class="card" id="editor-workspace" style="display: none; border-color: var(--accent);">
                     <h3 style="margin-top: 0; color: #fff; font-size: 16px; margin-bottom: 15px;">🛠 Inspect & Edit Tracks</h3>
                     
+                    <!-- 🟢 NEW: GLOBAL METADATA BOX -->
+                    <div id="editor-global-container" style="max-height: 250px; overflow-y: auto; margin-bottom: 20px; display: flex; flex-direction: column; gap: 10px; padding-right: 5px; background: rgba(0,0,0,0.3); border-radius: 12px; padding: 15px; border: 1px dashed #a855f7;">
+                        <!-- Dynamic Global Tags Load Here -->
+                    </div>
+
+                    <h4 style="margin: 0 0 10px 0; color: #38bdf8; font-size: 13px;">🎬 MEDIA STREAMS</h4>
                     <div id="editor-tracks-container" style="max-height: 400px; overflow-y: auto; margin-bottom: 20px; display: flex; flex-direction: column; gap: 10px; padding-right: 5px;">
                         <!-- Dynamic Tracks Load Here -->
                     </div>
 
-                    <!-- EXTERNAL TRACK BOX -->
-                    <div id="ext-track-box" style="border: 1px dashed var(--accent); padding: 15px; border-radius: 12px; margin-bottom: 20px; background: rgba(0,0,0,0.2); display: none;">
-                        <h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">➕ ADD EXTERNAL TRACK</h4>
-                        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
-                            <select id="ext-type" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; outline: none;" onchange="document.getElementById('ext-track-details').style.display = this.value === 'none' ? 'none' : 'flex';">
-                                <option value="none">-- Select Track Type --</option>
-                                <option value="ext_audio">Audio Track</option>
-                                <option value="ext_sub">Subtitle Track</option>
-                            </select>
-                        </div>
-                        <div id="ext-track-details" style="display: none; flex-direction: column; gap: 8px;">
-                            <input type="text" id="ext-url" placeholder="Paste Telegram Link or Direct HTTP Link..." style="padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
-                            <label class="primary-btn" style="padding: 10px; font-size: 11px; cursor: pointer; text-align: center; background: #475569; margin: 0; border-radius: 8px;">
-                                <span id="ext-file-name">📁 OR Select Local File</span>
-                                <input type="file" id="ext-file" style="display: none;" onchange="document.getElementById('ext-file-name').innerText = this.files[0] ? this.files[0].name : '📁 OR Select Local File'">
-                            </label>
-                            <div style="display: flex; gap: 8px;">
-                                <input type="text" id="ext-title" placeholder="Track Title (e.g. Hindi Dub)" style="flex: 2; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
-                                <input type="text" id="ext-lang" placeholder="Lang (hin, eng)" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
-                            </div>
-                            <div style="display: flex; gap: 8px;">
-                                <input type="number" id="ext-delay" placeholder="Delay (ms)" value="0" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
-                                <input type="number" id="ext-order" placeholder="Order (e.g. 1)" value="99" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
-                            </div>
-                        </div>
+                    <!-- EXTERNAL TRACKS CONTAINER -->
+                    <div id="ext-tracks-wrapper" style="margin-bottom: 20px;">
+                        <div id="dynamic-ext-tracks"></div>
+                        <button class="primary-btn" style="width: 100%; padding: 12px; background: rgba(56, 189, 248, 0.1); color: #38bdf8; border: 1px dashed #38bdf8; text-transform: uppercase; font-size: 12px; margin-top: 10px;" onclick="addExtTrackBox()">➕ Add External Track (Audio/Sub)</button>
                     </div>
                     
                     <div class="input-group" style="margin-top: 15px;">
@@ -9603,6 +9592,45 @@ HTML_DASHBOARD = """
             initCustomSelects(); // Re-render the liquid glass UI
         }
 
+        let extTrackCount = 0;
+
+        function addExtTrackBox() {
+            const container = document.getElementById('dynamic-ext-tracks');
+            const id = extTrackCount++;
+            
+            // Bulletproof string concatenation (no backticks)
+            let htmlStr = '<div id="ext-box-' + id + '" style="border: 1px dashed var(--accent); padding: 15px; border-radius: 12px; margin-bottom: 15px; background: rgba(0,0,0,0.2);">';
+            htmlStr += '<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">';
+            htmlStr += '<h4 style="margin: 0; color: var(--accent); font-size: 13px;">➕ EXTERNAL TRACK</h4>';
+            htmlStr += '<button class="btn-cancel" style="padding: 4px 8px; font-size: 10px; margin: 0; width: auto; background: rgba(239, 68, 68, 0.2); color: #ef4444; border: 1px solid #ef4444;" onclick="document.getElementById(\'ext-box-' + id + '\').remove()">Remove ✕</button>';
+            htmlStr += '</div>';
+            
+            htmlStr += '<div style="display: flex; flex-direction: column; gap: 8px;">';
+            htmlStr += '<select id="ext-type-' + id + '" style="padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; outline: none;">';
+            htmlStr += '<option value="ext_audio">Audio Track</option>';
+            htmlStr += '<option value="ext_sub">Subtitle Track</option>';
+            htmlStr += '</select>';
+            
+            htmlStr += '<input type="text" id="ext-url-' + id + '" placeholder="Paste Telegram Link or Direct HTTP Link..." style="padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+            
+            htmlStr += '<label class="primary-btn" style="padding: 10px; font-size: 11px; cursor: pointer; text-align: center; background: #475569; margin: 0; border-radius: 8px;">';
+            htmlStr += '<span id="ext-file-name-' + id + '">📁 OR Select Local File</span>';
+            htmlStr += '<input type="file" id="ext-file-' + id + '" style="display: none;" onchange="document.getElementById(\'ext-file-name-' + id + '\').innerText = this.files[0] ? this.files[0].name : \'📁 OR Select Local File\'">';
+            htmlStr += '</label>';
+            
+            htmlStr += '<div style="display: flex; gap: 8px;">';
+            htmlStr += '<input type="text" id="ext-title-' + id + '" placeholder="Track Title (e.g. Hindi Dub)" style="flex: 2; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+            htmlStr += '<input type="text" id="ext-lang-' + id + '" placeholder="Lang (hin, eng)" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+            htmlStr += '</div>';
+            
+            htmlStr += '<div style="display: flex; gap: 8px;">';
+            htmlStr += '<input type="number" id="ext-delay-' + id + '" placeholder="Delay (ms)" value="0" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+            htmlStr += '<input type="number" id="ext-order-' + id + '" placeholder="Order (e.g. 1)" value="99" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+            htmlStr += '</div></div></div>';
+            
+            container.innerHTML += htmlStr;
+        }
+
         async function loadEditorMedia() {
             const link = document.getElementById('editor-stream-url').value.trim();
             if (!link) return alert('Provide a valid media link!');
@@ -9610,6 +9638,7 @@ HTML_DASHBOARD = """
             const btn = document.getElementById('editor-load-btn');
             const workspace = document.getElementById('editor-workspace');
             const container = document.getElementById('editor-tracks-container');
+            const globalContainer = document.getElementById('editor-global-container');
             const statusBox = document.getElementById('editor-status');
             
             btn.innerText = '⏳ Probing...';
@@ -9629,6 +9658,34 @@ HTML_DASHBOARD = """
                 window.editorMediaLink = link;
                 container.innerHTML = '';
                 
+                // 🟢 1. Render Global Metadata
+                globalContainer.innerHTML = '<h4 style="margin: 0; color: #a855f7; font-size: 13px;">🌍 GLOBAL METADATA</h4><p style="font-size: 10px; color: var(--subtext); margin-top: 5px; margin-bottom: 10px;">Clear a box to completely remove that tag. (e.g. Remove "GROUP" or "encoder").</p>';
+                
+                if (data.global_tags && Object.keys(data.global_tags).length > 0) {
+                    for (const key in data.global_tags) {
+                        const val = data.global_tags[key];
+                        let gHtml = '<div style="display: flex; gap: 8px;">';
+                        gHtml += '<input type="text" readonly value="' + key + '" style="flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: rgba(0,0,0,0.5); color: var(--subtext); font-size: 12px; max-width: 140px;">';
+                        gHtml += '<input type="text" id="global-meta-' + key + '" value="' + val.replace(/"/g, '&quot;') + '" placeholder="Leave blank to delete this tag..." style="flex: 3; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                        gHtml += '</div>';
+                        globalContainer.innerHTML += gHtml;
+                    }
+                } else {
+                    globalContainer.innerHTML += '<div style="font-size: 12px; color: var(--subtext);">No global metadata tags found.</div>';
+                }
+                
+                // Add a blank row to allow adding a completely new custom tag
+                let gHtml = '<div style="display: flex; gap: 8px; margin-top: 5px;">';
+                gHtml += '<input type="text" id="global-meta-custom-key" placeholder="New Tag (e.g. TITLE)" style="flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--accent); background: rgba(0,0,0,0.5); color: #fff; font-size: 12px; max-width: 140px;">';
+                gHtml += '<input type="text" id="global-meta-custom-val" placeholder="Value..." style="flex: 3; padding: 8px; border-radius: 8px; border: 1px solid var(--accent); background: var(--bg); color: #fff; font-size: 12px;">';
+                gHtml += '</div>';
+                globalContainer.innerHTML += gHtml;
+
+                // 2. Clear dynamic external tracks
+                extTrackCount = 0;
+                document.getElementById('dynamic-ext-tracks').innerHTML = '';
+                
+                // 3. Render Original Streams
                 data.streams.forEach(function(s) {
                     const type = s.codec_type || 'unknown';
                     const codec = s.codec_name || '';
@@ -9668,7 +9725,6 @@ HTML_DASHBOARD = """
                 });
                 
                 document.getElementById('editor-filename').value = data.file_name || 'output.mkv';
-                document.getElementById('ext-track-box').style.display = 'block';
                 workspace.style.display = 'block';
                 
                 if (!window.allLoadedChats || window.allLoadedChats.length === 0) {
@@ -9684,7 +9740,7 @@ HTML_DASHBOARD = """
             }
         }
 
-        async function sendEditorPayload(config, newName, dest, thumbB64, btn, status) {
+        async function sendEditorPayload(config, globalMeta, newName, dest, thumbB64, btn, status) {
             try {
                 const res = await fetch('/api/edit_media', {
                     method: 'POST',
@@ -9693,6 +9749,7 @@ HTML_DASHBOARD = """
                         user_id: currentUser,
                         link: window.editorMediaLink,
                         config: config,
+                        global_meta: globalMeta,
                         new_name: newName,
                         dest: dest,
                         thumb: thumbB64
@@ -9719,10 +9776,27 @@ HTML_DASHBOARD = """
             const dest = document.getElementById('editor-dest').value;
             const newName = document.getElementById('editor-filename').value;
             const thumbFile = document.getElementById('editor-thumb-file').files[0];
-            const extType = document.getElementById('ext-type').value;
-            const extFile = document.getElementById('ext-file').files[0];
             
+            // 🟢 Extract Global Metadata
+            let globalMeta = {};
+            if (window.editorProbeData && window.editorProbeData.global_tags) {
+                for (const key in window.editorProbeData.global_tags) {
+                    const inputEl = document.getElementById('global-meta-' + key);
+                    if (inputEl) {
+                        globalMeta[key] = inputEl.value.trim();
+                    }
+                }
+            }
+            // Add custom tag if filled
+            const customKey = document.getElementById('global-meta-custom-key');
+            const customVal = document.getElementById('global-meta-custom-val');
+            if (customKey && customVal && customKey.value.trim() !== '') {
+                globalMeta[customKey.value.trim()] = customVal.value.trim();
+            }
+
             let config = [];
+            
+            // Process original tracks
             window.editorProbeData.streams.forEach(function(s) {
                 const idx = s.index;
                 const cb = document.getElementById('edit-keep-' + idx);
@@ -9737,33 +9811,44 @@ HTML_DASHBOARD = """
                     });
                 }
             });
-            
-            const readFileAsB64 = (file) => new Promise((resolve) => {
-                if (!file) return resolve("");
-                const reader = new FileReader();
-                reader.onload = e => resolve(e.target.result);
-                reader.readAsDataURL(file);
-            });
 
-            let extB64 = await readFileAsB64(extFile);
-            let thumbB64 = await readFileAsB64(thumbFile);
+            const readFileAsB64 = function(file) {
+                return new Promise(function(resolve) {
+                    if (!file) return resolve("");
+                    const reader = new FileReader();
+                    reader.onload = function(e) { resolve(e.target.result); };
+                    reader.readAsDataURL(file);
+                });
+            };
 
-            if (extType !== 'none') {
-                const extOrderVal = document.getElementById('ext-order').value;
-                const extConfig = {
-                    type: extType,
-                    url: document.getElementById('ext-url').value.trim(),
-                    b64: extB64,
-                    title: document.getElementById('ext-title').value.trim(),
-                    lang: document.getElementById('ext-lang').value.trim(),
-                    delay: document.getElementById('ext-delay').value || 0,
-                    order: parseInt(extOrderVal === '' ? 99 : extOrderVal)
-                };
+            // Process external tracks
+            for (let i = 0; i < extTrackCount; i++) {
+                const typeEl = document.getElementById('ext-type-' + i);
+                if (!typeEl) continue; 
                 
-                if (!extConfig.url && !extConfig.b64) {
-                    return alert("Please provide a URL or File for the external track!");
+                const extType = typeEl.value;
+                const extUrl = document.getElementById('ext-url-' + i).value.trim();
+                const extFile = document.getElementById('ext-file-' + i).files[0];
+                const extOrderVal = document.getElementById('ext-order-' + i).value;
+                
+                let extB64 = "";
+                if (extFile) {
+                    extB64 = await readFileAsB64(extFile);
                 }
-                config.push(extConfig);
+                
+                if (!extUrl && !extB64) {
+                    return alert("Please provide a URL or Local File for all external tracks!");
+                }
+                
+                config.push({
+                    type: extType,
+                    url: extUrl,
+                    b64: extB64,
+                    title: document.getElementById('ext-title-' + i).value.trim(),
+                    lang: document.getElementById('ext-lang-' + i).value.trim(),
+                    delay: document.getElementById('ext-delay-' + i).value || 0,
+                    order: parseInt(extOrderVal === '' ? 99 : extOrderVal)
+                });
             }
             
             if (config.length === 0) return alert("You must keep at least one track!");
@@ -9774,7 +9859,11 @@ HTML_DASHBOARD = """
             status.style.display = 'block';
             status.innerText = "Connecting...";
             
-            await sendEditorPayload(config, newName, dest, thumbB64, btn, status);
+            let thumbB64 = "";
+            if (thumbFile) {
+                thumbB64 = await readFileAsB64(thumbFile);
+            }
+            await sendEditorPayload(config, globalMeta, newName, dest, thumbB64, btn, status);
         }
     </script>
 </body>
@@ -11731,6 +11820,7 @@ async def _api_media_probe_handler(request):
             result = {
                 "status": "success",
                 "file_name": real_file_name,
+                "global_tags": pdata.get("format", {}).get("tags", {}), # 🟢 Extract MKV Group/Title tags!
                 "mime_type": mime_type,
                 "requires_transcode": not browser_compatible,
                 "browser_compatible": browser_compatible,
@@ -13073,6 +13163,7 @@ async def _api_edit_media_handler(request):
     uid = int(data.get("user_id", 0))
     link = data.get("link", "")
     config = data.get("config", [])
+    global_meta = data.get("global_meta", {}) # 🟢 Receive Global Metadata
     new_name = data.get("new_name", "output.mkv")
     dest = data.get("dest", "tg")
     thumb_b64 = data.get("thumb", "")
@@ -13106,7 +13197,6 @@ async def _api_edit_media_handler(request):
                 except Exception as e:
                     logger.warning(f"Thumb decode failed: {e}")
 
-            # 🟢 DOWNLOAD EXTERNAL TRACKS
             for track in config:
                 if track.get("type") in ["ext_audio", "ext_sub"]:
                     ext_path = temp_dir / f"ext_track_{track['type']}.dat"
@@ -13131,7 +13221,6 @@ async def _api_edit_media_handler(request):
                     if ext_path.exists():
                         track["local_path"] = str(ext_path)
 
-            # 🟢 DOWNLOAD MAIN FILE
             is_tg = _is_tg_link(link)
             if is_tg:
                 parsed = _parse_source_link(link)
@@ -13143,8 +13232,9 @@ async def _api_edit_media_handler(request):
             else:
                 await full_download_http(link, str(input_file))
                 
-            await status_msg.edit_text("⚙️ **Remuxing Tracks (Instant Copy)...**")
-            await process_remux(str(input_file), str(output_file), config)
+            await status_msg.edit_text("⚙️ **Remuxing Tracks & Rewriting Metadata...**")
+            # 🟢 Pass the global metadata into the remuxer
+            await process_remux(str(input_file), str(output_file), config, global_meta)
             
             await status_msg.edit_text("☁️ **Uploading to Destination...**")
             if dest == "gofile":
