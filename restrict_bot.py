@@ -9556,6 +9556,8 @@ HTML_DASHBOARD = """
                     let langText = lang ? '(' + lang + ')' : '';
                     
                     let htmlStr = '<div style="padding: 12px; margin: 0; background: rgba(0,0,0,0.4); border: 1px solid var(--card-border); border-left: 4px solid ' + color + '; display: flex; flex-direction: column; gap: 8px; border-radius: 12px;">';
+                    
+                    // Top Row: Checkbox & Codec Info
                     htmlStr += '<div style="display: flex; justify-content: space-between; align-items: center;">';
                     htmlStr += '<label style="color: #fff; font-weight: bold; font-size: 13px; display: flex; align-items: center; gap: 8px;">';
                     htmlStr += '<input type="checkbox" id="edit-keep-' + idx + '" checked style="width: 16px; height: 16px; accent-color: var(--accent);"> ';
@@ -9563,9 +9565,28 @@ HTML_DASHBOARD = """
                     htmlStr += '</label>';
                     htmlStr += '<span style="color: var(--subtext); font-size: 11px;">' + codec + ' ' + langText + '</span>';
                     htmlStr += '</div>';
-                    htmlStr += '<div style="display: flex; gap: 10px;">';
-                    htmlStr += '<input type="text" id="edit-title-' + idx + '" placeholder="New Title..." value="' + title + '" style="flex: 2; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
-                    htmlStr += '<input type="number" id="edit-delay-' + idx + '" placeholder="Delay (ms)" value="0" style="flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    
+                    // Bottom Row: Inputs with Labels
+                    htmlStr += '<div style="display: flex; gap: 8px; margin-top: 4px;">';
+                    
+                    // Title Input
+                    htmlStr += '<div style="flex: 3; display: flex; flex-direction: column;">';
+                    htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Track Title</span>';
+                    htmlStr += '<input type="text" id="edit-title-' + idx + '" placeholder="Name..." value="' + title + '" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    htmlStr += '</div>';
+                    
+                    // Delay Input
+                    htmlStr += '<div style="flex: 1.5; display: flex; flex-direction: column;">';
+                    htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Delay (ms)</span>';
+                    htmlStr += '<input type="number" id="edit-delay-' + idx + '" value="0" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    htmlStr += '</div>';
+                    
+                    // Order Input
+                    htmlStr += '<div style="flex: 1; display: flex; flex-direction: column;">';
+                    htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Order</span>';
+                    htmlStr += '<input type="number" id="edit-order-' + idx + '" value="' + idx + '" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    htmlStr += '</div>';
+                    
                     htmlStr += '</div></div>';
                     
                     container.innerHTML += htmlStr;
@@ -9596,15 +9617,22 @@ HTML_DASHBOARD = """
                 const idx = s.index;
                 const cb = document.getElementById('edit-keep-' + idx);
                 if (cb && cb.checked) {
+                    const orderVal = document.getElementById('edit-order-' + idx).value;
                     config.push({
                         index: idx,
                         title: document.getElementById('edit-title-' + idx).value,
-                        delay: document.getElementById('edit-delay-' + idx).value || 0
+                        delay: document.getElementById('edit-delay-' + idx).value || 0,
+                        order: parseInt(orderVal === '' ? idx : orderVal)
                     });
                 }
             });
             
             if (config.length === 0) return alert("You must keep at least one track!");
+
+            // 🟢 Sort the payload array based on the user's custom Ordering numbers!
+            config.sort(function(a, b) {
+                return a.order - b.order;
+            });
             
             btn.disabled = true;
             btn.innerText = "⏳ Processing...";
