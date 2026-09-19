@@ -162,7 +162,7 @@ debrid_link_supported_sites = [
 ]
 
 
-def direct_link_generator(link, cookies_data=None):
+def direct_link_generator(link, cookies_dict=None):
     """direct links generator"""
     domain = urlparse(link).hostname
     if not domain:
@@ -170,7 +170,7 @@ def direct_link_generator(link, cookies_data=None):
     elif is_url_shortener(domain):
         resolved = bypass_shortener(link)
         try:
-            return direct_link_generator(resolved, cookies_data)
+            return direct_link_generator(resolved, cookies_dict)
         except DirectDownloadLinkException as e:
             if str(e).startswith("ERROR: No Direct link function found"):
                 return resolved
@@ -210,7 +210,7 @@ def direct_link_generator(link, cookies_data=None):
     elif "transfer.it" in domain:
         return transfer_it(link)
     elif "hxfile.co" in domain:
-        return hxfile(link, cookies_data)
+        return hxfile(link, cookies_dict.get("hxfile") if cookies_dict else None)
     elif "1drv.ms" in domain:
         return onedrive(link)
     elif any(x in domain for x in ["pixeldrain.com", "pixeldra.in"]):
@@ -317,7 +317,7 @@ def direct_link_generator(link, cookies_data=None):
             "terabox.club",
         ]
     ):
-        return terabox(link, cookies_data)
+        return terabox(link, cookies_dict.get("terabox") if cookies_dict else None)
     elif any(
         x in domain
         for x in [
