@@ -12908,6 +12908,8 @@ async def get_client_msg(client, chat_id, msg_id):
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
     """Fetches a chunk continuously. Translates raw bytes into Pyrogram Chunk Indexes."""
+    import math
+    import asyncio
     CHUNK_SIZE = 1048576
     
     # 🟢 CRITICAL FIX: Pyrogram offset expects CHUNK INDEX, not raw bytes!
@@ -12945,35 +12947,7 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
                     if len(data) >= target_bytes:
                         break
                         
-            import asyncio
             # Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
-            dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 5.0)
-            await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
-                    
-            if not data: 
-                raise ValueError("EOF Reached or Empty Chunk")
-            return bytes(data[:target_bytes])
-            
-        except FloodWait as e:
-            await asyncio.sleep(e.value + 1)
-        except Exception as e:
-            if attempt == 5: raise e
-            await asyncio.sleep(1.5 + attempt) 
-            
-    raise TimeoutError("Exceeded max retries for chunk")
-                    if skip_bytes > 0:
-                        if len(chunk) <= skip_bytes:
-                            skip_bytes -= len(chunk)
-                            continue
-                        else:
-                            chunk = chunk[skip_bytes:]
-                            skip_bytes = 0
-                    data.extend(chunk)
-                    if len(data) >= target_bytes:
-                        break
-                        
-            import asyncio
-            # 🟢 Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
             dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 5.0)
             await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
                     
@@ -13015,6 +12989,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     if not working_pool:
         working_pool = [app]
     
+    # 🟢 Determine safe concurrency
     safe_concurrency = len(working_pool)
     if concurrency is not None:
         safe_concurrency = min(concurrency, safe_concurrency)
@@ -13084,11 +13059,11 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
             tasks.clear()
             
     finally:
-        # 🟢 If you skip or pause, instantly kill all active worker bots!
+        # 🟢 THE KILL SWITCH: If you skip or pause, instantly kill all active worker bots!
         for task in tasks:
             if not task.done():
                 task.cancel()
-
+                
 USER_WORKER_BOTS = defaultdict(list)
 
 async def init_worker_bots(user_id=None):
