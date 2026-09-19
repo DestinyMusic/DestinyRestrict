@@ -12901,64 +12901,47 @@ async def get_client_msg(client, chat_id, msg_id):
     return CLIENT_MSG_CACHE[key]
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk continuously. Translates raw bytes into Pyrogram Chunk Indexes."""
-    import math
-    import asyncio
-    CHUNK_SIZE = 1048576
-    
-    # 🟢 CRITICAL FIX: Pyrogram offset expects CHUNK INDEX, not raw bytes!
-    chunk_index = offset // CHUNK_SIZE
-    skip_bytes = offset % CHUNK_SIZE
-    
-    target_bytes = limit
-    # Calculate how many 1MB chunks we need to fetch to satisfy the request
-    total_bytes_to_fetch = skip_bytes + target_bytes
-    chunk_limit = math.ceil(total_bytes_to_fetch / CHUNK_SIZE)
-    
+    """Fetches a chunk continuously using precise byte offsets for Pyrogram 3.x."""
     for attempt in range(6): 
         if not getattr(client, "is_connected", False):
-            try: await client.connect()
-            except Exception: pass
+            try: 
+                await client.connect()
+            except Exception: 
+                pass
 
-        current_skip = skip_bytes
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
             async def fetch_continuous():
-                nonlocal current_skip
-                # 🟢 Pass the correct Chunk Index (e.g. 1) and Chunk Limit (e.g. 4)
-                async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunk_limit):
-                    if current_skip > 0:
-                        if len(chunk) <= current_skip:
-                            current_skip -= len(chunk)
-                            continue
-                        else:
-                            chunk = chunk[current_skip:]
-                            current_skip = 0
-                            
+                # 🟢 REAL CRITICAL FIX: Pyrogram 3.x expects raw BYTES for offset!
+                # We use limit=0 to let Pyrogram stream naturally, and break when we hit our target size.
+                async for chunk in client.stream_media(msg, offset=offset, limit=0):
                     data.extend(chunk)
-                    if len(data) >= target_bytes:
+                    if len(data) >= limit:
                         break
                         
             # Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
-            dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 5.0)
+            dynamic_timeout = max(15.0, (limit / 1024 / 1024) * 5.0)
             await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
                     
             if not data: 
                 raise ValueError("EOF Reached or Empty Chunk")
-            return bytes(data[:target_bytes])
+            
+            # Return exactly the requested byte size
+            return bytes(data[:limit])
             
         except FloodWait as e:
             await asyncio.sleep(e.value + 1)
         except Exception as e:
-            if attempt == 5: raise e
+            if attempt == 5: 
+                raise e
             await asyncio.sleep(1.5 + attempt) 
             
     raise TimeoutError("Exceeded max retries for chunk")
 
 async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=3 * 1024 * 1024, concurrency=None):
-    """Fast Telegram range generator with cached client selection and continuous work units."""
+    """Fast Telegram range generator with 3MB sweet-spot chunks to prevent server drops."""
     if total_length <= 0:
         return
 
@@ -13039,6 +13022,8 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                         return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
                     except Exception as exc:
                         last_exc = exc
+                        # 🟢 Re-added the invalidate call here correctly so dead bots are bypassed!
+                        await _invalidate_tg_access(user_id, chat_id, part["msg_id"], client)
                 raise last_exc or RuntimeError("Telegram chunk fetch failed across all bots")
 
             # 🟢 create_task() starts them all simultaneously and yields data instantly
@@ -13057,7 +13042,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         for task in tasks:
             if not task.done():
                 task.cancel()
-                
+
 USER_WORKER_BOTS = defaultdict(list)
 
 async def init_worker_bots(user_id=None):
