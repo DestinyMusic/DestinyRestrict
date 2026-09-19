@@ -493,10 +493,13 @@ class Database:
         doc = await self.db.config.find_one({"_id": "access_control"}) or {}
         revoked = doc.get("revoked_users", [])
         approved = doc.get("approved_users", [])
+        dyn_admins = doc.get("dynamic_admins", [])
+        dyn_sudos = doc.get("dynamic_sudos", [])
         
-        # Calculate who is still an admin (ignoring revoked ones across restarts)
-        effective_admins = [x for x in ADMINS if x not in revoked]
-        effective_sudos = [x for x in SUDOS if x not in revoked]
+        # Calculate effective roles (combining .env hardcoded + MongoDB dynamic, filtering revoked)
+        effective_admins = list(set([x for x in ADMINS if x not in revoked] + [x for x in dyn_admins if x not in revoked]))
+        effective_sudos = list(set([x for x in SUDOS if x not in revoked] + [x for x in dyn_sudos if x not in revoked]))
+        
         return effective_admins, effective_sudos, approved, revoked
 
     async def is_user_approved(self, user_id):
@@ -511,22 +514,42 @@ class Database:
         effective_admins, effective_sudos, _, _ = await self.get_access_control()
         return user_id in effective_admins or user_id in effective_sudos
 
-    async def add_approved_user(self, user_id):
+    async def add_approved_user(self, user_id, role="User"):
+        user_id = int(user_id)
+        # 1. Safely remove user from ALL groups to prevent overlapping roles
         await self.db.config.update_one(
             {"_id": "access_control"},
-            {
-                "$pull": {"revoked_users": int(user_id)},
-                "$addToSet": {"approved_users": int(user_id)}
-            },
+            {"$pull": {
+                "revoked_users": user_id,
+                "approved_users": user_id,
+                "dynamic_admins": user_id,
+                "dynamic_sudos": user_id
+            }},
+            upsert=True
+        )
+        
+        # 2. Add them to the specifically requested role array
+        target_array = "approved_users"
+        if role == "Admin": target_array = "dynamic_admins"
+        elif role == "Sudo": target_array = "dynamic_sudos"
+        
+        await self.db.config.update_one(
+            {"_id": "access_control"},
+            {"$addToSet": {target_array: user_id}},
             upsert=True
         )
 
     async def remove_user_access(self, user_id):
+        user_id = int(user_id)
         await self.db.config.update_one(
             {"_id": "access_control"},
             {
-                "$addToSet": {"revoked_users": int(user_id)},
-                "$pull": {"approved_users": int(user_id)}
+                "$addToSet": {"revoked_users": user_id},
+                "$pull": {
+                    "approved_users": user_id,
+                    "dynamic_admins": user_id,
+                    "dynamic_sudos": user_id
+                }
             },
             upsert=True
         )
@@ -6223,9 +6246,14 @@ HTML_DASHBOARD = """
                     <p style="font-size: 12px; color: #94a3b8; margin-bottom: 15px;">Add Telegram User IDs to grant them access to the Bot and Web UI. If this list has users, everyone else is blocked. Admins are always allowed.</p>
                     
                     <div class="input-group">
-                        <label>Add User ID</label>
+                        <label>Add User ID & Role</label>
                         <div style="display: flex; gap: 8px;">
                             <input type="number" id="admin-add-uid" placeholder="e.g. 123456789" style="flex: 1;">
+                            <select id="admin-add-role" style="width: 120px; padding: 12px; border-radius: 12px; border: 2px solid var(--card-border); background: rgba(0,0,0,0.3); color: #fff; font-size: 14px; outline: none; cursor: pointer;">
+                                <option value="User">User</option>
+                                <option value="Sudo">Sudo</option>
+                                <option value="Admin">Admin</option>
+                            </select>
                             <button class="primary-btn" style="width: auto; padding: 0 24px; background: #10b981;" onclick="adminAddUser()">Add User</button>
                         </div>
                     </div>
@@ -7048,13 +7076,19 @@ HTML_DASHBOARD = """
 
         async function adminAddUser() {
             const targetId = document.getElementById('admin-add-uid').value;
+            const targetRole = document.getElementById('admin-add-role').value;
+            
             if (!targetId) return alert("Enter a User ID first.");
             const btn = document.querySelector('button[onclick="adminAddUser()"]');
             btn.disabled = true; btn.innerText = "Adding...";
             try {
                 const res = await fetch('/api/admin/users/add', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser, target_id: targetId})
+                    body: JSON.stringify({
+                        user_id: currentUser, 
+                        target_id: targetId,
+                        role: targetRole
+                    })
                 });
                 const data = await res.json();
                 if (data.status === 'success') {
@@ -13831,13 +13865,11 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
         
         effective_admins, effective_sudos, approved, _ = await db.get_access_control()
         
-        # Consolidate all users into a dictionary to determine their highest role
+        # Consolidate users lowest-to-highest so highest privilege overwrites the dictionary
         users_dict = {}
+        for x in approved: users_dict[x] = "User"
+        for x in effective_sudos: users_dict[x] = "Sudo"
         for x in effective_admins: users_dict[x] = "Admin"
-        for x in effective_sudos:
-            if x not in users_dict: users_dict[x] = "Sudo"
-        for x in approved:
-            if x not in users_dict: users_dict[x] = "User"
             
         user_data_list = []
         for a_id, role in users_dict.items():
@@ -13856,9 +13888,12 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
         uid = int(data.get("user_id", 0))
         if not await db.is_user_admin(uid):
             return web.json_response({"status": "error", "message": "Unauthorized"})
+        
         target = int(data.get("target_id", 0))
-        await db.add_approved_user(target)
-        return web.json_response({"status": "success", "message": f"User {target} added successfully!"})
+        role = data.get("role", "User")
+        
+        await db.add_approved_user(target, role)
+        return web.json_response({"status": "success", "message": f"User {target} successfully assigned as {role}!"})
 
     async def _api_admin_remove_user(request):
         data = await request.json()
