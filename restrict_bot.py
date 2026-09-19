@@ -1094,32 +1094,59 @@ async def upload_to_gofile(file_path: str):
                 raise Exception(f"GoFile Error: {upload_data}")
 
 async def process_remux(input_file, output_file, stream_config):
-    """Instantly reshuffles, delays, and renames streams without re-encoding."""
+    """Instantly reshuffles, delays, adds external tracks, and renames streams without re-encoding."""
     base_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     inputs = ["-i", input_file]
+    input_paths = [input_file]
     maps_and_meta = []
     
-    input_count = 1
     out_idx = 0
     for track in stream_config:
         delay_ms = int(track.get("delay", 0))
-        # If delay is applied, we must load the input file again with -itsoffset
-        if delay_ms != 0:
-            delay_sec = delay_ms / 1000.0
-            inputs.extend(["-itsoffset", str(delay_sec), "-i", input_file])
-            src_id = input_count
-            input_count += 1
+        delay_sec = delay_ms / 1000.0
+
+        # Handle External Track Injections
+        if track.get("type") in ["ext_audio", "ext_sub"]:
+            ext_file = track.get("local_path")
+            if not ext_file or not os.path.exists(ext_file):
+                continue
+                
+            if delay_ms != 0:
+                inputs.extend(["-itsoffset", str(delay_sec), "-i", ext_file])
+                src_id = len(input_paths)
+                input_paths.append(ext_file)
+            else:
+                inputs.extend(["-i", ext_file])
+                src_id = len(input_paths)
+                input_paths.append(ext_file)
+                
+            stream_type = "a:0" if track["type"] == "ext_audio" else "s:0"
+            maps_and_meta.extend(["-map", f"{src_id}:{stream_type}"])
+            
+            if track.get("title") and track.get("title").lower() != "skip":
+                maps_and_meta.extend([f"-metadata:s:{out_idx}", f"title={track['title']}"])
+            if track.get("lang"):
+                maps_and_meta.extend([f"-metadata:s:{out_idx}", f"language={track['lang']}"])
+                
+            out_idx += 1
+        
+        # Handle Original File Tracks
         else:
-            src_id = 0
+            if delay_ms != 0:
+                inputs.extend(["-itsoffset", str(delay_sec), "-i", input_file])
+                src_id = len(input_paths)
+                input_paths.append(input_file)
+            else:
+                src_id = 0
+                
+            idx = str(track.get('index', '0')).replace('v:', '').replace('a:', '').replace('s:', '')
+            maps_and_meta.extend(["-map", f"{src_id}:{idx}"])
             
-        idx = str(track['index']).replace('v:', '').replace('a:', '').replace('s:', '')
-        maps_and_meta.extend(["-map", f"{src_id}:{idx}"])
-        
-        if track.get("title") and track.get("title").lower() != "skip":
-            maps_and_meta.extend([f"-metadata:s:{out_idx}", f"title={track['title']}"])
+            if track.get("title") and track.get("title").lower() != "skip":
+                maps_and_meta.extend([f"-metadata:s:{out_idx}", f"title={track['title']}"])
+                
+            out_idx += 1
             
-        out_idx += 1
-        
     final_cmd = base_cmd + inputs + maps_and_meta + ["-c", "copy", output_file]
     proc = await asyncio.create_subprocess_exec(*final_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     out, err = await proc.communicate()
@@ -6074,6 +6101,33 @@ HTML_DASHBOARD = """
                         <!-- Dynamic Tracks Load Here -->
                     </div>
 
+                    <!-- EXTERNAL TRACK BOX -->
+                    <div id="ext-track-box" style="border: 1px dashed var(--accent); padding: 15px; border-radius: 12px; margin-bottom: 20px; background: rgba(0,0,0,0.2); display: none;">
+                        <h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">➕ ADD EXTERNAL TRACK</h4>
+                        <div style="display: flex; gap: 8px; margin-bottom: 10px;">
+                            <select id="ext-type" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; outline: none;" onchange="document.getElementById('ext-track-details').style.display = this.value === 'none' ? 'none' : 'flex';">
+                                <option value="none">-- Select Track Type --</option>
+                                <option value="ext_audio">Audio Track</option>
+                                <option value="ext_sub">Subtitle Track</option>
+                            </select>
+                        </div>
+                        <div id="ext-track-details" style="display: none; flex-direction: column; gap: 8px;">
+                            <input type="text" id="ext-url" placeholder="Paste Telegram Link or Direct HTTP Link..." style="padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
+                            <label class="primary-btn" style="padding: 10px; font-size: 11px; cursor: pointer; text-align: center; background: #475569; margin: 0; border-radius: 8px;">
+                                <span id="ext-file-name">📁 OR Select Local File</span>
+                                <input type="file" id="ext-file" style="display: none;" onchange="document.getElementById('ext-file-name').innerText = this.files[0] ? this.files[0].name : '📁 OR Select Local File'">
+                            </label>
+                            <div style="display: flex; gap: 8px;">
+                                <input type="text" id="ext-title" placeholder="Track Title (e.g. Hindi Dub)" style="flex: 2; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
+                                <input type="text" id="ext-lang" placeholder="Lang (hin, eng)" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
+                            </div>
+                            <div style="display: flex; gap: 8px;">
+                                <input type="number" id="ext-delay" placeholder="Delay (ms)" value="0" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
+                                <input type="number" id="ext-order" placeholder="Order (e.g. 1)" value="99" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
+                            </div>
+                        </div>
+                    </div>
+                    
                     <div class="input-group" style="margin-top: 15px;">
                         <label>New File Name (e.g. Edited_Movie.mkv)</label>
                         <input type="text" id="editor-filename" placeholder="Output.mkv">
@@ -9597,17 +9651,14 @@ HTML_DASHBOARD = """
                     htmlStr += '<span style="color: var(--subtext); font-size: 11px;">' + codec + ' ' + langText + '</span>';
                     htmlStr += '</div>';
                     htmlStr += '<div style="display: flex; gap: 8px; margin-top: 4px;">';
-                    
                     htmlStr += '<div style="flex: 3; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Track Title</span>';
                     htmlStr += '<input type="text" id="edit-title-' + idx + '" placeholder="Name..." value="' + title + '" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
                     htmlStr += '</div>';
-                    
                     htmlStr += '<div style="flex: 1.5; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Delay (ms)</span>';
                     htmlStr += '<input type="number" id="edit-delay-' + idx + '" value="0" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
                     htmlStr += '</div>';
-                    
                     htmlStr += '<div style="flex: 1; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Order</span>';
                     htmlStr += '<input type="number" id="edit-order-' + idx + '" value="' + idx + '" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
@@ -9617,9 +9668,9 @@ HTML_DASHBOARD = """
                 });
                 
                 document.getElementById('editor-filename').value = data.file_name || 'output.mkv';
+                document.getElementById('ext-track-box').style.display = 'block';
                 workspace.style.display = 'block';
                 
-                // If chats haven't loaded yet, load them silently in the background
                 if (!window.allLoadedChats || window.allLoadedChats.length === 0) {
                     await loadWebChats(false);
                 }
@@ -9668,6 +9719,8 @@ HTML_DASHBOARD = """
             const dest = document.getElementById('editor-dest').value;
             const newName = document.getElementById('editor-filename').value;
             const thumbFile = document.getElementById('editor-thumb-file').files[0];
+            const extType = document.getElementById('ext-type').value;
+            const extFile = document.getElementById('ext-file').files[0];
             
             let config = [];
             window.editorProbeData.streams.forEach(function(s) {
@@ -9676,6 +9729,7 @@ HTML_DASHBOARD = """
                 if (cb && cb.checked) {
                     const orderVal = document.getElementById('edit-order-' + idx).value;
                     config.push({
+                        type: "main",
                         index: idx,
                         title: document.getElementById('edit-title-' + idx).value,
                         delay: document.getElementById('edit-delay-' + idx).value || 0,
@@ -9684,8 +9738,35 @@ HTML_DASHBOARD = """
                 }
             });
             
-            if (config.length === 0) return alert("You must keep at least one track!");
+            const readFileAsB64 = (file) => new Promise((resolve) => {
+                if (!file) return resolve("");
+                const reader = new FileReader();
+                reader.onload = e => resolve(e.target.result);
+                reader.readAsDataURL(file);
+            });
 
+            let extB64 = await readFileAsB64(extFile);
+            let thumbB64 = await readFileAsB64(thumbFile);
+
+            if (extType !== 'none') {
+                const extOrderVal = document.getElementById('ext-order').value;
+                const extConfig = {
+                    type: extType,
+                    url: document.getElementById('ext-url').value.trim(),
+                    b64: extB64,
+                    title: document.getElementById('ext-title').value.trim(),
+                    lang: document.getElementById('ext-lang').value.trim(),
+                    delay: document.getElementById('ext-delay').value || 0,
+                    order: parseInt(extOrderVal === '' ? 99 : extOrderVal)
+                };
+                
+                if (!extConfig.url && !extConfig.b64) {
+                    return alert("Please provide a URL or File for the external track!");
+                }
+                config.push(extConfig);
+            }
+            
+            if (config.length === 0) return alert("You must keep at least one track!");
             config.sort(function(a, b) { return a.order - b.order; });
             
             btn.disabled = true;
@@ -9693,16 +9774,7 @@ HTML_DASHBOARD = """
             status.style.display = 'block';
             status.innerText = "Connecting...";
             
-            // Read Thumbnail as Base64 then send payload
-            if (thumbFile) {
-                const reader = new FileReader();
-                reader.onload = async function(e) {
-                    await sendEditorPayload(config, newName, dest, e.target.result, btn, status);
-                };
-                reader.readAsDataURL(thumbFile);
-            } else {
-                await sendEditorPayload(config, newName, dest, "", btn, status);
-            }
+            await sendEditorPayload(config, newName, dest, thumbB64, btn, status);
         }
     </script>
 </body>
@@ -13016,7 +13088,6 @@ async def _api_edit_media_handler(request):
     task_uuid = uuid.uuid4().hex[:8]
     temp_dir = Path(f"./temp_remux_{uid}_{task_uuid}")
     
-    # 🟢 FIRE AND FORGET: Runs completely in the background to bypass Hugging Face 60s timeouts!
     async def background_editor():
         temp_dir.mkdir(parents=True, exist_ok=True)
         input_file = temp_dir / "input_media.dat"
@@ -13024,9 +13095,8 @@ async def _api_edit_media_handler(request):
         thumb_path = None
         
         try:
-            status_msg = await app.send_message(uid, f"⚙️ **Media Editor Task Started!**\n\n**Target:** `{new_name}`\n⏳ Downloading source...")
+            status_msg = await app.send_message(uid, f"⚙️ **Media Editor Task Started!**\n\n**Target:** `{new_name}`\n⏳ Downloading sources...")
             
-            # Save Base64 Thumbnail to disk
             if thumb_b64:
                 try:
                     thumb_data = base64.b64decode(thumb_b64.split(",")[1] if "," in thumb_b64 else thumb_b64)
@@ -13035,8 +13105,33 @@ async def _api_edit_media_handler(request):
                         f.write(thumb_data)
                 except Exception as e:
                     logger.warning(f"Thumb decode failed: {e}")
-        
-            # 1. Download (Uses Worker Bots dynamically if available!)
+
+            # 🟢 DOWNLOAD EXTERNAL TRACKS
+            for track in config:
+                if track.get("type") in ["ext_audio", "ext_sub"]:
+                    ext_path = temp_dir / f"ext_track_{track['type']}.dat"
+                    if track.get("b64"):
+                        try:
+                            b64_data = track["b64"].split(",")[1] if "," in track["b64"] else track["b64"]
+                            with open(ext_path, "wb") as f:
+                                f.write(base64.b64decode(b64_data))
+                        except Exception: pass
+                    elif track.get("url"):
+                        ext_link = track["url"]
+                        try:
+                            if _is_tg_link(ext_link):
+                                eparsed = _parse_source_link(ext_link)
+                                wp, _ = await _get_working_tg_pool(uid, eparsed["chat_id"], eparsed["msg_id"])
+                                eclient = wp[0] if wp else app
+                                emsg = await get_client_msg(eclient, eparsed["chat_id"], eparsed["msg_id"])
+                                await eclient.download_media(emsg, file_name=str(ext_path))
+                            else:
+                                await full_download_http(ext_link, str(ext_path))
+                        except Exception: pass
+                    if ext_path.exists():
+                        track["local_path"] = str(ext_path)
+
+            # 🟢 DOWNLOAD MAIN FILE
             is_tg = _is_tg_link(link)
             if is_tg:
                 parsed = _parse_source_link(link)
@@ -13048,11 +13143,9 @@ async def _api_edit_media_handler(request):
             else:
                 await full_download_http(link, str(input_file))
                 
-            # 2. Remux
             await status_msg.edit_text("⚙️ **Remuxing Tracks (Instant Copy)...**")
             await process_remux(str(input_file), str(output_file), config)
             
-            # 3. Upload
             await status_msg.edit_text("☁️ **Uploading to Destination...**")
             if dest == "gofile":
                 url = await upload_to_gofile(str(output_file))
@@ -13065,12 +13158,11 @@ async def _api_edit_media_handler(request):
                 kwargs = {
                     "chat_id": upload_chat_id,
                     "document": str(output_file),
-                    "caption": f"**{new_name}**" # 🟢 Clean caption, no "Remuxed:" prefix!
+                    "caption": f"**{new_name}**"
                 }
                 if thumb_path and thumb_path.exists():
                     kwargs["thumb"] = str(thumb_path)
                     
-                # Upload using App, fallback to User Session if App is not admin in target channel
                 sent_msg = await safe_send(app, uid, upload_chat_id, task_uuid, True, app.send_document, progress=progress, progress_args=[status_msg, "up", task_uuid], **kwargs)
                 await status_msg.delete()
                 
@@ -13084,15 +13176,14 @@ async def _api_edit_media_handler(request):
         finally:
             shutil.rmtree(str(temp_dir), ignore_errors=True)
             
-    # Spawn task and immediately return 200 OK to the browser
     asyncio.create_task(background_editor())
     return web.json_response({"status": "success", "url": "Check your Telegram PM for the live progress bar!"})
-
+    
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
-    # 🟢 FIX: Increased payload size to 50MB to accept High-Res Custom Thumbnails
-    app_web = web.Application(client_max_size=1024**2 * 50) 
+    app_web = web.Application(client_max_size=1024**2 * 500)
+    app_web.router.add_get("/api/network", _api_network_stats)
     app_web.router.add_get("/api/network", _api_network_stats)
     app_web.router.add_get("/api/bg", _api_bg_proxy)
     app_web.router.add_get("/api/chat_details", _api_chat_details_handler) # 🟢 NEW: Chat Details Endpoint
