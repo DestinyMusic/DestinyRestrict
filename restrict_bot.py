@@ -76,9 +76,9 @@ from pyrogram.errors import (
     FloodWait, UserIsBlocked, InputUserDeactivated, UserAlreadyParticipant,
     InviteHashExpired, UsernameNotOccupied, FileReferenceExpired, UserNotParticipant,
     ApiIdInvalid, PhoneNumberInvalid, PhoneCodeInvalid, PhoneCodeExpired,
-    SessionPasswordNeeded, PasswordHashInvalid, PeerIdInvalid, AuthKeyUnregistered, UserDeactivated,
-    StopPropagation
+    SessionPasswordNeeded, PasswordHashInvalid, PeerIdInvalid, AuthKeyUnregistered, UserDeactivated
 )
+from pyrogram import StopPropagation
 from pyrogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton, Message, 
     BotCommand, BotCommandScopeDefault, BotCommandScopeChat, CallbackQuery
