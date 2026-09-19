@@ -13182,53 +13182,64 @@ async def _api_edit_media_handler(request):
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
+    
+    # 🟢 FIX: 500MB Payload Limit for High-Res Audio/Thumbnails
     app_web = web.Application(client_max_size=1024**2 * 500)
-    app_web.router.add_get("/api/network", _api_network_stats)
-    app_web.router.add_get("/api/network", _api_network_stats)
-    app_web.router.add_get("/api/bg", _api_bg_proxy)
-    app_web.router.add_get("/api/chat_details", _api_chat_details_handler) # 🟢 NEW: Chat Details Endpoint
-    app_web.router.add_get("/manifest.json", _manifest_handler)
-    app_web.router.add_get("/sw.js", _sw_handler)
+    
+    # Core & Dashboard
     app_web.router.add_get("/", _dashboard_ui_handler)
     app_web.router.add_get("/health", _dashboard_ui_handler)
+    app_web.router.add_get("/manifest.json", _manifest_handler)
+    app_web.router.add_get("/sw.js", _sw_handler)
+    
+    # Stats & Logs
     app_web.router.add_get("/api/stats", _api_stats_handler)
     app_web.router.add_get("/api/logs", _api_logs_handler)
-    app_web.router.add_get("/api/chats", _api_chats_handler)
-    app_web.router.add_get("/api/topics", _api_topics_handler)
-    app_web.router.add_post("/api/mediainfo", _api_mediainfo_web_handler)
-    app_web.router.add_get("/api/speedtest", _api_speedtest_handler)
-    app_web.router.add_get("/api/sos", _api_sos_handler)
     app_web.router.add_get("/api/logs/download", _api_download_log_handler)
+    app_web.router.add_get("/api/network", _api_network_stats)
+    app_web.router.add_get("/api/sos", _api_sos_handler)
+    app_web.router.add_get("/api/speedtest", _api_speedtest_handler)
+    
+    # Auth & Settings
     app_web.router.add_post("/api/auth/login", _api_login_handler)
     app_web.router.add_post("/api/auth/forgot", _api_forgot_password_handler)
     app_web.router.add_post("/api/auth/password", _api_password_handler)
+    app_web.router.add_get("/api/settings/tokens", _api_get_worker_tokens)
+    app_web.router.add_post("/api/settings/tokens", _api_save_worker_tokens)
+    
+    # Telegram Connect
     app_web.router.add_post("/api/tg/send_code", _api_tg_send_code)
     app_web.router.add_post("/api/tg/verify", _api_tg_verify_code)
     app_web.router.add_post("/api/tg/verify_2fa", _api_tg_verify_2fa)
     app_web.router.add_post("/api/tg/logout", _api_tg_logout)
+    
+    # Media & Streams
+    app_web.router.add_get("/api/chats", _api_chats_handler)
+    app_web.router.add_get("/api/topics", _api_topics_handler)
+    app_web.router.add_post("/api/mediainfo", _api_mediainfo_web_handler)
+    app_web.router.add_post("/api/spectrogram", _api_spectrogram_web_handler)
+    app_web.router.add_get("/api/media_probe", _api_media_probe_handler)
+    app_web.router.add_get("/api/playlist", _api_playlist_handler)
+    app_web.router.add_get("/api/stream", _api_stream_handler)
+    app_web.router.add_get("/api/direct_stream", _api_direct_stream_handler)
+    app_web.router.add_get("/api/tg_stream", _api_tg_stream_handler)
+    app_web.router.add_get("/api/subtitles", _api_subtitles_handler)
+    app_web.router.add_get("/api/cover", _api_cover_handler)
+    
+    # Tasks & Watchers
     app_web.router.add_post("/api/task/add", _api_add_task)
     app_web.router.add_post("/api/task/cancel", _api_cancel_task)
     app_web.router.add_post("/api/watcher/add", _api_add_watcher)
     app_web.router.add_post("/api/watcher/cancel", _api_cancel_watcher)
-    app_web.router.add_post("/api/spectrogram", _api_spectrogram_web_handler)
-    app_web.router.add_get("/api/media_probe", _api_media_probe_handler)
-    app_web.router.add_get("/api/cover", _api_cover_handler) # 🟢 NEW: Cover Art API
-    app_web.router.add_get("/api/stream", _api_stream_handler)
-    app_web.router.add_get("/api/direct_stream", _api_direct_stream_handler)
-    app_web.router.add_get("/api/subtitles", _api_subtitles_handler)
-    app_web.router.add_get("/api/topics", _api_topics_handler)
-    app_web.router.add_get("/api/tg_stream", _api_tg_stream_handler) # <-- ADD THIS LINE
-    app_web.router.add_post("/api/mediainfo", _api_mediainfo_web_handler)
-    app_web.router.add_get("/api/settings/tokens", _api_get_worker_tokens)
-    app_web.router.add_post("/api/settings/tokens", _api_save_worker_tokens)
-    app_web.router.add_get("/api/playlist", _api_playlist_handler) # 🟢 ADD THIS LINE
-    app_web.router.add_get("/api/stream", _api_stream_handler)      
-    # 🟢 ADD THESE TWO NEW LINES HERE:
-    app_web.router.add_get("/api/proxy/country", _api_proxy_country)
-    app_web.router.add_get("/api/proxy/wiki", _api_proxy_wiki)  
-    app_web.router.add_post("/api/edit_media", _api_edit_media_handler) # 🟢 ADD THIS LINE!
     
-    # 🟢 ADD THIS NEW ROUTE FOR THE STOP BUTTON
+    # Editor & Proxies
+    app_web.router.add_post("/api/edit_media", _api_edit_media_handler)
+    app_web.router.add_get("/api/bg", _api_bg_proxy)
+    app_web.router.add_get("/api/proxy/country", _api_proxy_country)
+    app_web.router.add_get("/api/proxy/wiki", _api_proxy_wiki)
+    app_web.router.add_get("/api/chat_details", _api_chat_details_handler)
+    
+    # Stop Media Task API
     async def _api_kill_stream(request):
         try:
             data = await request.json()
@@ -13236,14 +13247,12 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
             
             if "GLOBAL_STREAM_TASKS" in globals() and uid:
                 keys_to_delete = []
-                # Safely find and cancel ONLY the streams belonging to this user
                 for key, task in list(GLOBAL_STREAM_TASKS.items()):
                     if key.startswith(f"{uid}_"):
                         if not task.done():
                             task.cancel()
                         keys_to_delete.append(key)
                 
-                # Remove them from the global dictionary
                 for k in keys_to_delete:
                     GLOBAL_STREAM_TASKS.pop(k, None)
                     
