@@ -335,6 +335,13 @@ class Database:
         count = await self.col.count_documents({"session": {"$ne": None}})
         return count
 
+    async def set_user_cookies(self, user_id, cookies_data):
+        await self.col.update_one({'id': int(user_id)}, {'$set': {'cookies': cookies_data}})
+        
+    async def get_user_cookies(self, user_id):
+        user = await self.col.find_one({'id': int(user_id)})
+        return user.get('cookies') if user else None
+        
     async def get_monthly_bandwidth(self):
         """Tracks, persists, and auto-resets monthly bandwidth usage in MongoDB across server reboots."""
         current_month = datetime.datetime.now().strftime("%Y-%m")
@@ -5935,7 +5942,20 @@ HTML_DASHBOARD = """
                     <audio id="ext-audio-player" style="display:none;" preload="auto"></audio>
                 </div>
             </div>
-            
+                    <!-- 🟢 PREMIUM & TERABOX COOKIES UI -->
+                    <div style="margin-top: 20px; padding: 15px; border-radius: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--card-border);">
+                        <h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">🍪 PREMIUM & TERABOX COOKIES</h4>
+                        <p style="font-size: 11px; color: var(--subtext); margin-bottom: 12px;">Terabox and Hxfile require your account cookies (Netscape format) to generate direct links. Upload your <code>cookies.txt</code> here. Stored securely per-user.</p>
+                        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
+                            <label class="primary-btn" style="width: auto; padding: 8px 16px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 12px;">
+                                📁 Upload cookies.txt
+                                <input type="file" accept=".txt" style="display: none;" onchange="uploadUserCookies(event)">
+                            </label>
+                            <button class="primary-btn" style="width: auto; padding: 8px 16px; background: #ef4444; font-size: 12px; margin: 0;" onclick="deleteUserCookies()">Remove</button>
+                            <span id="cookie-status-badge" style="margin-left: auto; font-size: 11px; font-weight: bold; padding: 6px 10px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ No Cookies Loaded</span>
+                        </div>
+                    </div>
+                                
             <div id="view-downloads" class="view-section">
                 <div class="section-title">
                     <span>Downloads & Forwarding Tasks</span>
@@ -6597,8 +6617,68 @@ HTML_DASHBOARD = """
             
             // 🟢 Render initial static Glass Dropdowns (Aspect Ratio, Size, Speed)
             setTimeout(initCustomSelects, 200);
+
+            // 🟢 Load the Cookie Badge Status on Startup
+            checkUserCookies();
         }
 
+        async function checkUserCookies() {
+            if(!currentUser) return;
+            try {
+                const res = await fetch(`/api/settings/cookies?user_id=${currentUser}`);
+                const data = await res.json();
+                const badge = document.getElementById('cookie-status-badge');
+                if(badge) {
+                    if(data.has_cookies) {
+                        badge.innerText = '✅ Cookies Active';
+                        badge.style.background = 'rgba(16, 185, 129, 0.2)';
+                        badge.style.color = '#10b981';
+                    } else {
+                        badge.innerText = '❌ No Cookies Loaded';
+                        badge.style.background = 'rgba(239, 68, 68, 0.2)';
+                        badge.style.color = '#ef4444';
+                    }
+                }
+            } catch(e) {}
+        }
+
+        function uploadUserCookies(event) {
+            const file = event.target.files[0];
+            if(!file) return;
+            const reader = new FileReader();
+            reader.onload = async function(e) {
+                const text = e.target.result;
+                try {
+                    const res = await fetch('/api/settings/cookies', {
+                        method: 'POST', headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({user_id: currentUser, cookies_data: text})
+                    });
+                    const data = await res.json();
+                    if(data.status === 'success') {
+                        alert("Cookies saved successfully!");
+                        checkUserCookies();
+                    } else alert("Error saving cookies.");
+                } catch(err) { alert("Network error."); }
+            };
+            reader.readAsText(file);
+            event.target.value = ''; 
+        }
+
+        async function deleteUserCookies() {
+            if(!confirm("Remove your saved cookies? Terabox links will stop working.")) return;
+            try {
+                const res = await fetch('/api/settings/cookies', {
+                    method: 'DELETE', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({user_id: currentUser})
+                });
+                const data = await res.json();
+                if(data.status === 'success') {
+                    alert("Cookies removed!");
+                    checkUserCookies();
+                }
+            } catch(err) {}
+        }
+        
         async function handleLogin(e) {
             e.preventDefault();
             const uid = document.getElementById('login-uid').value;
@@ -11374,7 +11454,7 @@ async def _close_direct_http_session():
             pass
 
 
-async def resolve_direct_link(url):
+async def resolve_direct_link(url, user_id=0):
     """Resolve common file-host pages to a stream URL, with coalesced/cached resolution."""
     original = str(url or '').strip()
     if not original:
@@ -11402,8 +11482,11 @@ async def resolve_direct_link(url):
             from extractor import direct_link_generator
             import asyncio
             
+            # Fetch user specific cookies from DB securely
+            user_cookies = await db.get_user_cookies(user_id) if user_id else None
+            
             # Run the synchronous scraper safely in a background thread
-            wzml_result = await asyncio.to_thread(direct_link_generator, original)
+            wzml_result = await asyncio.to_thread(direct_link_generator, original, user_cookies)
             
             # Handle the different output formats WZML returns (Tuples, Dicts, or Strings)
             if isinstance(wzml_result, tuple):
@@ -11576,7 +11659,7 @@ async def resolve_direct_link(url):
 
 async def _direct_upstream_request(url, request):
     """Open a direct HTTP source through the shared keep-alive session."""
-    resolved = await resolve_direct_link(url)
+    resolved = await resolve_direct_link(url, 0)
     session = await _get_direct_http_session()
     
     from urllib.parse import urlparse
@@ -11661,7 +11744,7 @@ async def _api_direct_stream_handler(request):
     if not url or not url.lower().startswith(("http://", "https://")):
         return web.Response(status=400, text="Invalid direct media URL")
 
-    resolved = await resolve_direct_link(url)
+    resolved = await resolve_direct_link(url, request.query.get("user_id", 0))
     filename = _guess_filename_from_url(resolved, "direct_media").lower()
     is_zip = filename.endswith(".zip") or ".zip." in filename
     
@@ -12095,6 +12178,7 @@ async def _api_media_probe_handler(request):
         mime_type = "video/mp4"
         streams = []
         duration_val = 0.0
+        pdata = {} # 🟢 FIX: Initialize empty dict to prevent UnboundLocalError crash
 
         try:
             if is_tg:
@@ -12117,7 +12201,7 @@ async def _api_media_probe_handler(request):
                 if msg_range:
                     actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
             else:
-                actual_url = await resolve_direct_link(link)
+                actual_url = await resolve_direct_link(link, user_id)
                 real_file_name = _guess_filename_from_url(actual_url, _guess_filename_from_url(link, "Direct_Stream_Media"))
                 cached_headers = DIRECT_HEADER_CACHE.get(link) or DIRECT_HEADER_CACHE.get(actual_url)
                 if cached_headers:
@@ -12331,7 +12415,7 @@ async def _api_cover_handler(request):
             msg_id = parsed.get("msg_id")
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
         else:
-            actual_url = await resolve_direct_link(link)
+            actual_url = await resolve_direct_link(link, user_id)
 
         # Grabs the exact cover frame directly from the media container
         cmd = [
@@ -12401,7 +12485,7 @@ async def _api_stream_handler(request):
                 actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
             is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac")) or "audio" in mime_type
         else:
-            actual_url = await resolve_direct_link(link)
+            actual_url = await resolve_direct_link(link, user_id)
             filename = _guess_filename_from_url(actual_url, "direct_media").lower()
             lower = actual_url.lower().split('?', 1)[0]
             is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac|wma|opus|dsf|ape|mka|alac)$", lower))
@@ -13539,7 +13623,7 @@ async def _api_playlist_handler(request):
                 
             playlist = await get_zip_playlist(zip_read_tg, global_offset)
         else:
-            actual_url = await resolve_direct_link(link)
+            actual_url = await resolve_direct_link(link, user_id)
             filename = _guess_filename_from_url(actual_url).lower()
             is_zip = filename.endswith(".zip") or ".zip." in filename
             if not is_zip: return web.json_response({"status": "success", "playlist": []})
@@ -13819,7 +13903,7 @@ async def _api_edit_media_handler(request):
             
     asyncio.create_task(background_editor())
     return web.json_response({"status": "success", "task_uuid": task_uuid})
-
+    
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -13847,6 +13931,29 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_post("/api/auth/password", _api_password_handler)
     app_web.router.add_get("/api/settings/tokens", _api_get_worker_tokens)
     app_web.router.add_post("/api/settings/tokens", _api_save_worker_tokens)
+
+    # 🟢 Cookies APIs
+    async def _api_cookies_get(request):
+        uid = int(request.query.get("user_id", 0))
+        cookies = await db.get_user_cookies(uid)
+        return web.json_response({"status": "success", "has_cookies": bool(cookies)})
+
+    async def _api_cookies_post(request):
+        data = await request.json()
+        uid = int(data.get("user_id", 0))
+        cookies_data = data.get("cookies_data", "")
+        await db.set_user_cookies(uid, cookies_data)
+        return web.json_response({"status": "success"})
+
+    async def _api_cookies_delete(request):
+        data = await request.json()
+        uid = int(data.get("user_id", 0))
+        await db.set_user_cookies(uid, None)
+        return web.json_response({"status": "success"})
+        
+    app_web.router.add_get("/api/settings/cookies", _api_cookies_get)
+    app_web.router.add_post("/api/settings/cookies", _api_cookies_post)
+    app_web.router.add_delete("/api/settings/cookies", _api_cookies_delete)
     
     # Telegram Connect
     app_web.router.add_post("/api/tg/send_code", _api_tg_send_code)
