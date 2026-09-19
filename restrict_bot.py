@@ -1069,66 +1069,6 @@ async def check_link_restriction(user_id, link_text):
         
     return is_restricted, status_msg
 
-# ==============================================================================
-# --- NEW: GOFILE UPLOADER & FFMPEG REMUX ENGINE ---
-# ==============================================================================
-import aiohttp
-import os
-
-async def upload_to_gofile(file_path: str):
-    """Uploads a file to GoFile.io and returns the public download link."""
-    async with aiohttp.ClientSession() as session:
-        async with session.get("https://api.gofile.io/servers") as resp:
-            data = await resp.json()
-            if data.get("status") != "ok": raise Exception("Failed to get GoFile server")
-            server = data["data"]["servers"][0]["name"]
-            
-        upload_url = f"https://{server}.gofile.io/contents/uploadfile"
-        with open(file_path, 'rb') as f:
-            form = aiohttp.FormData()
-            form.add_field('file', f, filename=os.path.basename(file_path))
-            async with session.post(upload_url, data=form) as resp:
-                upload_data = await resp.json()
-                if upload_data.get("status") == "ok":
-                    return upload_data["data"]["downloadPage"]
-                raise Exception(f"GoFile Error: {upload_data}")
-
-async def process_remux(input_file, output_file, stream_config):
-    """Instantly reshuffles, delays, and renames streams without re-encoding."""
-    base_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
-    inputs = ["-i", input_file]
-    maps_and_meta = []
-    
-    input_count = 1
-    out_idx = 0
-    for track in stream_config:
-        delay_ms = int(track.get("delay", 0))
-        # If delay is applied, we must load the input file again with -itsoffset
-        if delay_ms != 0:
-            delay_sec = delay_ms / 1000.0
-            inputs.extend(["-itsoffset", str(delay_sec), "-i", input_file])
-            src_id = input_count
-            input_count += 1
-        else:
-            src_id = 0
-            
-        idx = str(track['index']).replace('v:', '').replace('a:', '').replace('s:', '')
-        maps_and_meta.extend(["-map", f"{src_id}:{idx}"])
-        
-        if track.get("title") and track.get("title").lower() != "skip":
-            maps_and_meta.extend([f"-metadata:s:{out_idx}", f"title={track['title']}"])
-            
-        out_idx += 1
-        
-    final_cmd = base_cmd + inputs + maps_and_meta + ["-c", "copy", output_file]
-    proc = await asyncio.create_subprocess_exec(*final_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-    out, err = await proc.communicate()
-    
-    if proc.returncode != 0: 
-        raise Exception(err.decode())
-    return output_file
-# ==============================================================================
-
 async def split_file_python(file_path, chunk_size=2000*1024*1024):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(io_executor, _split_file_smart, file_path, chunk_size)
@@ -2949,125 +2889,8 @@ async def dl_handler(client: Client, message: Message):
     buttons = [
         [InlineKeyboardButton("📂 Send to DM (Here)", callback_data="dest_dm")],
         [InlineKeyboardButton("📢 Send to Channel/Group", callback_data="dest_custom")],
-        [InlineKeyboardButton("🛠 Inspect & Edit Media", callback_data="dest_remux")],
         [InlineKeyboardButton("❌ Cancel Setup", callback_data="cancel_setup")] 
     ]
-
-# --- ADD THIS DIRECTLY BELOW THE DESTINATION BUTTON BLOCK ---
-@app.on_callback_query(filters.regex("^dest_remux$"))
-async def remux_tg_callback(client: Client, query):
-    user_id = query.from_user.id
-    if user_id not in PENDING_TASKS: return await query.answer("Expired.", show_alert=True)
-    link = PENDING_TASKS[user_id]["link"]
-    
-    await query.message.edit("🔎 **Probing Media Tracks...**")
-    
-    try:
-        is_tg = _is_tg_link(link)
-        if is_tg:
-            parsed = _parse_source_link(link)
-            probe_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={parsed['chat_id']}&msg_id={parsed['msg_id']}"
-        else:
-            from urllib.parse import quote
-            probe_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
-            
-        pdata = await _run_ffprobe_json(probe_url, fast=True)
-        streams = pdata.get("streams", [])
-        
-        text = "🛠 **Media Inspector & Editor**\n\n**Available Tracks:**\n"
-        for s in streams:
-            idx = s.get("index")
-            c_type = s.get("codec_type", "unknown").upper()
-            c_name = s.get("codec_name", "")
-            lang = s.get("tags", {}).get("language", "")
-            title = s.get("tags", {}).get("title", "")
-            text += f"• `{idx}` : **{c_type}** ({c_name}) {lang} *{title}*\n"
-            
-        text += "\n✏️ **Reply with your configuration.**\nFormat: `index: title=New Name, delay=500` separated by `|`.\n*Example:* `0 | 1: title=English Dub, delay=-200 | 2`\n\n*(Send /cancel to abort)*"
-        
-        config_msg = await app.ask(user_id, text, timeout=300)
-        if config_msg.text.startswith('/'): return await config_msg.reply("Cancelled.")
-        
-        raw_config = config_msg.text.split('|')
-        parsed_config = []
-        for track in raw_config:
-            parts = track.split(':')
-            track_dict = {"index": parts[0].strip()}
-            if len(parts) > 1:
-                opts = parts[1].split(',')
-                for opt in opts:
-                    if '=' in opt:
-                        k, v = opt.split('=', 1)
-                        track_dict[k.strip().lower()] = v.strip()
-            parsed_config.append(track_dict)
-            
-        name_msg = await app.ask(user_id, "✏️ **Send the NEW File Name (with extension like .mkv):**\n*(Or send `skip` to keep the original name)*", timeout=120)
-        if name_msg.text.startswith('/'): return await name_msg.reply("Cancelled.")
-        
-        PENDING_TASKS[user_id]["remux_config"] = parsed_config
-        PENDING_TASKS[user_id]["remux_name"] = name_msg.text.strip()
-        
-        up_btns = [
-            [InlineKeyboardButton("📤 Send to Telegram DM", callback_data="up_tg_remux")],
-            [InlineKeyboardButton("☁️ Upload to GoFile.io", callback_data="up_gf_remux")]
-        ]
-        await name_msg.reply("🚀 **Where do you want to upload the finished file?**", reply_markup=InlineKeyboardMarkup(up_btns))
-        
-    except Exception as e:
-        await query.message.reply(f"❌ Error: {e}")
-
-@app.on_callback_query(filters.regex(r"^up_(tg|gf)_remux$"))
-async def execute_remux_callback(client: Client, query):
-    user_id = query.from_user.id
-    dest_type = query.data.split("_")[1]
-    task_data = PENDING_TASKS.get(user_id)
-    if not task_data: return await query.answer("Expired.", show_alert=True)
-    
-    status_msg = await query.message.edit("⚙️ **Processing Media...**\n1️⃣ Downloading...\n2️⃣ Remuxing...\n3️⃣ Uploading...")
-    
-    import time
-    from pathlib import Path
-    import shutil
-    
-    temp_dir = Path(f"./temp_remux_{user_id}_{int(time.time())}")
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    
-    new_name = task_data["remux_name"] if task_data["remux_name"].lower() != "skip" else "Edited_Media.mkv"
-    input_file = temp_dir / "input_media.dat"
-    output_file = temp_dir / sanitize_filename(new_name)
-    
-    try:
-        is_tg = _is_tg_link(task_data["link"])
-        if is_tg:
-            parsed = _parse_source_link(task_data["link"])
-            uclient = USER_CLIENTS.get(user_id)
-            if not uclient or not uclient.is_connected:
-                session_str = await db.get_session(user_id)
-                u_api = await db.get_api_id(user_id) or API_ID
-                u_hash = await db.get_api_hash(user_id) or API_HASH
-                uclient = Client(f"User_{user_id}", session_string=session_str, api_id=u_api, api_hash=u_hash, ipv6=False)
-                await uclient.start()
-                USER_CLIENTS[user_id] = uclient
-            msg = await uclient.get_messages(parsed["chat_id"], parsed["msg_id"])
-            await uclient.download_media(msg, file_name=str(input_file))
-        else:
-            await full_download_http(task_data["link"], str(input_file))
-            
-        await status_msg.edit("⚙️ **Remuxing Tracks (Instant Copy)...**")
-        await process_remux(str(input_file), str(output_file), task_data["remux_config"])
-        
-        await status_msg.edit("☁️ **Uploading to Destination...**")
-        if dest_type == "gf":
-            url = await upload_to_gofile(str(output_file))
-            await status_msg.edit(f"✅ **Success! Uploaded to GoFile.**\n\n🔗 **Link:** {url}", disable_web_page_preview=True)
-        else:
-            await app.send_document(chat_id=user_id, document=str(output_file), caption=f"✅ **Remuxed:** {new_name}")
-            await status_msg.delete()
-            
-    except Exception as e:
-        await status_msg.edit(f"❌ **Error:** {str(e)}")
-    finally:
-        shutil.rmtree(str(temp_dir), ignore_errors=True)
     
     await message.reply(
         f"✨ **Link Detected!**\n\n"
@@ -5795,7 +5618,6 @@ HTML_DASHBOARD = """
                         <div style="display: flex; gap: 8px;">
                             <input type="text" id="theater-stream-url" placeholder="https://t.me/c/123/456 or https://domain.com/movie.mkv" style="flex: 1;">
                             <button class="primary-btn" id="theater-load-btn" style="width: auto; padding: 0 24px;" onclick="loadTheaterMedia()">Load & Play</button>
-                            <button class="primary-btn" style="width: auto; padding: 0 15px; background: #eab308; color: #000;" onclick="openRemuxModal()">🛠 Edit & Upload</button>
                             <button class="primary-btn" style="width: auto; padding: 0 15px; background: #ef4444;" onclick="cancelTheaterStream()">Stop</button>
                         </div>
                     </div>
@@ -7140,7 +6962,7 @@ HTML_DASHBOARD = """
             closeTopicSelector();
         }
 
-        // --- INFO LOGIC ---
+        // --- MEDIAINFO LOGIC ---
         async function runWebMediaInfo() {
             const link = document.getElementById('mi-link').value;
             if(!link) return alert("Please enter a link!");
@@ -9419,60 +9241,50 @@ HTML_DASHBOARD = """
         async function fetchCountryAnalytics(isoCode, countryName) {
             document.getElementById('country-data-panel').style.display = 'block';
             document.getElementById('c-name').innerText = "Scanning Data...";
-            document.getElementById('c-wiki').innerHTML = '<span style="color:var(--accent);">Fetching records via Global Proxy...</span>';
+            document.getElementById('c-wiki').innerHTML = '<span style="color:var(--accent);">Fetching geopolitical records via Secure Backend Proxy...</span>';
             
             if (myGlobe) myGlobe.controls().autoRotate = false;
 
             let countryData = null;
 
-            // 🟢 UPGRADE 3: The AllOrigins CORS Proxy Bypass
-            // This forces a 3rd party public server to fetch the data, completely bypassing your blocked Server IP and mobile network restrictions!
+            // 🟢 BLOCK 1: Fetch Core Demographic & Time Data via Backend Proxy
             try {
-                let targetUrl = isoCode && isoCode !== "-99" 
-                    ? `https://restcountries.com/v3.1/alpha/${isoCode}` 
-                    : `https://restcountries.com/v3.1/name/${encodeURIComponent(countryName)}?fullText=true`;
-                
-                // Wrap the target URL in the AllOrigins proxy
-                const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}`;
-                
+                const proxyUrl = '/api/proxy/country?iso=' + (isoCode || '') + '&name=' + encodeURIComponent(countryName);
                 const res = await fetch(proxyUrl);
-                if (!res.ok) throw new Error(`Proxy HTTP Error: ${res.status}`);
                 
-                const proxyData = await res.json();
+                const rawText = await res.text();
+                let rawJson;
+                try {
+                    rawJson = JSON.parse(rawText);
+                } catch (e) {
+                    throw new Error("Invalid JSON from server: " + rawText.substring(0, 40) + "...");
+                }
+
+                if (!res.ok) {
+                    throw new Error(rawJson.error || "HTTP " + res.status);
+                }
                 
-                // AllOrigins returns the data as a giant string inside the "contents" key
-                if (!proxyData.contents) throw new Error("Proxy failed to fetch data.");
-                
-                const rawJson = JSON.parse(proxyData.contents);
-                
-                // Safely extract the data whether it's an Array [0] or an Object {}
+                // 🟢 BULLETPROOF FIX: Safely handle both Array [ {data} ] and Object {data} responses
                 let data = null;
                 if (Array.isArray(rawJson) && rawJson.length > 0) {
                     data = rawJson[0];
-                } else if (typeof rawJson === 'object' && rawJson !== null && !Array.isArray(rawJson) && rawJson.flags) {
+                } else if (typeof rawJson === 'object' && rawJson !== null && !Array.isArray(rawJson)) {
                     data = rawJson;
-                } else if (rawJson.status === 404) {
-                    // Fallback to partial name search if strict search fails
-                    const fallbackUrl = `https://api.allorigins.win/get?url=${encodeURIComponent('https://restcountries.com/v3.1/name/' + countryName)}`;
-                    const fallbackRes = await fetch(fallbackUrl);
-                    const fallbackProxy = await fallbackRes.json();
-                    const fallbackJson = JSON.parse(fallbackProxy.contents);
-                    data = Array.isArray(fallbackJson) ? fallbackJson[0] : fallbackJson;
                 }
                 
                 if (!data || !data.flags) {
-                    throw new Error("No demographic data found for this region.");
+                    throw new Error("API returned an unrecognizable structure.");
                 }
                 
                 countryData = data; 
                 
-                document.getElementById('c-flag').src = data.flags?.svg || data.flags?.png || '';
-                document.getElementById('c-name').innerText = data.name?.common || countryName;
+                document.getElementById('c-flag').src = (data.flags && (data.flags.svg || data.flags.png)) || '';
+                document.getElementById('c-name').innerText = (data.name && data.name.common) || countryName;
                 document.getElementById('c-cap').innerText = data.capital ? data.capital[0] : 'N/A';
-                document.getElementById('c-reg').innerText = `${data.region || ''} (${data.subregion || ''})`.replace(' ()', '');
+                document.getElementById('c-reg').innerText = ((data.region || '') + ' (' + (data.subregion || '') + ')').replace(' ()', '');
                 document.getElementById('c-pop').innerText = data.population ? data.population.toLocaleString() : 'N/A';
                 document.getElementById('c-lang').innerText = data.languages ? Object.values(data.languages).join(', ') : 'Unknown';
-                document.getElementById('c-curr').innerText = data.currencies ? Object.values(data.currencies).map(c => `${c.name} (${c.symbol})`).join(', ') : 'Unknown';
+                document.getElementById('c-curr').innerText = data.currencies ? Object.values(data.currencies).map(c => c.name + ' (' + c.symbol + ')').join(', ') : 'Unknown';
 
                 clearInterval(liveClockInterval);
                 if (data.timezones && data.timezones.length > 0) {
@@ -9484,32 +9296,24 @@ HTML_DASHBOARD = """
                 }
 
             } catch (err) {
-                console.error("Data fetch failed:", err);
+                console.error("Proxy API failed:", err);
                 document.getElementById('c-name').innerText = countryName;
                 document.getElementById('c-cap').innerText = "Error";
                 document.getElementById('c-pop').innerText = "Error";
-                document.getElementById('c-wiki').innerHTML = `<span style="color:#ef4444;">Network Error: ${err.message}</span>`;
+                document.getElementById('c-wiki').innerHTML = '<span style="color:#ef4444;">Network Error: Backend Proxy failed. ' + err.message + '</span>';
                 return; 
             }
 
-            // Fetch Wikipedia via AllOrigins Proxy
+            // 🟢 BLOCK 2: Fetch Wikipedia via Backend Proxy
             try {
-                const wikiQuery = countryData ? countryData.name.common : countryName;
-                const wikiTarget = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(wikiQuery)}`;
-                const wikiProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(wikiTarget)}`;
-                
-                const wikiRes = await fetch(wikiProxy);
+                const wikiQuery = countryData ? (countryData.name && countryData.name.common) || countryName : countryName;
+                const wikiRes = await fetch('/api/proxy/wiki?q=' + encodeURIComponent(wikiQuery));
                 
                 if (wikiRes.ok) {
-                    const proxyData = await wikiRes.json();
-                    const wikiData = JSON.parse(proxyData.contents);
-                    
+                    const wikiData = await wikiRes.json();
                     if (wikiData.type !== "disambiguation" && wikiData.extract) {
-                        const pageUrl = (wikiData.content_urls && wikiData.content_urls.desktop) ? wikiData.content_urls.desktop.page : `https://en.wikipedia.org/wiki/${encodeURIComponent(wikiQuery)}`;
-                        document.getElementById('c-wiki').innerHTML = `
-                            <p>${wikiData.extract}</p>
-                            <a href="${pageUrl}" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: bold; font-size: 11px; text-transform: uppercase; border: 1px solid var(--accent); padding: 5px 10px; border-radius: 6px; display: inline-block; margin-top: 10px;">Read Full Wikipedia Article</a>
-                        `;
+                        const pageUrl = (wikiData.content_urls && wikiData.content_urls.desktop) ? wikiData.content_urls.desktop.page : 'https://en.wikipedia.org/wiki/' + encodeURIComponent(wikiQuery);
+                        document.getElementById('c-wiki').innerHTML = '<p>' + wikiData.extract + '</p><a href="' + pageUrl + '" target="_blank" style="color: var(--accent); text-decoration: none; font-weight: bold; font-size: 11px; text-transform: uppercase; border: 1px solid var(--accent); padding: 5px 10px; border-radius: 6px; display: inline-block; margin-top: 10px;">Read Full Wikipedia Article</a>';
                     } else {
                         document.getElementById('c-wiki').innerText = "Wikipedia summary requires disambiguation.";
                     }
@@ -9521,37 +9325,6 @@ HTML_DASHBOARD = """
             }
         }
 
-    <!-- REMUX MODAL -->
-    <div class="modal" id="remuxModal" style="z-index: 400;">
-        <div class="modal-content" style="max-width: 600px; padding: 25px;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h3 style="margin: 0; color: #fff; font-size: 16px;">🛠 Inspect & Edit Tracks</h3>
-                <button type="button" onclick="closeRemuxModal()" class="btn-cancel" style="padding: 6px 12px; width: auto; margin: 0;">Close ✕</button>
-            </div>
-            
-            <div id="remux-tracks-container" style="max-height: 350px; overflow-y: auto; margin-bottom: 20px; display: flex; flex-direction: column; gap: 10px;">
-                <!-- Dynamic Tracks Load Here -->
-            </div>
-
-            <div class="input-group">
-                <label>New File Name (e.g. Movie.mkv)</label>
-                <input type="text" id="remux-filename" placeholder="Output.mkv">
-            </div>
-
-            <div class="input-group">
-                <label>Upload Destination</label>
-                <select id="remux-dest" class="pop-select">
-                    <option value="tg">Telegram (Saved Messages)</option>
-                    <option value="gofile">GoFile.io (Public Link)</option>
-                </select>
-            </div>
-
-            <button class="primary-btn" id="remux-submit-btn" onclick="submitRemux()">🚀 Process & Upload</button>
-            <div id="remux-status" style="margin-top: 15px; font-size: 13px; font-weight: bold; color: var(--accent); text-align: center; display: none;"></div>
-        </div>
-    </div>
-
-    <script>
         // ======================================================================
         // MEDIA EDITING & REMUXING (Safe String Format)
         // ======================================================================
@@ -9657,6 +9430,7 @@ HTML_DASHBOARD = """
 </body>
 </html>
 """
+
 async def _dashboard_ui_handler(request):
     return web.Response(text=HTML_DASHBOARD, content_type='text/html', status=200)
 
@@ -12945,59 +12719,6 @@ async def _api_proxy_wiki(request):
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
-# --- ADD THIS DIRECTLY ABOVE start_koyeb_health_check ---
-async def _api_edit_media_handler(request):
-    data = await request.json()
-    uid = int(data.get("user_id", 0))
-    link = data.get("link", "")
-    config = data.get("config", [])
-    new_name = data.get("new_name", "output.mkv")
-    dest = data.get("dest", "tg")
-    
-    if not link or not config:
-        return web.json_response({"status": "error", "message": "Missing link or config"})
-        
-    import time
-    from pathlib import Path
-    import shutil
-    
-    temp_dir = Path(f"./temp_remux_{uid}_{int(time.time())}")
-    temp_dir.mkdir(parents=True, exist_ok=True)
-    input_file = temp_dir / "input_media.dat"
-    output_file = temp_dir / sanitize_filename(new_name)
-    
-    try:
-        is_tg = _is_tg_link(link)
-        if is_tg:
-            parsed = _parse_source_link(link)
-            uclient = USER_CLIENTS.get(uid)
-            if not uclient or not uclient.is_connected:
-                session_str = await db.get_session(uid)
-                u_api = await db.get_api_id(uid) or API_ID
-                u_hash = await db.get_api_hash(uid) or API_HASH
-                uclient = Client(f"User_{uid}", session_string=session_str, api_id=u_api, api_hash=u_hash, ipv6=False)
-                await uclient.start()
-                USER_CLIENTS[uid] = uclient
-            msg = await uclient.get_messages(parsed["chat_id"], parsed["msg_id"])
-            await uclient.download_media(msg, file_name=str(input_file))
-        else:
-            await full_download_http(link, str(input_file))
-            
-        await process_remux(str(input_file), str(output_file), config)
-        
-        url = ""
-        if dest == "gofile":
-            url = await upload_to_gofile(str(output_file))
-        else:
-            sent_msg = await app.send_document(chat_id=uid, document=str(output_file), caption=f"✅ Remuxed: {new_name}")
-            url = f"https://t.me/c/{str(uid).replace('-100', '')}/{sent_msg.id}"
-            
-        return web.json_response({"status": "success", "url": url})
-    except Exception as e:
-        return web.json_response({"status": "error", "message": str(e)})
-    finally:
-        shutil.rmtree(str(temp_dir), ignore_errors=True)
-    
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -13043,8 +12764,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_get("/api/stream", _api_stream_handler)      
     # 🟢 ADD THESE TWO NEW LINES HERE:
     app_web.router.add_get("/api/proxy/country", _api_proxy_country)
-    app_web.router.add_get("/api/proxy/wiki", _api_proxy_wiki) 
-    app_web.router.add_post("/api/edit_media", _api_edit_media_handler) 
+    app_web.router.add_get("/api/proxy/wiki", _api_proxy_wiki)  
     
     # 🟢 ADD THIS NEW ROUTE FOR THE STOP BUTTON
     async def _api_kill_stream(request):
