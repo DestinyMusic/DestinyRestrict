@@ -9623,12 +9623,12 @@ HTML_DASHBOARD = """
             const btn = document.getElementById('editor-load-btn');
             const workspace = document.getElementById('editor-workspace');
             const container = document.getElementById('editor-tracks-container');
-            const statusBox = document.getElementById('editor-status');
+            const statusBox = document.getElementById('editor-status-container');
             
             btn.innerText = '⏳ Probing...';
             btn.disabled = true;
             workspace.style.display = 'none';
-            statusBox.style.display = 'none';
+            if (statusBox) statusBox.style.display = 'none';
             
             try {
                 const res = await fetch('/api/media_probe?user_id=' + encodeURIComponent(currentUser) + '&link=' + encodeURIComponent(link));
