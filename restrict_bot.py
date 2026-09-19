@@ -6154,7 +6154,17 @@ HTML_DASHBOARD = """
                     </div>
 
                     <button class="primary-btn" id="editor-submit-btn" style="margin-top: 10px;" onclick="submitEditorTask()">🚀 Process & Upload</button>
-                    <div id="editor-status" style="margin-top: 15px; font-size: 13px; font-weight: bold; color: var(--accent); text-align: center; display: none;"></div>
+                    
+                    <div id="editor-status-container" style="display: none; margin-top: 20px; padding: 15px; background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); border-radius: 12px;">
+                        <div id="editor-status-text" style="font-size: 13px; font-weight: bold; color: #fff; text-align: center; margin-bottom: 10px; text-transform: uppercase; letter-spacing: 0.5px;">Connecting...</div>
+                        <div style="background: rgba(255,255,255,0.1); border-radius: 8px; width: 100%; height: 16px; overflow: hidden; position: relative;">
+                            <div id="editor-progress-bar" style="background: linear-gradient(90deg, var(--accent), #38bdf8); height: 100%; width: 0%; transition: width 0.5s ease, background 0.5s;"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--subtext); margin-top: 8px; font-family: monospace;">
+                            <span id="editor-stats-left"></span>
+                            <span id="editor-stats-right"></span>
+                        </div>
+                    </div>
                 </div>
             </div>
                         
@@ -9775,7 +9785,85 @@ HTML_DASHBOARD = """
             list.insertAdjacentHTML('beforeend', htmlStr);
         }
 
-        async function sendEditorPayload(config, newName, dest, thumbB64, globalTags, btn, status) {
+        let editorPollInterval = null;
+
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 B';
+            const k = 1024, sizes = ['B', 'KB', 'MB', 'GB', 'TB'], i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function formatTime(seconds) {
+            if (!seconds) return '0s';
+            const h = Math.floor(seconds / 3600);
+            const m = Math.floor((seconds % 3600) / 60);
+            const s = Math.floor(seconds % 60);
+            let res = '';
+            if (h > 0) res += h + 'h ';
+            if (m > 0) res += m + 'm ';
+            res += s + 's';
+            return res;
+        }
+
+        async function pollEditorProgress(taskUuid, btn) {
+            if (editorPollInterval) clearInterval(editorPollInterval);
+            
+            const txt = document.getElementById('editor-status-text');
+            const bar = document.getElementById('editor-progress-bar');
+            const left = document.getElementById('editor-stats-left');
+            const right = document.getElementById('editor-stats-right');
+            
+            bar.style.width = '0%';
+            bar.style.background = 'linear-gradient(90deg, var(--accent), #38bdf8)';
+            
+            // 🟢 This polls your OWN server's API every 5 seconds!
+            // Because it bypasses the Telegram API entirely, there are zero FloodWait limits.
+            editorPollInterval = setInterval(async () => {
+                try {
+                    const res = await fetch('/api/editor_progress?task_uuid=' + taskUuid);
+                    const data = await res.json();
+                    
+                    if (data.status === 'success') {
+                        let phase = data.phase || "Processing...";
+                        
+                        if (data.percent !== undefined && data.percent > 0) {
+                            txt.innerText = phase + " (" + data.percent.toFixed(1) + "%)";
+                            bar.style.width = data.percent + '%';
+                            left.innerText = formatBytes(data.current) + ' / ' + formatBytes(data.total);
+                            right.innerText = formatBytes(data.speed) + '/s | ETA: ' + formatTime(data.eta);
+                        } else {
+                            txt.innerText = phase;
+                            if (phase === 'Remuxing' || phase === 'Splitting') {
+                                bar.style.width = '100%';
+                                bar.style.background = '#f59e0b'; // Orange
+                                left.innerText = 'Processing file structure...';
+                                right.innerText = '';
+                            }
+                        }
+                        
+                        if (data.done) {
+                            clearInterval(editorPollInterval);
+                            btn.disabled = false;
+                            btn.innerText = "🚀 Process & Upload";
+                            if (data.error) {
+                                txt.innerHTML = '❌ <b>Error:</b> ' + data.error;
+                                bar.style.background = '#ef4444'; // Red
+                            } else {
+                                txt.innerHTML = '✅ <b>Success! File completely processed.</b>';
+                                bar.style.background = '#10b981'; // Green
+                                bar.style.width = '100%';
+                                left.innerText = '';
+                                right.innerText = '';
+                            }
+                        }
+                    }
+                } catch (e) {
+                    console.log("Polling error", e);
+                }
+            }, 5000);
+        }
+
+        async function sendEditorPayload(config, newName, dest, thumbB64, globalTags, btn) {
             try {
                 const res = await fetch('/api/edit_media', {
                     method: 'POST',
@@ -9793,13 +9881,15 @@ HTML_DASHBOARD = """
                 const data = await res.json();
                 
                 if (data.status === 'success') {
-                    status.innerHTML = '✅ <b>Success!</b><br><span style="color: #10b981;">' + data.url + '</span>';
+                    // Start polling the progress bar!
+                    pollEditorProgress(data.task_uuid, btn);
                 } else {
-                    status.innerHTML = '❌ <b>Error:</b> ' + data.message;
+                    document.getElementById('editor-status-text').innerHTML = '❌ <b>Error:</b> ' + data.message;
+                    btn.disabled = false;
+                    btn.innerText = "🚀 Process & Upload";
                 }
             } catch (e) {
-                status.innerHTML = '❌ <b>Network Error:</b> ' + e.message;
-            } finally {
+                document.getElementById('editor-status-text').innerHTML = '❌ <b>Network Error:</b> ' + e.message;
                 btn.disabled = false;
                 btn.innerText = "🚀 Process & Upload";
             }
@@ -9807,12 +9897,10 @@ HTML_DASHBOARD = """
 
         async function submitEditorTask() {
             const btn = document.getElementById('editor-submit-btn');
-            const status = document.getElementById('editor-status');
             const dest = document.getElementById('editor-dest').value;
             const newName = document.getElementById('editor-filename').value;
             const thumbFile = document.getElementById('editor-thumb-file').files[0];
             
-            // 🟢 Extract all the edited global metadata tags
             let globalTags = {};
             document.querySelectorAll('.global-meta-input').forEach(input => {
                 const key = input.getAttribute('data-key');
@@ -9845,7 +9933,6 @@ HTML_DASHBOARD = """
 
             let thumbB64 = await readFileAsB64(thumbFile);
 
-            // Fetch dynamically added external tracks
             const listItems = document.getElementById('ext-tracks-list').children;
             for (let i = 0; i < listItems.length; i++) {
                 const item = listItems[i];
@@ -9877,10 +9964,16 @@ HTML_DASHBOARD = """
             
             btn.disabled = true;
             btn.innerText = "⏳ Dispatching to Server...";
-            status.style.display = 'block';
-            status.innerText = "Connecting...";
             
-            await sendEditorPayload(config, newName, dest, thumbB64, globalTags, btn, status);
+            const statusContainer = document.getElementById('editor-status-container');
+            statusContainer.style.display = 'block';
+            document.getElementById('editor-status-text').innerText = "Connecting...";
+            document.getElementById('editor-progress-bar').style.width = "0%";
+            document.getElementById('editor-progress-bar').style.background = "linear-gradient(90deg, var(--accent), #38bdf8)";
+            document.getElementById('editor-stats-left').innerText = "";
+            document.getElementById('editor-stats-right').innerText = "";
+            
+            await sendEditorPayload(config, newName, dest, thumbB64, globalTags, btn);
         }
     </script>
 </body>
@@ -13178,6 +13271,34 @@ async def _api_proxy_wiki(request):
     except Exception as e:
         return web.Response(status=500, text=str(e))
 
+# ==============================================================================
+# --- MEDIA EDITOR PROGRESS TRACKER ---
+# ==============================================================================
+EDITOR_UI_STATE = {}
+
+async def _api_editor_progress(request):
+    task_uuid = request.query.get("task_uuid")
+    if not task_uuid or task_uuid not in EDITOR_UI_STATE:
+        return web.json_response({"status": "error", "message": "Task not found"})
+    
+    state = EDITOR_UI_STATE[task_uuid]
+    resp = {"status": "success", "phase": state["phase"], "done": state["done"], "error": state["error"]}
+    
+    # Bridge the Telegram progress stats into the Web Dashboard
+    if state["status_msg_id"]:
+        msg_id = state["status_msg_id"]
+        typ = "down" if state["phase"] == "Downloading" else ("up" if state["phase"] == "Uploading" else None)
+        if typ:
+            prog = PROGRESS.get(f"{msg_id}:{typ}")
+            if prog:
+                resp["percent"] = prog.get("percent", 0)
+                resp["speed"] = prog.get("speed", 0)
+                resp["current"] = prog.get("current", 0)
+                resp["total"] = prog.get("total", 0)
+                resp["eta"] = prog.get("eta", 0)
+                
+    return web.json_response(resp)
+    
 async def _api_edit_media_handler(request):
     data = await request.json()
     uid = int(data.get("user_id", 0))
@@ -13198,6 +13319,7 @@ async def _api_edit_media_handler(request):
     
     task_uuid = uuid.uuid4().hex[:8]
     temp_dir = Path(f"./temp_remux_{uid}_{task_uuid}")
+    EDITOR_UI_STATE[task_uuid] = {"phase": "Starting...", "status_msg_id": None, "error": None, "done": False}
     
     async def background_editor():
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -13207,6 +13329,7 @@ async def _api_edit_media_handler(request):
         
         try:
             status_msg = await app.send_message(uid, f"⚙️ **Media Editor Task Started!**\n\n**Target:** `{new_name}`\n⏳ Downloading sources...")
+            EDITOR_UI_STATE[task_uuid]["status_msg_id"] = status_msg.id
             
             if thumb_b64:
                 try:
@@ -13218,6 +13341,7 @@ async def _api_edit_media_handler(request):
                     logger.warning(f"Thumb decode failed: {e}")
 
             # 🟢 DOWNLOAD EXTERNAL TRACKS
+            EDITOR_UI_STATE[task_uuid]["phase"] = "Downloading"
             for idx, track in enumerate(config):
                 if track.get("type") in ["ext_audio", "ext_sub"]:
                     ext_path = temp_dir / f"ext_track_{idx}_{track['type']}.dat"
@@ -13254,10 +13378,12 @@ async def _api_edit_media_handler(request):
             else:
                 await full_download_http(link, str(input_file))
                 
+            EDITOR_UI_STATE[task_uuid]["phase"] = "Remuxing"
             await status_msg.edit_text("⚙️ **Remuxing Tracks (Instant Copy)...**")
             await process_remux(str(input_file), str(output_file), config, global_tags)
             
             if dest == "gofile":
+                EDITOR_UI_STATE[task_uuid]["phase"] = "Uploading"
                 await status_msg.edit_text("☁️ **Uploading to GoFile...**")
                 url = await upload_to_gofile(str(output_file))
                 await status_msg.edit_text(f"✅ **Success! Uploaded to GoFile.**\n\n🔗 **Link:** {url}", disable_web_page_preview=True)
@@ -13297,10 +13423,14 @@ async def _api_edit_media_handler(request):
                         is_premium = getattr(me, "is_premium", False)
                     except: pass
                 
+                EDITOR_UI_STATE[task_uuid]["phase"] = "Uploading"
+
                 if file_size > split_limit and not is_premium:
+                    EDITOR_UI_STATE[task_uuid]["phase"] = "Splitting"
                     await status_msg.edit_text(f"✂️ **Splitting large file ({_pretty_bytes(file_size)})...**")
                     parts = await split_file_python(str(output_file), chunk_size=1900*1024*1024)
                     
+                    EDITOR_UI_STATE[task_uuid]["phase"] = "Uploading"
                     for i, part in enumerate(parts):
                         await status_msg.edit_text(f"☁️ **Uploading Part {i+1}/{len(parts)}...**")
                         kwargs["document"] = str(part)
@@ -13321,16 +13451,19 @@ async def _api_edit_media_handler(request):
                 if str(upload_chat_id) != str(uid):
                     await app.send_message(uid, f"✅ **Media Editor Completed!**\nFile `{new_name}` was successfully uploaded to your selected chat.")
                     
+            EDITOR_UI_STATE[task_uuid]["done"] = True
         except Exception as e:
             logger.error(f"Background Edit Error: {e}", exc_info=True)
+            EDITOR_UI_STATE[task_uuid]["error"] = str(e)
+            EDITOR_UI_STATE[task_uuid]["done"] = True
             try: await app.send_message(uid, f"❌ **Media Editor Failed:**\n`{str(e)}`")
             except: pass
         finally:
             shutil.rmtree(str(temp_dir), ignore_errors=True)
             
     asyncio.create_task(background_editor())
-    return web.json_response({"status": "success", "url": "Check your Telegram PM for the live progress bar!"})
-    
+    return web.json_response({"status": "success", "task_uuid": task_uuid})
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -13386,6 +13519,7 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     
     # Editor & Proxies
     app_web.router.add_post("/api/edit_media", _api_edit_media_handler)
+    app_web.router.add_get("/api/editor_progress", _api_editor_progress)
     app_web.router.add_get("/api/bg", _api_bg_proxy)
     app_web.router.add_get("/api/proxy/country", _api_proxy_country)
     app_web.router.add_get("/api/proxy/wiki", _api_proxy_wiki)
