@@ -12368,40 +12368,44 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             
     raise TimeoutError("Exceeded max retries for chunk")
 
-async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=2 * 1024 * 1024, concurrency=6):
-    """Fast Telegram range generator with cached client selection and split-safe work units."""
+async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=1 * 1024 * 1024, concurrency=None):
+    """Fast Telegram range generator with 1MB sweet-spot chunks to prevent server drops."""
     if total_length <= 0:
         return
 
+    working_pool = []
     user_id = 0
-    # The fallback client is already scoped to the current user session when one
-    # exists. Pool discovery uses app + worker bots first and falls back to that
-    # user session only when no bot can read the file.
     if fallback_client in USER_CLIENTS.values():
         for uid, candidate in USER_CLIENTS.items():
             if candidate is fallback_client:
-                user_id = uid
-                break
+                user_id = uid; break
 
-    try:
-        pool, is_user_session = await _get_working_tg_pool(user_id, chat_id, msg_parts[0]["msg_id"], fallback_client=fallback_client)
-    except Exception:
-        pool, is_user_session = ([fallback_client] if fallback_client else [app]), bool(fallback_client and fallback_client is not app)
+    user_worker_bots = list(USER_WORKER_BOTS.get(user_id, []))
+    for c in user_worker_bots:
+        try:
+            if getattr(c, "is_connected", False): working_pool.append(c)
+        except Exception: pass
+            
+    if fallback_client:
+        try:
+            if getattr(fallback_client, "is_connected", False): working_pool.append(fallback_client)
+        except Exception: pass
 
-    if not pool:
-        pool = [fallback_client or app]
-        is_user_session = bool(fallback_client and fallback_client is not app)
+    if not working_pool:
+        working_pool = [app]
+    
+    safe_concurrency = len(working_pool)
+    if concurrency is not None:
+        safe_concurrency = min(concurrency, safe_concurrency)
+    safe_concurrency = max(1, safe_concurrency)
 
-    if is_user_session:
-        safe_concurrency = 1
-    else:
-        requested = max(1, int(os.environ.get("TG_STREAM_CONCURRENCY", str(concurrency))))
-        safe_concurrency = min(requested, len(pool))
+    # 🟢 Locked back to 1MB. This is the exact size that avoids "upload.GetFile" rate limits.
+    actual_chunk_size = 1 * 1024 * 1024
 
-    # Build precise units that never cross split-file boundaries.
     range_start = int(start_byte)
     range_end = range_start + int(total_length)
     units = []
+    
     for part in msg_parts:
         p_start = int(part["start"])
         p_end = int(part["end"])
@@ -12410,7 +12414,7 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         cursor = max(range_start, p_start)
         limit_end = min(range_end, p_end)
         while cursor < limit_end:
-            take = min(int(chunk_size), limit_end - cursor)
+            take = min(int(actual_chunk_size), limit_end - cursor)
             units.append((part, cursor - p_start, take))
             cursor += take
 
@@ -12418,20 +12422,49 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         return
 
     if safe_concurrency == 1:
-        client = pool[0]
+        client = working_pool[0]
         for part, internal_offset, internal_limit in units:
             try:
                 yield await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
             except Exception:
-                await _invalidate_tg_access(chat_id, part["msg_id"], client)
                 raise
         return
 
-    # Multi-bot path. Each batch is fetched in parallel but yielded in source
-    # order so the HTTP byte stream remains perfectly ordered.
-    cursor = 0
-    while cursor < len(units):
-        batch = units[cursor:cursor + safe_concurrency]
+    # 🟢 Multi-Bot Parallel Path with Ghost Task Kill Switch
+    cursor_idx = 0
+    import asyncio
+    tasks = []
+    
+    try:
+        while cursor_idx < len(units):
+            batch = units[cursor_idx:cursor_idx + safe_concurrency]
+
+            async def _fetch_with_failover(unit_idx, unit):
+                part, internal_offset, internal_limit = unit
+                preferred = working_pool[unit_idx % len(working_pool)]
+                candidates = [preferred] + [c for c in working_pool if c is not preferred]
+                last_exc = None
+                for client in candidates:
+                    try:
+                        return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
+                    except Exception as exc:
+                        last_exc = exc
+                raise last_exc or RuntimeError("Telegram chunk fetch failed across all bots")
+
+            tasks = [asyncio.create_task(_fetch_with_failover(i, unit)) for i, unit in enumerate(batch)]
+            
+            for task in tasks:
+                result = await task
+                if result:
+                    yield result
+                    
+            cursor_idx += len(batch)
+            tasks.clear()
+            
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
         async def _fetch_with_failover(unit_idx, unit):
             part, internal_offset, internal_limit = unit
