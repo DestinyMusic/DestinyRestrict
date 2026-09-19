@@ -335,12 +335,15 @@ class Database:
         count = await self.col.count_documents({"session": {"$ne": None}})
         return count
 
-    async def set_user_cookies(self, user_id, cookies_data):
-        await self.col.update_one({'id': int(user_id)}, {'$set': {'cookies': cookies_data}})
-        
+    async def set_user_cookies(self, user_id, site, cookies_data):
+        if cookies_data is None:
+            await self.col.update_one({'id': int(user_id)}, {'$unset': {f'cookies.{site}': 1}})
+        else:
+            await self.col.update_one({'id': int(user_id)}, {'$set': {f'cookies.{site}': cookies_data}})
+            
     async def get_user_cookies(self, user_id):
         user = await self.col.find_one({'id': int(user_id)})
-        return user.get('cookies') if user else None
+        return user.get('cookies') or {}
         
     async def get_monthly_bandwidth(self):
         """Tracks, persists, and auto-resets monthly bandwidth usage in MongoDB across server reboots."""
@@ -5942,17 +5945,38 @@ HTML_DASHBOARD = """
                     <audio id="ext-audio-player" style="display:none;" preload="auto"></audio>
                 </div>
             </div>
-                    <!-- 🟢 PREMIUM & TERABOX COOKIES UI -->
+                    <!-- 🟢 PER-SITE COOKIES UI -->
                     <div style="margin-top: 20px; padding: 15px; border-radius: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--card-border);">
-                        <h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">🍪 PREMIUM & TERABOX COOKIES</h4>
-                        <p style="font-size: 11px; color: var(--subtext); margin-bottom: 12px;">Terabox and Hxfile require your account cookies (Netscape format) to generate direct links. Upload your <code>cookies.txt</code> here. Stored securely per-user.</p>
-                        <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
-                            <label class="primary-btn" style="width: auto; padding: 8px 16px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 12px;">
-                                📁 Upload cookies.txt
-                                <input type="file" accept=".txt" style="display: none;" onchange="uploadUserCookies(event)">
-                            </label>
-                            <button class="primary-btn" style="width: auto; padding: 8px 16px; background: #ef4444; font-size: 12px; margin: 0;" onclick="deleteUserCookies()">Remove</button>
-                            <span id="cookie-status-badge" style="margin-left: auto; font-size: 11px; font-weight: bold; padding: 6px 10px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ No Cookies Loaded</span>
+                        <h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">🍪 PER-SITE COOKIES MANAGER</h4>
+                        <p style="font-size: 11px; color: var(--subtext); margin-bottom: 15px;">Some hosts require account cookies (Netscape format) to generate direct links. Upload a <code>cookies.txt</code> specific to the website you want to unlock.</p>
+                        
+                        <div style="display: flex; flex-direction: column; gap: 10px;">
+                            <!-- Terabox Row -->
+                            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
+                                <div style="display: flex; align-items: center; gap: 10px;">
+                                    <span style="color: #fff; font-size: 13px; font-weight: bold; min-width: 70px;">Terabox</span>
+                                    <span id="badge-terabox" style="font-size: 10px; font-weight: bold; padding: 4px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ Missing</span>
+                                </div>
+                                <div style="display: flex; gap: 6px;">
+                                    <label class="primary-btn" style="width: auto; padding: 6px 12px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 11px;">
+                                        📁 Upload <input type="file" accept=".txt" style="display: none;" onchange="uploadSiteCookie(event, 'terabox')">
+                                    </label>
+                                    <button class="primary-btn" style="width: auto; padding: 6px 12px; background: #ef4444; font-size: 11px; margin: 0;" onclick="deleteSiteCookie('terabox')">Remove</button>
+                                </div>
+                            </div>
+                            <!-- Hxfile Row -->
+                            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
+                                <div style="display: flex; align-items: center; gap: 10px;">
+                                    <span style="color: #fff; font-size: 13px; font-weight: bold; min-width: 70px;">Hxfile</span>
+                                    <span id="badge-hxfile" style="font-size: 10px; font-weight: bold; padding: 4px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ Missing</span>
+                                </div>
+                                <div style="display: flex; gap: 6px;">
+                                    <label class="primary-btn" style="width: auto; padding: 6px 12px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 11px;">
+                                        📁 Upload <input type="file" accept=".txt" style="display: none;" onchange="uploadSiteCookie(event, 'hxfile')">
+                                    </label>
+                                    <button class="primary-btn" style="width: auto; padding: 6px 12px; background: #ef4444; font-size: 11px; margin: 0;" onclick="deleteSiteCookie('hxfile')">Remove</button>
+                                </div>
+                            </div>
                         </div>
                     </div>
                                 
@@ -6627,22 +6651,27 @@ HTML_DASHBOARD = """
             try {
                 const res = await fetch(`/api/settings/cookies?user_id=${currentUser}`);
                 const data = await res.json();
-                const badge = document.getElementById('cookie-status-badge');
-                if(badge) {
-                    if(data.has_cookies) {
-                        badge.innerText = '✅ Cookies Active';
-                        badge.style.background = 'rgba(16, 185, 129, 0.2)';
-                        badge.style.color = '#10b981';
-                    } else {
-                        badge.innerText = '❌ No Cookies Loaded';
-                        badge.style.background = 'rgba(239, 68, 68, 0.2)';
-                        badge.style.color = '#ef4444';
-                    }
+                if(data.status === 'success') {
+                    const sites = ['terabox', 'hxfile'];
+                    sites.forEach(site => {
+                        const badge = document.getElementById('badge-' + site);
+                        if(badge) {
+                            if(data.cookies && data.cookies[site]) {
+                                badge.innerText = '✅ Active';
+                                badge.style.background = 'rgba(16, 185, 129, 0.2)';
+                                badge.style.color = '#10b981';
+                            } else {
+                                badge.innerText = '❌ Missing';
+                                badge.style.background = 'rgba(239, 68, 68, 0.2)';
+                                badge.style.color = '#ef4444';
+                            }
+                        }
+                    });
                 }
             } catch(e) {}
         }
 
-        function uploadUserCookies(event) {
+        function uploadSiteCookie(event, site) {
             const file = event.target.files[0];
             if(!file) return;
             const reader = new FileReader();
@@ -6651,11 +6680,11 @@ HTML_DASHBOARD = """
                 try {
                     const res = await fetch('/api/settings/cookies', {
                         method: 'POST', headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({user_id: currentUser, cookies_data: text})
+                        body: JSON.stringify({user_id: currentUser, site: site, cookies_data: text})
                     });
                     const data = await res.json();
                     if(data.status === 'success') {
-                        alert("Cookies saved successfully!");
+                        alert(`${site.toUpperCase()} cookies saved successfully!`);
                         checkUserCookies();
                     } else alert("Error saving cookies.");
                 } catch(err) { alert("Network error."); }
@@ -6664,16 +6693,16 @@ HTML_DASHBOARD = """
             event.target.value = ''; 
         }
 
-        async function deleteUserCookies() {
-            if(!confirm("Remove your saved cookies? Terabox links will stop working.")) return;
+        async function deleteSiteCookie(site) {
+            if(!confirm(`Remove your saved cookies for ${site}? Links may stop working.`)) return;
             try {
                 const res = await fetch('/api/settings/cookies', {
                     method: 'DELETE', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser})
+                    body: JSON.stringify({user_id: currentUser, site: site})
                 });
                 const data = await res.json();
                 if(data.status === 'success') {
-                    alert("Cookies removed!");
+                    alert(`${site.toUpperCase()} cookies removed!`);
                     checkUserCookies();
                 }
             } catch(err) {}
@@ -13935,20 +13964,23 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     # 🟢 Cookies APIs
     async def _api_cookies_get(request):
         uid = int(request.query.get("user_id", 0))
-        cookies = await db.get_user_cookies(uid)
-        return web.json_response({"status": "success", "has_cookies": bool(cookies)})
+        cookies_dict = await db.get_user_cookies(uid)
+        # Returns True/False for each site based on whether data exists
+        return web.json_response({"status": "success", "cookies": {k: bool(v) for k, v in cookies_dict.items()}})
 
     async def _api_cookies_post(request):
         data = await request.json()
         uid = int(data.get("user_id", 0))
+        site = data.get("site", "")
         cookies_data = data.get("cookies_data", "")
-        await db.set_user_cookies(uid, cookies_data)
+        await db.set_user_cookies(uid, site, cookies_data)
         return web.json_response({"status": "success"})
 
     async def _api_cookies_delete(request):
         data = await request.json()
         uid = int(data.get("user_id", 0))
-        await db.set_user_cookies(uid, None)
+        site = data.get("site", "")
+        await db.set_user_cookies(uid, site, None)
         return web.json_response({"status": "success"})
         
     app_web.router.add_get("/api/settings/cookies", _api_cookies_get)
