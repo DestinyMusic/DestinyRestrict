@@ -9631,7 +9631,8 @@ HTML_DASHBOARD = """
             if (statusBox) statusBox.style.display = 'none';
             
             try {
-                const res = await fetch('/api/media_probe?user_id=' + encodeURIComponent(currentUser) + '&link=' + encodeURIComponent(link));
+                // 🟢 Appended &extract_tags=1 to force deep scan ONLY for the editor!
+                const res = await fetch('/api/media_probe?user_id=' + encodeURIComponent(currentUser) + '&link=' + encodeURIComponent(link) + '&extract_tags=1');
                 const data = await res.json();
                 
                 if (data.status !== 'success') {
@@ -11526,10 +11527,14 @@ def _guess_browser_compatibility(mime_type, filename, streams):
 
     return False
 
-async def _run_ffprobe_json(input_url, fast=True):
+async def _run_ffprobe_json(input_url, fast=True, extract_tags=False):
     """Fast probe first; retry with a larger probe only when the small probe fails."""
     probe_pairs = ((10 * 1024 * 1024, 5 * 1024 * 1024), (50 * 1024 * 1024, 25 * 1024 * 1024)) if fast else ((50 * 1024 * 1024, 25 * 1024 * 1024),)
     last_error = None
+    
+    # 🟢 Only scan for global tags if requested (prevents lag on MKV files in Theater)
+    format_str = "format=duration,tags" if extract_tags else "format=duration"
+    
     for probesize, analyzeduration in probe_pairs:
         cmd = [
             "ffprobe", "-v", "error", "-hide_banner",
@@ -11538,7 +11543,7 @@ async def _run_ffprobe_json(input_url, fast=True):
             "-probesize", str(probesize),
             "-analyzeduration", str(analyzeduration),
             "-show_entries",
-            "format=duration,tags:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
+            f"{format_str}:stream=index,codec_type,codec_name,width,height,channels,channel_layout:"
             "stream_tags=language,title,handler_name:stream_disposition=default,forced",
             "-of", "json", input_url,
         ]
@@ -11723,7 +11728,11 @@ async def _api_media_probe_handler(request):
     if not link:
         return web.json_response({"status": "error", "message": "Link required"}, status=400)
 
-    cache_key = _media_cache_key(user_id, link)
+    # 🟢 Check if the UI is specifically asking for deep tags (Editor)
+    extract_tags_flag = request.query.get("extract_tags", "0") == "1"
+
+    # Make cache key unique so Editor doesn't get Theater's tagless cache
+    cache_key = _media_cache_key(user_id, link) + f":tags_{extract_tags_flag}"
     cached = MEDIA_META_CACHE.get(cache_key)
     if cached and cached[1] > time.time():
         return web.json_response(cached[0])
@@ -11793,7 +11802,7 @@ async def _api_media_probe_handler(request):
                     logger.info(f"🔎 [PROBE TG] Found Telegram native duration: {duration_val}s")
 
             try:
-                pdata = await _run_ffprobe_json(probe_input, fast=True)
+                pdata = await _run_ffprobe_json(probe_input, fast=True, extract_tags=extract_tags_flag)
                 streams = pdata.get("streams", []) or []
                 if duration_val <= 0:
                     try:
@@ -11827,7 +11836,7 @@ async def _api_media_probe_handler(request):
                     real_ext = Path(real_file_name).suffix or ".mkv"
                     temp_named = temp_probe.with_suffix(real_ext)
                     temp_probe.rename(temp_named)
-                    pdata = await _run_ffprobe_json(str(temp_named), fast=False)
+                    pdata = await _run_ffprobe_json(str(temp_named), fast=False, extract_tags=extract_tags_flag)
                     streams = pdata.get("streams", []) or []
                     if duration_val <= 0:
                         duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
@@ -13013,32 +13022,41 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     # 🟢 Multi-Bot Parallel Path
     cursor_idx = 0
     import asyncio
-    while cursor_idx < len(units):
-        batch = units[cursor_idx:cursor_idx + safe_concurrency]
+    tasks = []
+    
+    try:
+        while cursor_idx < len(units):
+            batch = units[cursor_idx:cursor_idx + safe_concurrency]
 
-        async def _fetch_with_failover(unit_idx, unit):
-            part, internal_offset, internal_limit = unit
-            preferred = working_pool[unit_idx % len(working_pool)]
-            candidates = [preferred] + [c for c in working_pool if c is not preferred]
-            last_exc = None
-            for client in candidates:
-                try:
-                    return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
-                except Exception as exc:
-                    last_exc = exc
-            raise last_exc or RuntimeError("Telegram chunk fetch failed across all bots")
+            async def _fetch_with_failover(unit_idx, unit):
+                part, internal_offset, internal_limit = unit
+                preferred = working_pool[unit_idx % len(working_pool)]
+                candidates = [preferred] + [c for c in working_pool if c is not preferred]
+                last_exc = None
+                for client in candidates:
+                    try:
+                        return await fetch_single_chunk(client, chat_id, part["msg_id"], internal_offset, internal_limit)
+                    except Exception as exc:
+                        last_exc = exc
+                raise last_exc or RuntimeError("Telegram chunk fetch failed across all bots")
 
-        # 🟢 CRITICAL FIX: Use create_task instead of gather!
-        # gather() waits for ALL bots to finish before yielding to the browser (causing huge delays).
-        # create_task() starts them all, but yields Bot 1's data instantly while Bot 2 is still downloading!
-        tasks = [asyncio.create_task(_fetch_with_failover(i, unit)) for i, unit in enumerate(batch)]
-        
+            # Spawn workers
+            tasks = [asyncio.create_task(_fetch_with_failover(i, unit)) for i, unit in enumerate(batch)]
+            
+            for task in tasks:
+                result = await task
+                if result:
+                    yield result
+                    
+            cursor_idx += len(batch)
+            tasks.clear() # Clear task list once they are completed naturally
+            
+    finally:
+        # 🟢 THE KILL SWITCH: If the player skips or disconnects, 
+        # instantly cancel all active background worker bots to prevent API spam!
         for task in tasks:
-            result = await task
-            if result:
-                yield result
-                
-        cursor_idx += len(batch)
+            if not task.done():
+                task.cancel()
             
 USER_WORKER_BOTS = defaultdict(list)
 
