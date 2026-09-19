@@ -162,7 +162,7 @@ debrid_link_supported_sites = [
 ]
 
 
-def direct_link_generator(link):
+def direct_link_generator(link, cookies_data=None):
     """direct links generator"""
     domain = urlparse(link).hostname
     if not domain:
@@ -170,7 +170,7 @@ def direct_link_generator(link):
     elif is_url_shortener(domain):
         resolved = bypass_shortener(link)
         try:
-            return direct_link_generator(resolved)
+            return direct_link_generator(resolved, cookies_data)
         except DirectDownloadLinkException as e:
             if str(e).startswith("ERROR: No Direct link function found"):
                 return resolved
@@ -210,7 +210,7 @@ def direct_link_generator(link):
     elif "transfer.it" in domain:
         return transfer_it(link)
     elif "hxfile.co" in domain:
-        return hxfile(link)
+        return hxfile(link, cookies_data)
     elif "1drv.ms" in domain:
         return onedrive(link)
     elif any(x in domain for x in ["pixeldrain.com", "pixeldra.in"]):
@@ -317,7 +317,7 @@ def direct_link_generator(link):
             "terabox.club",
         ]
     ):
-        return terabox(link)
+        return terabox(link, cookies_data)
     elif any(
         x in domain
         for x in [
@@ -376,7 +376,6 @@ def direct_link_generator(link):
         raise DirectDownloadLinkException(f"ERROR: R.I.P {domain}")
     else:
         raise DirectDownloadLinkException(f"No Direct link function found for {link}")
-
 
 def get_captcha_token(session, params):
     recaptcha_api = "https://www.google.com/recaptcha/api2"
@@ -873,14 +872,27 @@ def github(url):
         raise DirectDownloadLinkException("ERROR: Can't extract the link")
 
 
-def hxfile(url):
-    if not ospath.isfile("hxfile.txt"):
-        raise DirectDownloadLinkException("ERROR: hxfile.txt (cookies) Not Found!")
-    try:
-        jar = MozillaCookieJar()
-        jar.load("hxfile.txt")
-    except Exception as e:
-        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}") from e
+def hxfile(url, cookies_data=None):
+    jar = MozillaCookieJar()
+    if cookies_data:
+        import tempfile, os
+        with tempfile.NamedTemporaryFile(mode='w', delete=False) as f:
+            f.write(cookies_data)
+            temp_name = f.name
+        try:
+            jar.load(temp_name)
+        except Exception:
+            pass
+        finally:
+            os.remove(temp_name)
+    else:
+        if not ospath.isfile("hxfile.txt"):
+            raise DirectDownloadLinkException("ERROR: hxfile.txt (cookies) Not Found!")
+        try:
+            jar.load("hxfile.txt")
+        except Exception as e:
+            raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}") from e
+
     cookies = {cookie.name: cookie.value for cookie in jar}
     try:
         if url.strip().endswith(".html"):
@@ -899,7 +911,6 @@ def hxfile(url):
         header = [f"Referer: {url}"]
         return direct_link[0], header
     raise DirectDownloadLinkException("ERROR: Direct download link not found")
-
 
 def onedrive(link):
     """Onedrive direct link generator
@@ -1110,7 +1121,7 @@ def uploadee(url):
         raise DirectDownloadLinkException("ERROR: Direct Link not found")
 
 
-def terabox(url):
+def terabox(url, cookies_data=None):
     if "/file/" in url:
         return url
 
@@ -1138,12 +1149,30 @@ def terabox(url):
     }
 
     def __load_cookies():
+        cookies = {}
+        if cookies_data:
+            try:
+                for line in cookies_data.split('\n'):
+                    line = line.rstrip("\r\n")
+                    if line.startswith("#HttpOnly_"):
+                        line = line[len("#HttpOnly_") :]
+                    if not line or line.startswith("#"):
+                        continue
+                    parts = line.split(None, 6)
+                    if len(parts) < 7:
+                        continue
+                    if any(k in parts[0].lower() for k in COOKIE_DOMAINS):
+                        cookies[parts[5]] = parts[6]
+                if cookies.get("BDUSS") or cookies.get("ndus"):
+                    return cookies
+            except:
+                pass
+
         cfile = next(
             (f for f in ("terabox.txt", "cookies.txt") if ospath.isfile(f)), None
         )
         if not cfile:
             return None
-        cookies = {}
         try:
             with open(cfile) as f:
                 for line in f:
@@ -1508,7 +1537,94 @@ def sharer_scraper(url):
             "ERROR: Drive Link not found, Try in your browser"
         )
 
+def filepress(url):
+    try:
+        url = get(f"https://filebee.xyz/file/{url.split('/')[-1]}").url
+        raw = urlparse(url)
+        json_data = {
+            "id": raw.path.split("/")[-1],
+            "method": "publicDownlaod",
+        }
+        api = f"{raw.scheme}://{raw.hostname}/api/file/downlaod/"
+        res2 = post(
+            api,
+            headers={"Referer": f"{raw.scheme}://{raw.hostname}"},
+            json=json_data,
+        ).json()
+        json_data2 = {
+            "id": res2["data"],
+            "method": "publicDownlaod",
+        }
+        api2 = f"{raw.scheme}://{raw.hostname}/api/file/downlaod2/"
+        res = post(
+            api2,
+            headers={"Referer": f"{raw.scheme}://{raw.hostname}"},
+            json=json_data2,
+        ).json()
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}") from e
 
+    if "data" not in res:
+        raise DirectDownloadLinkException(f"ERROR: {res['statusText']}")
+    return f"https://drive.google.com/uc?id={res['data']}&export=download"
+
+
+def sharer_scraper(url):
+    cget = create_scraper().request
+    try:
+        url = cget("GET", url).url
+        raw = urlparse(url)
+        header = {
+            "useragent": "Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US) AppleWebKit/534.10 (KHTML, like Gecko) Chrome/7.0.548.0 Safari/534.10"
+        }
+        res = cget("GET", url, headers=header)
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}") from e
+    key = findall(r'"key",\s+"(.*?)"', res.text)
+    if not key:
+        raise DirectDownloadLinkException("ERROR: Key not found!")
+    key = key[0]
+    if not HTML(res.text).xpath("//button[@id='drc']"):
+        raise DirectDownloadLinkException(
+            "ERROR: This link don't have direct download button"
+        )
+    boundary = uuid4()
+    headers = {
+        "Content-Type": f"multipart/form-data; boundary=----WebKitFormBoundary{boundary}",
+        "x-token": raw.hostname,
+        "useragent": "Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US) AppleWebKit/534.10 (KHTML, like Gecko) Chrome/7.0.548.0 Safari/534.10",
+    }
+
+    data = (
+        f'------WebKitFormBoundary{boundary}\r\nContent-Disposition: form-data; name="action"\r\n\r\ndirect\r\n'
+        f'------WebKitFormBoundary{boundary}\r\nContent-Disposition: form-data; name="key"\r\n\r\n{key}\r\n'
+        f'------WebKitFormBoundary{boundary}\r\nContent-Disposition: form-data; name="action_token"\r\n\r\n\r\n'
+        f"------WebKitFormBoundary{boundary}--\r\n"
+    )
+    try:
+        res = cget("POST", url, cookies=res.cookies, headers=headers, data=data).json()
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}") from e
+    if "url" not in res:
+        raise DirectDownloadLinkException(
+            "ERROR: Drive Link not found, Try in your browser"
+        )
+    if "drive.google.com" in res["url"] or "drive.usercontent.google.com" in res["url"]:
+        return res["url"]
+    try:
+        res = cget("GET", res["url"])
+    except Exception as e:
+        raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}") from e
+    if (drive_link := HTML(res.text).xpath("//a[contains(@class,'btn')]/@href")) and (
+        "drive.google.com" in drive_link[0]
+        or "drive.usercontent.google.com" in drive_link[0]
+    ):
+        return drive_link[0]
+    else:
+        raise DirectDownloadLinkException(
+            "ERROR: Drive Link not found, Try in your browser"
+        )
+        
 def wetransfer(url):
     with create_scraper() as session:
         try:
