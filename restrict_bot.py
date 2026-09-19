@@ -1093,17 +1093,21 @@ async def upload_to_gofile(file_path: str):
                     return upload_data["data"]["downloadPage"]
                 raise Exception(f"GoFile Error: {upload_data}")
 
-async def process_remux(input_file, output_file, stream_config, global_title=None, clear_metadata=False):
+async def process_remux(input_file, output_file, stream_config, global_tags=None):
     """Instantly reshuffles, delays, adds external tracks, and renames streams without re-encoding."""
     base_cmd = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error"]
     inputs = ["-i", input_file]
     input_paths = [input_file]
     maps_and_meta = []
     
-    if clear_metadata:
-        maps_and_meta.extend(["-map_metadata", "-1"])
-    if global_title and global_title.strip():
-        maps_and_meta.extend(["-metadata", f"title={global_title.strip()}"])
+    # 🟢 Wipe all existing global metadata to ensure a clean slate (Removes Group Watermarks)
+    maps_and_meta.extend(["-map_metadata", "-1"])
+    
+    # 🟢 Re-inject only the metadata the user left in the UI boxes
+    if global_tags:
+        for k, v in global_tags.items():
+            if v.strip(): # Only add if the text box wasn't emptied
+                maps_and_meta.extend(["-metadata", f"{k}={v.strip()}"])
         
     out_idx = 0
     for track in stream_config:
@@ -6117,15 +6121,9 @@ HTML_DASHBOARD = """
                         </div>
                     </div>
                     
-                    <div class="input-group" style="margin-top: 15px;">
-                        <label>Global Metadata (Movie Title) & Clean Tags</label>
-                        <div style="display: flex; flex-direction: column; gap: 8px;">
-                            <input type="text" id="editor-global-title" placeholder="Leave empty to keep original, or type new Title...">
-                            <label style="display: flex; align-items: center; gap: 8px; color: var(--text); font-size: 12px; cursor: pointer;">
-                                <input type="checkbox" id="editor-clear-metadata" checked style="accent-color: var(--danger); width: 16px; height: 16px;">
-                                Clear all existing Global Metadata (Removes Release Group Tags/Watermarks)
-                            </label>
-                        </div>
+                    <!-- DYNAMIC GLOBAL METADATA CONTAINER -->
+                    <div id="editor-global-meta-container" style="border: 1px dashed var(--card-border); padding: 15px; border-radius: 12px; margin-bottom: 20px; background: rgba(0,0,0,0.2);">
+                        <!-- Filled automatically via Javascript -->
                     </div>
 
                     <div class="input-group" style="margin-top: 15px;">
@@ -9637,8 +9635,17 @@ HTML_DASHBOARD = """
                     const title = (s.tags && (s.tags.title || s.tags.TITLE)) || '';
                     
                     let color = '#f59e0b';
-                    if (type === 'video') color = '#38bdf8';
-                    if (type === 'audio') color = '#10b981';
+                    let displayType = type.toUpperCase();
+                    
+                    // 🟢 FIX: Identify Thumbnails/Posters and label them clearly!
+                    if (type === 'video' && ['mjpeg', 'png', 'jpeg', 'bmp', 'webp'].includes(codec.toLowerCase())) {
+                        displayType = 'COVER ART';
+                        color = '#ec4899'; // Pink
+                    } else if (type === 'video') {
+                        color = '#38bdf8'; // Blue
+                    } else if (type === 'audio') {
+                        color = '#10b981'; // Green
+                    }
                     
                     let langText = lang ? '(' + lang + ')' : '';
                     
@@ -9646,31 +9653,58 @@ HTML_DASHBOARD = """
                     htmlStr += '<div style="display: flex; justify-content: space-between; align-items: center;">';
                     htmlStr += '<label style="color: #fff; font-weight: bold; font-size: 13px; display: flex; align-items: center; gap: 8px;">';
                     htmlStr += '<input type="checkbox" id="edit-keep-' + idx + '" checked style="width: 16px; height: 16px; accent-color: var(--accent);"> ';
-                    htmlStr += 'Track ' + idx + ' [' + type.toUpperCase() + ']';
+                    htmlStr += 'Track ' + idx + ' [' + displayType + ']';
                     htmlStr += '</label>';
                     htmlStr += '<span style="color: var(--subtext); font-size: 11px;">' + codec + ' ' + langText + '</span>';
                     htmlStr += '</div>';
                     htmlStr += '<div style="display: flex; gap: 8px; margin-top: 4px;">';
                     htmlStr += '<div style="flex: 3; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Track Title</span>';
-                    htmlStr += '<input type="text" id="edit-title-' + idx + '" placeholder="Name..." value="' + title + '" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    htmlStr += '<input type="text" id="edit-title-' + idx + '" placeholder="Name..." value="' + title + '" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">';
                     htmlStr += '</div>';
                     htmlStr += '<div style="flex: 1.5; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Delay (ms)</span>';
-                    htmlStr += '<input type="number" id="edit-delay-' + idx + '" value="0" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    htmlStr += '<input type="number" id="edit-delay-' + idx + '" value="0" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">';
                     htmlStr += '</div>';
                     htmlStr += '<div style="flex: 1; display: flex; flex-direction: column;">';
                     htmlStr += '<span style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Order</span>';
-                    htmlStr += '<input type="number" id="edit-order-' + idx + '" value="' + idx + '" style="padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">';
+                    htmlStr += '<input type="number" id="edit-order-' + idx + '" value="' + idx + '" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">';
                     htmlStr += '</div>';
                     htmlStr += '</div></div>';
                     container.innerHTML += htmlStr;
                 });
                 
+                // 🟢 FIX: Dynamically populate existing Global Metadata!
+                const metaContainer = document.getElementById('editor-global-meta-container');
+                metaContainer.innerHTML = '<h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">🌍 GLOBAL METADATA</h4><p style="font-size:10px; color:var(--subtext); margin-top:0;">Edit tags below. Erase the text completely to wipe a tag from the final file.</p>';
+                
+                if (data.format_tags && Object.keys(data.format_tags).length > 0) {
+                    for (const [key, value] of Object.entries(data.format_tags)) {
+                        metaContainer.innerHTML += `
+                            <div style="display: flex; flex-direction: column; margin-bottom: 8px;">
+                                <label style="font-size: 9px; color: var(--subtext); text-transform: uppercase; font-weight: bold;">${key}</label>
+                                <input type="text" class="global-meta-input" data-key="${key}" value="${value.replace(/"/g, '&quot;')}" style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">
+                            </div>
+                        `;
+                    }
+                } else {
+                    metaContainer.innerHTML += '<div style="font-size: 11px; color: var(--subtext); margin-bottom: 8px;">No existing metadata found. You can add a Title below.</div>';
+                }
+                
+                // Ensure a "title" box is always present even if the file didn't have one
+                if (!data.format_tags || !data.format_tags.title && !data.format_tags.TITLE) {
+                     metaContainer.innerHTML += `
+                        <div style="display: flex; flex-direction: column; margin-bottom: 8px;">
+                            <label style="font-size: 9px; color: var(--subtext); text-transform: uppercase; font-weight: bold;">title</label>
+                            <input type="text" class="global-meta-input" data-key="title" value="" placeholder="New Movie Title..." style="width: 100%; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">
+                        </div>
+                    `;
+                }
+
                 document.getElementById('editor-filename').value = data.file_name || 'output.mkv';
                 document.getElementById('ext-tracks-wrapper').style.display = 'block';
-                document.getElementById('ext-tracks-list').innerHTML = ''; // Reset list
-                addExternalTrackUI(); // Add one empty block by default
+                document.getElementById('ext-tracks-list').innerHTML = ''; 
+                addExternalTrackUI(); 
                 workspace.style.display = 'block';
                 
                 if (!window.allLoadedChats || window.allLoadedChats.length === 0) {
@@ -9690,29 +9724,45 @@ HTML_DASHBOARD = """
         function addExternalTrackUI() {
             const list = document.getElementById('ext-tracks-list');
             const tid = extTrackCounter++;
+            // 🟢 FIX: Box is now mobile responsive, remove button is inline so it doesn't overlap!
             const htmlStr = `
-                <div id="ext-track-item-${tid}" style="border: 1px solid var(--card-border); padding: 10px; border-radius: 8px; background: var(--card); position: relative;">
-                    <button onclick="document.getElementById('ext-track-item-${tid}').remove()" style="position: absolute; top: 10px; right: 10px; background: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 6px; padding: 2px 8px; font-size: 10px; cursor: pointer; z-index: 10;">Remove</button>
-                    <div style="display: flex; gap: 8px; margin-bottom: 10px; width: 85%;">
-                        <select id="ext-type-${tid}" style="flex: 1; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; outline: none;" onchange="document.getElementById('ext-track-details-${tid}').style.display = this.value === 'none' ? 'none' : 'flex';">
+                <div id="ext-track-item-${tid}" style="border: 1px solid var(--card-border); padding: 12px; border-radius: 8px; background: rgba(0,0,0,0.3); position: relative;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <select id="ext-type-${tid}" style="width: 70%; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; outline: none; font-size: 12px;" onchange="document.getElementById('ext-track-details-${tid}').style.display = this.value === 'none' ? 'none' : 'flex';">
                             <option value="none">-- Select Track Type --</option>
                             <option value="ext_audio">Audio Track</option>
                             <option value="ext_sub">Subtitle Track</option>
                         </select>
+                        <button onclick="document.getElementById('ext-track-item-${tid}').remove()" style="background: rgba(239,68,68,0.2); color: #ef4444; border: 1px solid rgba(239,68,68,0.3); border-radius: 6px; padding: 6px 12px; font-size: 11px; font-weight: bold; cursor: pointer;">Remove</button>
                     </div>
-                    <div id="ext-track-details-${tid}" style="display: none; flex-direction: column; gap: 8px;">
-                        <input type="text" id="ext-url-${tid}" placeholder="Paste Telegram Link or Direct HTTP Link..." style="padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
+                    <div id="ext-track-details-${tid}" style="display: none; flex-direction: column; gap: 10px;">
+                        <div>
+                            <div style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Source URL</div>
+                            <input type="text" id="ext-url-${tid}" placeholder="Paste Telegram or Direct Link..." style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">
+                        </div>
                         <label class="primary-btn" style="padding: 10px; font-size: 11px; cursor: pointer; text-align: center; background: #475569; margin: 0; border-radius: 8px;">
                             <span id="ext-file-name-${tid}">📁 OR Select Local File</span>
                             <input type="file" id="ext-file-${tid}" style="display: none;" onchange="document.getElementById('ext-file-name-${tid}').innerText = this.files[0] ? this.files[0].name : '📁 OR Select Local File'">
                         </label>
                         <div style="display: flex; gap: 8px;">
-                            <input type="text" id="ext-title-${tid}" placeholder="Track Title (e.g. Hindi Dub)" style="flex: 2; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
-                            <input type="text" id="ext-lang-${tid}" placeholder="Lang (hin, eng)" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
+                            <div style="flex: 2;">
+                                <div style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Track Title</div>
+                                <input type="text" id="ext-title-${tid}" placeholder="e.g. Hindi Dub" style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">
+                            </div>
+                            <div style="flex: 1;">
+                                <div style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Lang</div>
+                                <input type="text" id="ext-lang-${tid}" placeholder="hin, eng" style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">
+                            </div>
                         </div>
                         <div style="display: flex; gap: 8px;">
-                            <input type="number" id="ext-delay-${tid}" placeholder="Delay (ms)" value="0" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
-                            <input type="number" id="ext-order-${tid}" placeholder="Order (e.g. 1)" value="99" style="flex: 1; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
+                            <div style="flex: 1;">
+                                <div style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Delay (ms)</div>
+                                <input type="number" id="ext-delay-${tid}" placeholder="0" value="0" style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">
+                            </div>
+                            <div style="flex: 1;">
+                                <div style="font-size: 9px; color: var(--subtext); margin-bottom: 4px; text-transform: uppercase; font-weight: bold;">Order</div>
+                                <input type="number" id="ext-order-${tid}" placeholder="99" value="99" style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px; box-sizing: border-box;">
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -9720,7 +9770,7 @@ HTML_DASHBOARD = """
             list.insertAdjacentHTML('beforeend', htmlStr);
         }
 
-        async function sendEditorPayload(config, newName, dest, thumbB64, globalTitle, clearMetadata, btn, status) {
+        async function sendEditorPayload(config, newName, dest, thumbB64, globalTags, btn, status) {
             try {
                 const res = await fetch('/api/edit_media', {
                     method: 'POST',
@@ -9732,8 +9782,7 @@ HTML_DASHBOARD = """
                         new_name: newName,
                         dest: dest,
                         thumb: thumbB64,
-                        global_title: globalTitle,
-                        clear_metadata: clearMetadata
+                        global_tags: globalTags
                     })
                 });
                 const data = await res.json();
@@ -9757,8 +9806,14 @@ HTML_DASHBOARD = """
             const dest = document.getElementById('editor-dest').value;
             const newName = document.getElementById('editor-filename').value;
             const thumbFile = document.getElementById('editor-thumb-file').files[0];
-            const globalTitle = document.getElementById('editor-global-title').value.trim();
-            const clearMetadata = document.getElementById('editor-clear-metadata').checked;
+            
+            // 🟢 Extract all the edited global metadata tags
+            let globalTags = {};
+            document.querySelectorAll('.global-meta-input').forEach(input => {
+                const key = input.getAttribute('data-key');
+                const val = input.value;
+                globalTags[key] = val; 
+            });
             
             let config = [];
             window.editorProbeData.streams.forEach(function(s) {
@@ -9820,7 +9875,7 @@ HTML_DASHBOARD = """
             status.style.display = 'block';
             status.innerText = "Connecting...";
             
-            await sendEditorPayload(config, newName, dest, thumbB64, globalTitle, clearMetadata, btn, status);
+            await sendEditorPayload(config, newName, dest, thumbB64, globalTags, btn, status);
         }
     </script>
 </body>
@@ -11774,11 +11829,15 @@ async def _api_media_probe_handler(request):
                     }
                 )
 
+            # 🟢 Extract global format tags (for the metadata editor)
+            format_tags = pdata.get("format", {}).get("tags", {})
+
             result = {
                 "status": "success",
                 "file_name": real_file_name,
                 "mime_type": mime_type,
                 "requires_transcode": not browser_compatible,
+                "format_tags": format_tags,
                 "browser_compatible": browser_compatible,
                 "has_cover": len(covers) > 0, # 🟢 NEW: Send flag to Javascript player
                 "video_codec": video_codec,
@@ -13122,8 +13181,7 @@ async def _api_edit_media_handler(request):
     new_name = data.get("new_name", "output.mkv")
     dest = data.get("dest", "tg")
     thumb_b64 = data.get("thumb", "")
-    global_title = data.get("global_title", "")
-    clear_metadata = data.get("clear_metadata", False)
+    global_tags = data.get("global_tags", {})
     
     if not link or not config:
         return web.json_response({"status": "error", "message": "Missing link or config"})
@@ -13192,7 +13250,7 @@ async def _api_edit_media_handler(request):
                 await full_download_http(link, str(input_file))
                 
             await status_msg.edit_text("⚙️ **Remuxing Tracks (Instant Copy)...**")
-            await process_remux(str(input_file), str(output_file), config, global_title, clear_metadata)
+            await process_remux(str(input_file), str(output_file), config, global_tags)
             
             await status_msg.edit_text("☁️ **Uploading to Destination...**")
             if dest == "gofile":
