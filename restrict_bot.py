@@ -729,10 +729,10 @@ def _parse_source_link(src_link: str):
     
     msg_range = None
     
-    # 🟢 FIX: Handle both Comma-Separated Links AND Hyphen Ranges seamlessly
+    # 🟢 Range handling logic
     if "," in raw:
         links = [l.strip() for l in raw.split(",")]
-        raw = links[0] # Base the core logic off the first link
+        raw = links[0] 
         last_link = links[-1]
         try:
             start_id = int(raw.rstrip("/").split("/")[-1].split("?")[0])
@@ -748,10 +748,9 @@ def _parse_source_link(src_link: str):
                 end_id = int(m.group(2))
                 if start_id <= end_id:
                     msg_range = (start_id, end_id)
-                raw = raw[:m.start(0)] + "/" + m.group(1) # Clean tail so it parses as a normal link
+                raw = raw[:m.start(0)] + "/" + m.group(1) 
             except: pass
 
-    # Normal parsing for the base link
     if "t.me/" in raw:
         raw = raw.split("t.me/")[-1]
     elif "telegram.me/" in raw:
@@ -762,6 +761,7 @@ def _parse_source_link(src_link: str):
         
     raw = raw.split("?", 1)[0].strip("/")
 
+    # Handle Private /c/ links
     is_private_c = raw.startswith("c/")
     if is_private_c:
         clean = raw[2:]
@@ -780,11 +780,16 @@ def _parse_source_link(src_link: str):
             "chat_id": source_id,
             "topic_id": topic_id,
             "msg_id": msg_id,
-            "msg_range": msg_range, # 🟢 Pass the clean range mapping
+            "msg_range": msg_range, 
         }
 
     parts = raw.split("/")
-    username = parts[0]
+    
+    # Catch alternative t.me/b/BotName links
+    if parts[0] == "b" and len(parts) > 1:
+        parts.pop(0)
+
+    username_or_id = parts[0]
     topic_id = int(parts[1]) if len(parts) >= 3 and parts[1].isdigit() else None
     
     msg_id = None
@@ -792,7 +797,13 @@ def _parse_source_link(src_link: str):
     if last_segment.isdigit():
         msg_id = int(last_segment)
 
-    if username.startswith("+") or "joinchat" in username:
+    # 🟢 CRITICAL FIX: Convert numeric strings to actual integers for User/Bot IDs
+    if str(username_or_id).lstrip("-").isdigit():
+        chat_target = int(username_or_id)
+    else:
+        chat_target = username_or_id
+
+    if str(username_or_id).startswith("+") or "joinchat" in str(username_or_id):
         return {
             "kind": "invite",
             "join_target": f"https://t.me/{raw}",
@@ -804,8 +815,8 @@ def _parse_source_link(src_link: str):
 
     return {
         "kind": "public",
-        "join_target": username,
-        "chat_id": username,
+        "join_target": chat_target,
+        "chat_id": chat_target,
         "topic_id": topic_id,
         "msg_id": msg_id,
         "msg_range": msg_range,
@@ -917,64 +928,29 @@ async def get_topic_title(client, chat_id, topic_id):
     return f" (Topic {topic_id})"
 
 async def check_link_restriction(user_id, link_text):
-    raw = (link_text or "").strip()
-    
-    if "t.me/" in raw:
-        raw = raw.split("t.me/")[-1]
-    elif "telegram.me/" in raw:
-        raw = raw.split("telegram.me/")[-1]
-        
-    if raw.startswith("s/"):
-        raw = raw[2:]
-        
-    raw = raw.split("?", 1)[0].strip("/")
-
-    if raw.startswith("+") or "joinchat" in raw:
+    if link_text.startswith("+") or "joinchat" in link_text:
         return False, "🔗 **Invite link detected.** Join the chat first before checking restrictions."
 
-    clean_text = raw.replace("c/", "")
-    if "-" in clean_text:
-        clean_text = clean_text.split("-", 1)[0].strip()
+    # 🟢 FIX: Use unified URL parser to handle all ID/Username edge cases safely
+    parsed = _parse_source_link(link_text)
+    if not parsed:
+        return None, "⚠️ **Could not analyze link format.**"
 
-    parts = clean_text.split("/")
-    
+    chat_id = parsed.get("chat_id")
+    msg_id = parsed.get("msg_id")
+
+    if not chat_id:
+        return None, "⚠️ **Could not determine Chat ID.**"
+
     is_private = False
-    chat_id = None
-    msg_id = None
-
-    try:
-        # 1. Handle Bot DMs cleanly (Routes to User Session)
-        # 🟢 FIX: Ensure it is explicitly a Bot DM (len == 1), not a public channel ending in "bot"
-        if "t.me/b/" in link_text or (str(parts[0]).lower().endswith("bot") and len(parts) == 1):
-            is_private = True
-            if "t.me/b/" in link_text:
-                chat_id = parts[1] if len(parts) > 1 else parts[0]
-            else:
-                chat_id = parts[0]
-            
-            chat_id = chat_id.strip().replace("@", "")
-            if len(parts) > 1 and parts[-1].strip().isdigit():
-                msg_id = int(parts[-1].strip())
-
-        # 2. Handle Private Channels/Groups
-        elif "t.me/c/" in link_text:
-            is_private = True
-            chat_id = int("-100" + parts[0].strip())
-            if len(parts) > 1 and parts[-1].strip().isdigit():
-                msg_id = int(parts[-1].strip())
-                
-        # 3. Handle Public Channels/Groups
-        else:
-            chat_id = parts[0].strip().replace("@", "")
-            if len(parts) > 1 and parts[-1].strip().isdigit():
-                msg_id = int(parts[-1].strip())
-            
-            if str(chat_id).isdigit():
-                is_private = True
-                chat_id = int(chat_id)
-            
-    except Exception as e:
-        return None, f"⚠️ **Could not analyze link.** Error: {e}"
+    
+    # Force User Session if it's a private group, a numeric user/bot ID, or a bot username
+    if parsed.get("kind") == "private_c" or isinstance(chat_id, int) or (isinstance(chat_id, str) and chat_id.lower().endswith("bot")):
+        is_private = True
+        
+    # Additional safety for positive numeric IDs (Direct DMs)
+    if isinstance(chat_id, int) and chat_id > 0:
+        is_private = True
 
     is_temp_client = False
     check_client = app 
@@ -997,8 +973,11 @@ async def check_link_restriction(user_id, link_text):
         if is_temp_client:
             await check_client.connect()
 
-        # PYROGRAM NATIVE MAGIC: Feed the string chat_id directly.
-        # It handles public usernames and bots without joining!
+        # For resolving Usernames/IDs to actual entities before checking
+        if isinstance(chat_id, str) and not chat_id.lstrip('-').isdigit():
+            try: await check_client.resolve_peer(chat_id)
+            except Exception: pass
+
         if msg_id:
             msg = None
             bot_err_saved = None
@@ -1050,10 +1029,10 @@ async def check_link_restriction(user_id, link_text):
 
             if getattr(chat, "has_protected_content", False):
                 is_restricted = True
-                status_msg = "🔒 **Channel is RESTRICTED** (Will use Download Mode)"
+                status_msg = "🔒 **Chat is RESTRICTED** (Will use Download Mode)"
             else:
                 is_restricted = False
-                status_msg = "🔓 **Channel is PUBLIC/UNRESTRICTED**"
+                status_msg = "🔓 **Chat is PUBLIC/UNRESTRICTED**"
 
     except Exception as e:
         err_str = str(e)
@@ -1063,7 +1042,7 @@ async def check_link_restriction(user_id, link_text):
             if check_client != app:
                 return None, f"❌ **Telegram Blocked Access:** Even your logged account cannot see this! It may be geo-blocked or deleted."
             else:
-                return None, f"❌ **Bot Blocked:** The bot cannot see this public channel. \n\n💡 **FIX:** Please use `/login` to link your account, and I will resolve it using your session!"
+                return None, f"❌ **Bot Blocked:** The bot cannot see this source. \n\n💡 **FIX:** Please use `/login` to link your account, and I will resolve it using your session!"
         elif "AuthKeyUnregistered" in err_str or "SessionRevoked" in err_str:
             return None, f"❌ **Session Expired:** Your login session is invalid. Please run `/logout` and then `/login` again."
         else:
@@ -3754,16 +3733,20 @@ async def process_links_logic(client: Client, message: Message, text: str, dest_
                 if source_ref is None:
                     return await message.reply("❌ Could not resolve source chat.")
 
-                # 🟢 Attempt to get the REAL name of the channel
+                # 🟢 Attempt to get the REAL name of the channel / User / Bot
                 try:
                     source_chat = await client.get_chat(source_ref)
                     source_title = source_chat.title or source_chat.first_name or str(source_ref)
+                    if getattr(source_chat, "last_name", None):
+                        source_title += f" {source_chat.last_name}"
                     ACTUAL_CHAT_ID = source_chat.id
                 except Exception:
                     if acc:
                         try:
                             source_chat = await acc.get_chat(source_ref)
                             source_title = source_chat.title or source_chat.first_name or str(source_ref)
+                            if getattr(source_chat, "last_name", None):
+                                source_title += f" {source_chat.last_name}"
                             ACTUAL_CHAT_ID = source_chat.id
                         except Exception:
                             # Force fallback for public strings if get_chat fails
@@ -11541,15 +11524,17 @@ async def _probe_tg_client(client, chat_id, msg_id):
     except Exception as e:
         err_str = str(e).lower()
         
-        # 🟢 FIX: Removed the bot_token restriction! Now, if there are no worker bots, 
-        # the User Session is also allowed to do a quick 5-chat scan to find newly forwarded channels.
+        # 🟢 FIX: Handle missing peers safely. Use resolve_peer for usernames, and dialog scans for missing IDs.
         if any(err in err_str for err in ["peer_id_invalid", "channel_invalid", "channel_private", "keyerror"]):
             try:
-                logger.debug(f"Client {getattr(client, 'name', 'session')} missing peer {chat_id}. Forcing quick dialog scan...")
-                # Scan only the absolute most recent dialogs (Safe for User Sessions too)
-                async for _ in client.get_dialogs(limit=5):
+                logger.debug(f"Client {getattr(client, 'name', 'session')} missing peer {chat_id}. Attempting resolution...")
+                
+                if isinstance(chat_id, str) and not chat_id.lstrip('-').isdigit():
+                    await client.resolve_peer(chat_id)
+                    
+                async for _ in client.get_dialogs(limit=20):
                     pass
-                # Retry fetching the message
+                    
                 await get_client_msg(client, chat_id, msg_id)
                 logger.info(f"✅ Client {getattr(client, 'name', 'session')} successfully resolved {chat_id} after scan.")
                 return client
