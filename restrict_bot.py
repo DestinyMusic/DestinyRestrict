@@ -5944,41 +5944,43 @@ HTML_DASHBOARD = """
                     <!-- Hidden Audio Player for Sync -->
                     <audio id="ext-audio-player" style="display:none;" preload="auto"></audio>
                 </div>
-            </div>
-                    <!-- 🟢 PER-SITE COOKIES UI -->
-                    <div style="margin-top: 20px; padding: 15px; border-radius: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--card-border);">
-                        <h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">🍪 PER-SITE COOKIES MANAGER</h4>
-                        <p style="font-size: 11px; color: var(--subtext); margin-bottom: 15px;">Some hosts require account cookies (Netscape format) to generate direct links. Upload a <code>cookies.txt</code> specific to the website you want to unlock.</p>
-                        
-                        <div style="display: flex; flex-direction: column; gap: 10px;">
-                            <!-- Terabox Row -->
-                            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
-                                <div style="display: flex; align-items: center; gap: 10px;">
-                                    <span style="color: #fff; font-size: 13px; font-weight: bold; min-width: 70px;">Terabox</span>
-                                    <span id="badge-terabox" style="font-size: 10px; font-weight: bold; padding: 4px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ Missing</span>
-                                </div>
-                                <div style="display: flex; gap: 6px;">
-                                    <label class="primary-btn" style="width: auto; padding: 6px 12px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 11px;">
-                                        📁 Upload <input type="file" accept=".txt" style="display: none;" onchange="uploadSiteCookie(event, 'terabox')">
-                                    </label>
-                                    <button class="primary-btn" style="width: auto; padding: 6px 12px; background: #ef4444; font-size: 11px; margin: 0;" onclick="deleteSiteCookie('terabox')">Remove</button>
-                                </div>
+                
+                <!-- 🟢 PER-SITE COOKIES UI -->
+                <div style="margin-top: 20px; padding: 15px; border-radius: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--card-border);">
+                    <h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">🍪 PER-SITE COOKIES MANAGER</h4>
+                    <p style="font-size: 11px; color: var(--subtext); margin-bottom: 15px;">Some hosts require account cookies (Netscape format) to generate direct links. Upload a <code>cookies.txt</code> specific to the website you want to unlock.</p>
+                    
+                    <div style="display: flex; flex-direction: column; gap: 10px;">
+                        <!-- Terabox Row -->
+                        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="color: #fff; font-size: 13px; font-weight: bold; min-width: 70px;">Terabox</span>
+                                <span id="badge-terabox" style="font-size: 10px; font-weight: bold; padding: 4px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ Missing</span>
                             </div>
-                            <!-- Hxfile Row -->
-                            <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
-                                <div style="display: flex; align-items: center; gap: 10px;">
-                                    <span style="color: #fff; font-size: 13px; font-weight: bold; min-width: 70px;">Hxfile</span>
-                                    <span id="badge-hxfile" style="font-size: 10px; font-weight: bold; padding: 4px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ Missing</span>
-                                </div>
-                                <div style="display: flex; gap: 6px;">
-                                    <label class="primary-btn" style="width: auto; padding: 6px 12px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 11px;">
-                                        📁 Upload <input type="file" accept=".txt" style="display: none;" onchange="uploadSiteCookie(event, 'hxfile')">
-                                    </label>
-                                    <button class="primary-btn" style="width: auto; padding: 6px 12px; background: #ef4444; font-size: 11px; margin: 0;" onclick="deleteSiteCookie('hxfile')">Remove</button>
-                                </div>
+                            <div style="display: flex; gap: 6px;">
+                                <label class="primary-btn" style="width: auto; padding: 6px 12px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 11px;">
+                                    📁 Upload <input type="file" accept=".txt" style="display: none;" onchange="uploadSiteCookie(event, 'terabox')">
+                                </label>
+                                <button class="primary-btn" style="width: auto; padding: 6px 12px; background: #ef4444; font-size: 11px; margin: 0;" onclick="deleteSiteCookie('terabox')">Remove</button>
+                            </div>
+                        </div>
+                        <!-- Hxfile Row -->
+                        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
+                            <div style="display: flex; align-items: center; gap: 10px;">
+                                <span style="color: #fff; font-size: 13px; font-weight: bold; min-width: 70px;">Hxfile</span>
+                                <span id="badge-hxfile" style="font-size: 10px; font-weight: bold; padding: 4px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ Missing</span>
+                            </div>
+                            <div style="display: flex; gap: 6px;">
+                                <label class="primary-btn" style="width: auto; padding: 6px 12px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 11px;">
+                                    📁 Upload <input type="file" accept=".txt" style="display: none;" onchange="uploadSiteCookie(event, 'hxfile')">
+                                </label>
+                                <button class="primary-btn" style="width: auto; padding: 6px 12px; background: #ef4444; font-size: 11px; margin: 0;" onclick="deleteSiteCookie('hxfile')">Remove</button>
                             </div>
                         </div>
                     </div>
+                </div>
+
+            </div> <!-- END OF VIEW-THEATER -->
                                 
             <div id="view-downloads" class="view-section">
                 <div class="section-title">
@@ -11440,6 +11442,7 @@ DIRECT_URL_CACHE = {}
 DIRECT_URL_CACHE_TTL = 900
 DIRECT_RESOLVE_LOCKS = defaultdict(asyncio.Lock)
 DIRECT_HEADER_CACHE = {}
+DIRECT_REQ_HEADERS_CACHE = {} # 🟢 NEW: Stores generated Cookies/Tokens
 DIRECT_HTTP_SESSION = None
 DIRECT_HTTP_SESSION_LOCK = asyncio.Lock()
 
@@ -11511,23 +11514,47 @@ async def resolve_direct_link(url, user_id=0):
             from extractor import direct_link_generator
             import asyncio
             
-            # Fetch user specific cookies from DB securely
             user_cookies = await db.get_user_cookies(user_id) if user_id else None
-            
-            # Run the synchronous scraper safely in a background thread
             wzml_result = await asyncio.to_thread(direct_link_generator, original, user_cookies)
             
-            # Handle the different output formats WZML returns (Tuples, Dicts, or Strings)
+            req_headers = {}
             if isinstance(wzml_result, tuple):
-                wzml_result = wzml_result[0]
+                d_url = wzml_result[0]
+                h_data = wzml_result[1]
+                if isinstance(h_data, list):
+                    for h in h_data:
+                        if ":" in h:
+                            k, v = h.split(":", 1)
+                            req_headers[k.strip()] = v.strip()
+                elif isinstance(h_data, str):
+                    for line in h_data.split('\n'):
+                        if ":" in line:
+                            k, v = line.split(":", 1)
+                            req_headers[k.strip()] = v.strip()
+                wzml_result = d_url
             elif isinstance(wzml_result, dict) and "contents" in wzml_result and len(wzml_result["contents"]) > 0:
-                wzml_result = wzml_result["contents"][0]["url"]
+                d_url = wzml_result["contents"][0]["url"]
+                if "header" in wzml_result and wzml_result["header"]:
+                    h_data = wzml_result["header"]
+                    if isinstance(h_data, list):
+                        for h in h_data:
+                            if ":" in h:
+                                k, v = h.split(":", 1)
+                                req_headers[k.strip()] = v.strip()
+                    elif isinstance(h_data, str):
+                        for line in h_data.split('\n'):
+                            if ":" in line:
+                                k, v = line.split(":", 1)
+                                req_headers[k.strip()] = v.strip()
+                wzml_result = d_url
                 
             if isinstance(wzml_result, str) and wzml_result.startswith("http") and wzml_result != original:
                 logger.info(f"✨ WZML Extractor successfully bypassed: {original} -> {wzml_result[:60]}...")
                 result = wzml_result
+                if req_headers:
+                    DIRECT_REQ_HEADERS_CACHE[result] = req_headers
+                    DIRECT_REQ_HEADERS_CACHE[original] = req_headers
         except Exception as e:
-            # If WZML fails or doesn't support the link, it falls back silently to your existing code
             logger.debug(f"WZML Extractor skipped/failed for {original}: {e}")
         # ==========================================
 
@@ -11816,6 +11843,12 @@ async def _api_direct_stream_handler(request):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
     }
+    
+    # 🟢 INJECT SAVED WZML HEADERS
+    if url in DIRECT_REQ_HEADERS_CACHE:
+        req_headers.update(DIRECT_REQ_HEADERS_CACHE[url])
+    elif resolved in DIRECT_REQ_HEADERS_CACHE:
+        req_headers.update(DIRECT_REQ_HEADERS_CACHE[resolved])
     
     client_range = request.headers.get("Range", "")
     start_byte = 0
@@ -13326,7 +13359,7 @@ async def get_zip_playlist(read_fn, zip_size):
         tail_len = min(262144, zip_size)
         tail = await read_fn(zip_size - tail_len, tail_len)
         entries = _parse_central_directory_full(tail, zip_size - tail_len, zip_size)
-        valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
+        valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm", ".avi", ".ts", ".m4v")
         playlist = []
         for idx, e in enumerate(entries):
             if e["name"].lower().endswith(valid_exts) and e["method"] == 0:
@@ -13658,12 +13691,31 @@ async def _api_playlist_handler(request):
             if not is_zip: return web.json_response({"status": "success", "playlist": []})
             
             session = await _get_direct_http_session()
-            async with session.head(actual_url, allow_redirects=True) as h_resp:
+            
+            # 🟢 INJECT SAVED WZML HEADERS (Like GoFile accountTokens)
+            req_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            if link in DIRECT_REQ_HEADERS_CACHE:
+                req_headers.update(DIRECT_REQ_HEADERS_CACHE[link])
+            elif actual_url in DIRECT_REQ_HEADERS_CACHE:
+                req_headers.update(DIRECT_REQ_HEADERS_CACHE[actual_url])
+
+            async with session.head(actual_url, headers=req_headers, allow_redirects=True) as h_resp:
                 raw_size = int(h_resp.headers.get("Content-Length", 0))
+            if raw_size == 0:
+                # 🟢 If host blocks HEAD requests, fallback to 0-byte GET
+                get_headers = req_headers.copy()
+                get_headers["Range"] = "bytes=0-0"
+                async with session.get(actual_url, headers=get_headers, allow_redirects=True) as r_resp:
+                    cr = r_resp.headers.get("Content-Range", "")
+                    if cr and "/" in cr:
+                        raw_size = int(cr.split("/")[-1])
+                    elif r_resp.headers.get("Content-Length"):
+                        raw_size = int(r_resp.headers.get("Content-Length"))
                 
             async def zip_read_http(off, length):
-                headers = {"Range": f"bytes={off}-{off+length-1}", "User-Agent": "Mozilla/5.0"}
-                async with session.get(actual_url, headers=headers) as r:
+                headers = req_headers.copy()
+                headers["Range"] = f"bytes={off}-{off+length-1}"
+                async with session.get(actual_url, headers=headers, allow_redirects=True) as r:
                     return await r.read()
                     
             playlist = await get_zip_playlist(zip_read_http, raw_size)
@@ -14197,6 +14249,10 @@ async def partial_download_http(url, file_path, limit_mb=15):
         "Accept-Encoding": "identity",
         "Connection": "close",
     }
+    # 🟢 INJECT SAVED WZML HEADERS
+    if url in DIRECT_REQ_HEADERS_CACHE:
+        headers.update(DIRECT_REQ_HEADERS_CACHE[url])
+        
     timeout = aiohttp.ClientTimeout(total=None, connect=20, sock_connect=20, sock_read=25)
 
     def filename_from_headers(resp):
@@ -14356,6 +14412,9 @@ async def download_audio_snippet_http(url, file_path, limit_mb=15):
 async def full_download_http(url, file_path):
     """Full HTTP download for Spectrogram analysis."""
     headers = {"User-Agent": "Mozilla/5.0"}
+    if url in DIRECT_REQ_HEADERS_CACHE:
+        headers.update(DIRECT_REQ_HEADERS_CACHE[url])
+        
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as resp:
             resp.raise_for_status()
