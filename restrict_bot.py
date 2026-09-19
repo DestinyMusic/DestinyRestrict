@@ -12945,8 +12945,8 @@ async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
             
     raise TimeoutError("Exceeded max retries for chunk")
 
-async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=5 * 1024 * 1024, concurrency=None):
-    """Fast Telegram range generator with cached client selection and 10MB continuous work units."""
+async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_byte, total_length, chunk_size=3 * 1024 * 1024, concurrency=None):
+    """Fast Telegram range generator with cached client selection and continuous work units."""
     if total_length <= 0:
         return
 
@@ -12977,9 +12977,9 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
         safe_concurrency = min(concurrency, safe_concurrency)
     safe_concurrency = max(1, safe_concurrency)
 
-    # 🟢 CRITICAL: Increase chunk size to 10MB if we have worker bots. 
-    # This prevents the "Connection closed by server" API spam!
-    actual_chunk_size = chunk_size if safe_concurrency == 1 else (10 * 1024 * 1024)
+    # 🟢 Fixed chunk size to 3MB. 
+    # 1MB drops sockets. 10MB blocks FFprobe. 3MB is the perfect sweet spot!
+    actual_chunk_size = 3 * 1024 * 1024
 
     range_start = int(start_byte)
     range_end = range_start + int(total_length)
@@ -13028,15 +13028,16 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
                     last_exc = exc
             raise last_exc or RuntimeError("Telegram chunk fetch failed across all bots")
 
-        results = await asyncio.gather(
-            *[_fetch_with_failover(i, unit) for i, unit in enumerate(batch)],
-            return_exceptions=True,
-        )
-        for result in results:
-            if isinstance(result, Exception):
-                raise result
+        # 🟢 CRITICAL FIX: Use create_task instead of gather!
+        # gather() waits for ALL bots to finish before yielding to the browser (causing huge delays).
+        # create_task() starts them all, but yields Bot 1's data instantly while Bot 2 is still downloading!
+        tasks = [asyncio.create_task(_fetch_with_failover(i, unit)) for i, unit in enumerate(batch)]
+        
+        for task in tasks:
+            result = await task
             if result:
                 yield result
+                
         cursor_idx += len(batch)
             
 USER_WORKER_BOTS = defaultdict(list)
