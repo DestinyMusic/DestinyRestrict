@@ -14510,10 +14510,8 @@ async def watcher_worker_loop(wid_str):
                         continue
                     WATCHER_MEDIA_GROUPS[group_cache_key] = True
 
-                try:
-                    await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
-
-                    if getattr(msg, "media_group_id", None):
+                    try:
+                        await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
                         try:
                             m_group = await fetcher.get_media_group(source_id, msg.id)
                         except Exception:
@@ -14546,7 +14544,26 @@ async def watcher_worker_loop(wid_str):
                             processed_successfully = True
                             if delay > 0 and group_size > 1:
                                 await asyncio.sleep(delay * (group_size - 1))
-                    else:
+                    except FloodWait as e:
+                        USER_FLOOD_LOCKS[owner_id].set_lock(e.value + 5)
+                        await asyncio.sleep(e.value + 5)
+                        try:
+                            if owner_client and owner_client.is_connected:
+                                copy_res = await safe_send(
+                                    owner_client, owner_id, dest_id, None, False,
+                                    owner_client.copy_media_group,
+                                    chat_id=dest_id, from_chat_id=source_id,
+                                    message_id=msg.id, message_thread_id=dest_thread
+                                )
+                                processed_successfully = bool(copy_res)
+                        except Exception as retry_err:
+                            logger.warning(f"Watcher {wid_str}: copy retry failed: {retry_err}")
+                    except Exception as e:
+                        logger.warning(f"Watcher {wid_str}: fast copy failed: {e}. Falling back to existing processing path.")
+
+                else:
+                    try:
+                        await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
                         try:
                             copy_res = await safe_send(
                                 upload_client, owner_id, dest_id, None, True,
@@ -14571,30 +14588,22 @@ async def watcher_worker_loop(wid_str):
                         if copy_res:
                             processed_successfully = True
 
-                except FloodWait as e:
-                    USER_FLOOD_LOCKS[owner_id].set_lock(e.value + 5)
-                    await asyncio.sleep(e.value + 5)
-                    try:
-                        if owner_client and owner_client.is_connected:
-                            if getattr(msg, "media_group_id", None):
-                                copy_res = await safe_send(
-                                    owner_client, owner_id, dest_id, None, False,
-                                    owner_client.copy_media_group,
-                                    chat_id=dest_id, from_chat_id=source_id,
-                                    message_id=msg.id, message_thread_id=dest_thread
-                                )
-                            else:
+                    except FloodWait as e:
+                        USER_FLOOD_LOCKS[owner_id].set_lock(e.value + 5)
+                        await asyncio.sleep(e.value + 5)
+                        try:
+                            if owner_client and owner_client.is_connected:
                                 copy_res = await safe_send(
                                     owner_client, owner_id, dest_id, None, False,
                                     owner_client.copy_message,
                                     chat_id=dest_id, from_chat_id=source_id,
                                     message_id=msg.id, message_thread_id=dest_thread
                                 )
-                            processed_successfully = bool(copy_res)
-                    except Exception as retry_err:
-                        logger.warning(f"Watcher {wid_str}: copy retry failed: {retry_err}")
-                except Exception as e:
-                    logger.warning(f"Watcher {wid_str}: fast copy failed: {e}. Falling back to existing processing path.")
+                                processed_successfully = bool(copy_res)
+                        except Exception as retry_err:
+                            logger.warning(f"Watcher {wid_str}: copy retry failed: {retry_err}")
+                    except Exception as e:
+                        logger.warning(f"Watcher {wid_str}: fast copy failed: {e}. Falling back to existing processing path.")
 
             if processed_successfully:
                 await db.db.watchers.update_one(
@@ -14679,7 +14688,7 @@ async def watcher_worker_loop(wid_str):
             logger.error(f"Fatal error in watcher worker {wid_str}: {outer_e}", exc_info=True)
         finally:
             queue.task_done()
-            
+
 async def process_watcher_message(client, message):
     chat_id = message.chat.id
     topic_id = getattr(message, "message_thread_id", None)
@@ -14718,7 +14727,8 @@ async def process_watcher_message(client, message):
         await start_watcher_worker(wid)
 
 async def user_watcher_handler(client, message):
-    await process_watcher_message(client, message)
+    # 🟢 FIX: Wrap in create_task so it returns instantly and frees up the Pyrogram queue!
+    asyncio.create_task(process_watcher_message(client, message))
 
 # ==============================================================================
 # --- DASHBOARD UPDATER ---
