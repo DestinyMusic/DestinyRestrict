@@ -4129,6 +4129,21 @@ async def handle_private(client: Client, acc, message: Message, chatid, msgid: i
 # --- 🟢 UNRESTRICTED ROUTES (WITH ALBUM SUPPORT) ---
 # ==============================================================================
 
+def _get_client_label(c):
+    if not c: return "Unknown"
+    name = getattr(c, "name", "")
+    if name.startswith("worker_bot_"):
+        return f"🤖 Worker {name.split('_')[-1]}"
+    elif name.startswith("User_") or name.startswith("temp_acc_"):
+        try:
+            fn = c.me.first_name if getattr(c, "me", None) else "User Session"
+            return f"👤 {fn}"
+        except:
+            return "👤 User Session"
+    elif name == "RestrictedBot":
+        return "🤖 Main Bot"
+    return f"🤖 {name}"
+
 async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, dest_thread_id, msg, msg_type, user_id, task_uuid, delay):
     # 🟢 Select an Upload Client (Worker Bot > Main Bot)
     upload_client = client
@@ -4137,6 +4152,10 @@ async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, 
         connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
         if connected_workers:
             upload_client = connected_workers[int(time.time()) % len(connected_workers)]
+            
+    if task_uuid and user_id in ACTIVE_PROCESSES and task_uuid in ACTIVE_PROCESSES[user_id]:
+        ACTIVE_PROCESSES[user_id][task_uuid]["fetcher"] = _get_client_label(acc if acc else client)
+        ACTIVE_PROCESSES[user_id][task_uuid]["uploader"] = _get_client_label(upload_client)
 
     if msg_type == "Text":
         try:
@@ -4201,6 +4220,10 @@ async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, de
         connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
         if connected_workers:
             upload_client = connected_workers[int(time.time()) % len(connected_workers)]
+
+    if task_uuid and user_id in ACTIVE_PROCESSES and task_uuid in ACTIVE_PROCESSES[user_id]:
+        ACTIVE_PROCESSES[user_id][task_uuid]["fetcher"] = _get_client_label(acc if acc else client)
+        ACTIVE_PROCESSES[user_id][task_uuid]["uploader"] = _get_client_label(upload_client)
 
     if msg_type == "Text":
         try:
@@ -4380,6 +4403,15 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
     # 🟢 [NEW] Save current file name to active processes for Web UI
     if task_uuid and user_id in ACTIVE_PROCESSES and task_uuid in ACTIVE_PROCESSES[user_id]:
         ACTIVE_PROCESSES[user_id][task_uuid]["current_file"] = safe_filename
+        ACTIVE_PROCESSES[user_id][task_uuid]["fetcher"] = _get_client_label(fetcher)
+        
+        predicted_uploader = client
+        worker_bots = USER_WORKER_BOTS.get(user_id, [])
+        if worker_bots:
+            connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
+            if connected_workers:
+                predicted_uploader = connected_workers[index % len(connected_workers)]
+        ACTIVE_PROCESSES[user_id][task_uuid]["uploader"] = _get_client_label(predicted_uploader)
 
     # 🟢 [FIX] Wipe previous file's progress so stale numbers NEVER carry over!
     if task_uuid:
@@ -6987,9 +7019,14 @@ HTML_DASHBOARD = """
                         bottomRow = `<span>${batchStr}</span><span></span>`;
                     }
                     
-                    // 🟢 NEW: File Name and Stats UI Integration
                     let fileNameStr = t.current_file ? `<div style="font-size: 11px; color: #38bdf8; margin-bottom: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">📄 <b>${t.current_file}</b></div>` : '';
                     
+                    // 🟢 Inject dynamic Fetcher/Uploader labels here
+                    let clientsRow = `<div style="display: flex; gap: 12px; margin-top: 4px; font-size: 10px; color: #94a3b8; font-weight: 600;">
+                        <span>📥 In: <span style="color: #a78bfa;">${t.fetcher}</span></span>
+                        <span>📤 Out: <span style="color: #34d399;">${t.uploader}</span></span>
+                    </div>`;
+
                     let statsRow = `<div style="display: flex; gap: 12px; margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--subtext);">
                         <span style="color: #10b981;">✅ Success: ${t.success || 0}</span>
                         <span style="color: #f59e0b;">⏭ Skipped: ${t.skipped || 0}</span>
@@ -7005,8 +7042,9 @@ HTML_DASHBOARD = """
                             <div style="font-size: 11px; color: var(--accent); margin-bottom: 2px;">
                                 ${t.phase} ➔ ${t.dest}
                             </div>
+                            ${clientsRow}
                             ${fileNameStr}
-                            <div style="background: rgba(255,255,255,0.1); border-radius: 8px; width: 100%; height: 16px; overflow: hidden; position: relative;">
+                            <div style="background: rgba(255,255,255,0.1); border-radius: 8px; width: 100%; height: 16px; overflow: hidden; position: relative; margin-top: 6px;">
                                 <div style="background: linear-gradient(90deg, var(--accent), #38bdf8); height: 100%; width: ${t.percent || 0}%; transition: width 0.5s ease;"></div>
                             </div>
                             <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--subtext); font-family: monospace;">
@@ -7024,14 +7062,23 @@ HTML_DASHBOARD = """
                 const wList = document.getElementById('watchers-list');
                 let newWListHtml = data.watchers.length ? '' : '<div style="color: #64748b;">No active watchers.</div>';
                 data.watchers.forEach(w => {
+                    // 🟢 Inject dynamic Fetcher/Uploader labels here for Watchers
+                    let clientsRow = `<div style="display: flex; gap: 12px; margin-top: 4px; margin-bottom: 8px; font-size: 10px; color: #94a3b8; font-weight: 600;">
+                        <span>📥 In: <span style="color: #a78bfa;">${w.fetcher}</span></span>
+                        <span>📤 Out: <span style="color: #34d399;">${w.uploader}</span></span>
+                    </div>`;
+
                     newWListHtml += `
                         <div class="task-row">
                             <div style="flex: 1; padding-right: 15px;">
                                 <div style="font-weight: 700; color: #fff; font-size: 14px; word-break: break-word;">📡 ${w.source}</div>
                                 <div style="font-size: 11px; color: var(--accent); margin-top: 4px;">Destination: ${w.dest}</div>
+                                ${clientsRow}
                                 <div style="display: flex; gap: 12px; margin-top: 8px; font-size: 11px; font-weight: 700; color: var(--subtext);">
                                     <span style="color: #38bdf8;">📡 Detected: ${w.detected}</span>
                                     <span style="color: #10b981;">✅ Forwarded: ${w.success}</span>
+                                    <span style="color: #f59e0b;">⏭ Skipped: ${w.skipped || 0}</span>
+                                    <span style="color: #ef4444;">❌ Failed: ${w.failed || 0}</span>
                                 </div>
                             </div>
                             <button class="task-kill" onclick="cancelWatcher('${w.id}')">REMOVE</button>
@@ -10107,7 +10154,9 @@ async def _api_stats_handler(request):
             "success": info.get("success", 0),
             "skipped": info.get("skipped", 0),
             "failed": info.get("failed", 0),
-            "current_file": info.get("current_file", "")
+            "current_file": info.get("current_file", ""),
+            "fetcher": info.get("fetcher", "🤖 Unknown"),
+            "uploader": info.get("uploader", "🤖 Unknown")
         })
 
     # User-specific watchers
@@ -10120,7 +10169,11 @@ async def _api_stats_handler(request):
             "source": w.get("source_title", "Source"),
             "dest": w.get("dest_title", "Destination"),
             "detected": stats.get("detected", 0),
-            "success": stats.get("success", 0)
+            "success": stats.get("success", 0),
+            "skipped": stats.get("skipped", 0),
+            "failed": stats.get("failed", 0),
+            "fetcher": w.get("fetcher", "⏳ Waiting..."),
+            "uploader": w.get("uploader", "⏳ Waiting...")
         })
 
     total_watchers = await db.db.watchers.count_documents({"user_id": user_id})
@@ -14429,32 +14482,22 @@ async def watcher_worker_loop(wid_str):
 
             processed_successfully = False
 
-            # Fast copy is used only for content the current Telegram API/client
-            # permits to copy. Protected-content handling is left to the existing
-            # permission-aware path below; this patch does not add any bypass.
+            # 🟢 Determine Uploader early so we can show it in the UI even if restricted
+            upload_client = app
+            worker_bots = USER_WORKER_BOTS.get(owner_id, [])
+            if worker_bots:
+                connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
+                if connected_workers:
+                    upload_client = connected_workers[int(time.time()) % len(connected_workers)]
+
+            # 🟢 Inject fetcher/uploader into DB for UI rendering
+            await db.db.watchers.update_one(
+                {"_id": watcher_db_id},
+                {"$set": {"fetcher": _get_client_label(fetcher), "uploader": _get_client_label(upload_client)}}
+            )
+
             if not is_restricted and not is_content_protected:
-                # 🟢 Worker Bot Routing for Watcher Fast Copy
-                upload_client = app
-                worker_bots = USER_WORKER_BOTS.get(owner_id, [])
-                if worker_bots:
-                    connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
-                    if connected_workers:
-                        upload_client = connected_workers[int(time.time()) % len(connected_workers)]
-
                 if getattr(msg, "media_group_id", None):
-                    group_cache_key = f"{owner_id}_{source_id}_{msg.media_group_id}_{dest_id}_{dest_thread}"
-                    if WATCHER_MEDIA_GROUPS.get(group_cache_key):
-                        await db.db.watchers.update_one(
-                            {"_id": watcher_db_id},
-                            {"$max": {"last_msg_id": int(msg.id)}}
-                        )
-                        continue
-                    WATCHER_MEDIA_GROUPS[group_cache_key] = True
-
-                try:
-                    await USER_FLOOD_LOCKS[owner_id].wait_if_locked()
-
-                    if getattr(msg, "media_group_id", None):
                         try:
                             m_group = await fetcher.get_media_group(source_id, msg.id)
                         except Exception:
