@@ -9539,6 +9539,7 @@ HTML_DASHBOARD = """
                 
                 let color = type === 'video' ? '#38bdf8' : (type === 'audio' ? '#10b981' : '#f59e0b');
                 
+                // BULLETPROOF FIX: Removed nested backticks so Python string evaluation doesn't break the JS!
                 container.innerHTML += `
                     <div class="card" style="padding: 12px; margin: 0; background: rgba(0,0,0,0.4); border-left: 4px solid ${color}; display: flex; flex-direction: column; gap: 8px;">
                         <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -9546,7 +9547,7 @@ HTML_DASHBOARD = """
                                 <input type="checkbox" id="keep-trk-${idx}" checked style="width: 16px; height: 16px; accent-color: var(--accent);"> 
                                 Track ${idx} [${type.toUpperCase()}]
                             </label>
-                            <span style="color: var(--subtext); font-size: 11px;">${codec} ${lang ? `(${lang})` : ''}</span>
+                            <span style="color: var(--subtext); font-size: 11px;">${codec} ${lang ? '(' + lang + ')' : ''}</span>
                         </div>
                         <div style="display: flex; gap: 10px;">
                             <input type="text" id="title-trk-${idx}" placeholder="New Title..." value="${title}" style="flex: 2; padding: 8px; border-radius: 8px; border: 1px solid var(--card-border); background: var(--bg); color: #fff; font-size: 12px;">
