@@ -6447,6 +6447,7 @@ HTML_DASHBOARD = """
 
     <script>
         let currentUser = localStorage.getItem('tg_uid') || null;
+        let currentToken = localStorage.getItem('web_token') || null; // 🟢 ADD TOKEN VAR
         let chatsLoaded = false;
         let isAdminGlobal = false;
 
@@ -6618,7 +6619,9 @@ HTML_DASHBOARD = """
                 const data = await res.json();
                 if (data.status === 'success') {
                     localStorage.setItem('tg_uid', uid);
+                    localStorage.setItem('web_token', data.token); // 🟢 SAVE TOKEN
                     currentUser = uid;
+                    currentToken = data.token; // 🟢 SET IN MEMORY
                     document.getElementById('login-view').style.display = 'none';
                     document.getElementById('app-view').style.display = 'block';
                     document.getElementById('profile-id').innerText = "ID: " + uid;
@@ -6657,6 +6660,7 @@ HTML_DASHBOARD = """
 
         function logout() {
             localStorage.removeItem('tg_uid');
+            localStorage.removeItem('web_token'); // 🟢 CLEAR TOKEN ON LOGOUT
             location.reload();
         }
 
@@ -6857,7 +6861,7 @@ HTML_DASHBOARD = """
             }
 
             try {
-                const res = await fetch(`/api/chats?user_id=${currentUser}`);
+                const res = await fetch(`/api/chats?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
                 
                 if (data.status === 'success') {
@@ -7084,11 +7088,7 @@ HTML_DASHBOARD = """
             try {
                 const res = await fetch('/api/admin/users/add', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({
-                        user_id: currentUser, 
-                        target_id: targetId,
-                        role: targetRole
-                    })
+                    body: JSON.stringify({ user_id: currentUser, token: currentToken, target_id: targetId, role: targetRole })
                 });
                 const data = await res.json();
                 if (data.status === 'success') {
@@ -7104,7 +7104,7 @@ HTML_DASHBOARD = """
             try {
                 const res = await fetch('/api/admin/users/remove', {
                     method: 'POST', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser, target_id: targetId})
+                    body: JSON.stringify({user_id: currentUser, token: currentToken, target_id: targetId})
                 });
                 const data = await res.json();
                 if (data.status === 'success') {
@@ -7132,7 +7132,7 @@ HTML_DASHBOARD = """
                 const res = await fetch('/api/settings/tokens', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser, tokens})
+                    body: JSON.stringify({user_id: currentUser, token: currentToken, tokens})
                 });
                 const data = await res.json();
                 alert(data.message || "Tokens updated.");
@@ -7289,7 +7289,7 @@ HTML_DASHBOARD = """
 
         async function tgSendCode() {
             const phone = document.getElementById('tg-phone').value;
-            const res = await fetch('/api/tg/send_code', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, phone: phone}) });
+            const res = await fetch('/api/tg/send_code', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, token: currentToken, phone: phone}) });
             const data = await res.json();
             if (data.status === 'success') {
                 document.getElementById('tg-login-step1').style.display = 'none';
@@ -7299,7 +7299,7 @@ HTML_DASHBOARD = """
 
         async function tgVerifyCode() {
             const code = document.getElementById('tg-code').value;
-            const res = await fetch('/api/tg/verify', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, code: code}) });
+            const res = await fetch('/api/tg/verify', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, token: currentToken, code: code}) });
             const data = await res.json();
             if (data.status === 'success') {
                 alert("Telegram Logged In Successfully!");
@@ -7312,7 +7312,7 @@ HTML_DASHBOARD = """
 
         async function tgVerify2FA() {
             const pwd = document.getElementById('tg-2fa').value;
-            const res = await fetch('/api/tg/verify_2fa', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, password: pwd}) });
+            const res = await fetch('/api/tg/verify_2fa', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, token: currentToken, password: pwd}) });
             const data = await res.json();
             if (data.status === 'success') {
                 alert("Telegram Logged In Successfully!");
@@ -7322,7 +7322,7 @@ HTML_DASHBOARD = """
 
         async function tgLogout() {
             if (!confirm("Are you sure you want to disconnect Telegram? Active watchers will be stopped.")) return;
-            await fetch('/api/tg/logout', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser}) });
+            await fetch('/api/tg/logout', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, token: currentToken}) });
             fetchStats();
         }
 
@@ -7337,7 +7337,8 @@ HTML_DASHBOARD = """
             document.querySelectorAll('input[name="ftype"]:checked').forEach(cb => filtersArr.push(cb.value));
 
             const endpoint = mode === 'watch' ? '/api/watcher/add' : '/api/task/add';
-            const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, link, dest, delay, filters: filtersArr}) });
+            // 🟢 FIX: Added token: currentToken to the JSON body
+            const res = await fetch(endpoint, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, token: currentToken, link, dest, delay, filters: filtersArr}) });
             const data = await res.json();
             if (data.status === 'success') {
                 alert("Task started successfully!");
@@ -7348,20 +7349,20 @@ HTML_DASHBOARD = """
 
         async function cancelTask(taskId) {
             if (!confirm("Cancel this task?")) return;
-            await fetch('/api/task/cancel', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({task_id: taskId, user_id: currentUser}) });
+            await fetch('/api/task/cancel', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({task_id: taskId, user_id: currentUser, token: currentToken}) });
             fetchStats();
         }
 
         async function cancelWatcher(watcherId) {
             if (!confirm("Remove this watcher?")) return;
-            await fetch('/api/watcher/cancel', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({watcher_id: watcherId, user_id: currentUser}) });
+            await fetch('/api/watcher/cancel', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({watcher_id: watcherId, user_id: currentUser, token: currentToken}) });
             fetchStats();
         }
 
         async function changePassword(e) {
             e.preventDefault();
             const pwd = document.getElementById('new-pwd').value;
-            const res = await fetch('/api/auth/password', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, password: pwd}) });
+            const res = await fetch('/api/auth/password', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: currentUser, token: currentToken, password: pwd}) });
             const data = await res.json();
             if (data.status === 'success') {
                 alert("Password updated successfully!");
@@ -7481,7 +7482,7 @@ HTML_DASHBOARD = """
                 const res = await fetch('/api/mediainfo', {
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser, link: link})
+                    body: JSON.stringify({user_id: currentUser, token: currentToken, link: link})
                 });
                 const data = await res.json();
                 if(data.status === 'success') {
@@ -7511,7 +7512,7 @@ HTML_DASHBOARD = """
                 const res = await fetch('/api/spectrogram', {
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser, link: link})
+                    body: JSON.stringify({user_id: currentUser, token: currentToken, link: link})
                 });
                 const data = await res.json();
                 if(data.status === 'success') {
@@ -8945,7 +8946,7 @@ HTML_DASHBOARD = """
                 fetch('/api/stream/kill', { 
                     method: 'POST', 
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser})
+                    body: JSON.stringify({user_id: currentUser, token: currentToken})
                 });
             } catch(e) {}
 
@@ -10113,6 +10114,7 @@ HTML_DASHBOARD = """
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify({
                         user_id: currentUser,
+                        token: currentToken,
                         link: window.editorMediaLink,
                         config: config,
                         new_name: newName,
@@ -10239,13 +10241,17 @@ async def _api_login_handler(request):
             return web.json_response({"status": "error", "message": "Account not found! Please go to Telegram and send /start to the bot first."})
 
         stored_pwd = user.get("web_password")
-        if not stored_pwd:
-            # First time web signup for an existing bot user
-            await db.col.update_one({"id": user_id}, {"$set": {"web_password": password}})
-            return web.json_response({"status": "success"})
-        
-        if stored_pwd == password:
-            return web.json_response({"status": "success"})
+        if not stored_pwd or stored_pwd == password:
+            import secrets
+            # 🟢 FIX: Generate a secure session token
+            web_token = secrets.token_hex(16)
+            
+            update_data = {"web_token": web_token}
+            if not stored_pwd:
+                update_data["web_password"] = password
+                
+            await db.col.update_one({"id": user_id}, {"$set": update_data})
+            return web.json_response({"status": "success", "token": web_token})
         else:
             return web.json_response({"status": "error", "message": "Incorrect password!"})
     except Exception as e:
@@ -10399,6 +10405,16 @@ async def _api_add_task(request):
     try:
         data = await request.json()
         user_id = int(data.get("user_id"))
+        
+        # 1. 🟢 EXTRACT TOKEN FROM JSON BODY
+        token = data.get("token", "") 
+        
+        # 2. 🟢 VERIFY TOKEN AGAINST DATABASE
+        user_doc = await db.col.find_one({"id": user_id})
+        if not user_doc or user_doc.get("web_token") != token:
+            return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token. Please logout and login again."})
+
+        # 3. Proceed with the rest of the code normally
         link = data.get("link")
         dest_str = data.get("dest", "")
         delay = max(3, min(int(data.get("delay", 3)), 3600))
@@ -10746,6 +10762,13 @@ async def _api_tg_logout(request):
 
 async def _api_chats_handler(request):
     uid = int(request.query.get("user_id", 0))
+    token = request.query.get("token", "")
+    
+    # 🟢 SECURE TOKEN CHECK
+    user_doc = await db.col.find_one({"id": uid})
+    if not user_doc or user_doc.get("web_token") != token:
+        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token. Please logout and login again."})
+
     session_str = await db.get_session(uid)
     
     if not session_str:
