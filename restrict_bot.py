@@ -275,7 +275,6 @@ class Database:
             connectTimeoutMS=5000,
             maxPoolSize=50
         )
-        self._access_control_cache = None
         self.db = self._client[database_name]
         self.col = self.db.users
 
@@ -444,7 +443,6 @@ class Database:
             }, 
             upsert=True
         )
-        _watcher_index_add(source_id, source_thread)
 
     async def get_user_watchers(self, user_id):
         return self.db.watchers.find({"user_id": int(user_id)})
@@ -477,16 +475,6 @@ class Database:
             query["source_thread"] = int(source_thread)
             result = await self.db.watchers.delete_many(query)
 
-        if result.deleted_count > 0:
-            # Remove the route only when no remaining watcher uses the same source.
-            still_active = await self.db.watchers.find_one({
-                "source_id": int(source_id),
-                "source_thread": (int(source_thread) if source_thread is not None else None)
-            })
-            if still_active:
-                _watcher_index_add(source_id, source_thread)
-            else:
-                _watcher_index_remove(source_id, source_thread)
         return result.deleted_count > 0
 
     # ==========================================
@@ -512,25 +500,17 @@ class Database:
         return self.db.active_tasks.find({})
 
     async def get_access_control(self):
-        # A tiny TTL cache prevents a MongoDB round-trip for every incoming message.
-        now = time.monotonic()
-        cached = getattr(self, "_access_control_cache", None)
-        if cached and cached[0] > now:
-            return cached[1]
-
         doc = await self.db.config.find_one({"_id": "access_control"}) or {}
         revoked = doc.get("revoked_users", [])
         approved = doc.get("approved_users", [])
         dyn_admins = doc.get("dynamic_admins", [])
         dyn_sudos = doc.get("dynamic_sudos", [])
-
+        
         # Calculate effective roles (combining .env hardcoded + MongoDB dynamic, filtering revoked)
         effective_admins = list(set([x for x in ADMINS if x not in revoked] + [x for x in dyn_admins if x not in revoked]))
         effective_sudos = list(set([x for x in SUDOS if x not in revoked] + [x for x in dyn_sudos if x not in revoked]))
-
-        result = (effective_admins, effective_sudos, approved, revoked)
-        self._access_control_cache = (now + 2.0, result)
-        return result
+        
+        return effective_admins, effective_sudos, approved, revoked
 
     async def is_user_approved(self, user_id):
         user_id = int(user_id)
@@ -568,7 +548,6 @@ class Database:
             {"$addToSet": {target_array: user_id}},
             upsert=True
         )
-        self._access_control_cache = None
 
     async def remove_user_access(self, user_id):
         user_id = int(user_id)
@@ -584,7 +563,6 @@ class Database:
             },
             upsert=True
         )
-        self._access_control_cache = None
 
 db = Database(DB_URI, DB_NAME)
 
@@ -659,12 +637,12 @@ async def global_command_reactor(client: Client, message: Message):
 
 @app.on_message(filters.all, group=-2)
 async def access_control_guard(client: Client, message: Message):
-    # Channel/service updates have no end-user identity. They are handled by
-    # the narrowly filtered watcher listener instead of hitting access-control
-    # MongoDB on every high-volume channel post.
-    if not message.from_user:
+    if message.from_user:
+        user_id = message.from_user.id
+    elif message.sender_chat:
+        user_id = message.sender_chat.id
+    else:
         return
-    user_id = message.from_user.id
         
     # 1. Stop if not approved for basic bot usage
     if not await db.is_user_approved(user_id):
@@ -694,54 +672,6 @@ batch_temp = type("BT", (), {})()
 batch_temp.ACTIVE_TASKS = defaultdict(int)
 batch_temp.IS_BATCH = defaultdict(bool)
 batch_temp.SKIP_IDS = defaultdict(set) # ALBUM BATCHING TRACKER
-
-# --- WATCHER SOURCE ROUTING INDEX ---
-# Only source chats/topics with at least one active watcher are allowed into the
-# watcher handler. This keeps high-volume channel updates out of the watcher
-# pipeline while preserving the existing worker/catch-up implementation.
-WATCHER_SOURCE_INDEX = set()
-
-def _watcher_topic_id(message):
-    if not message:
-        return None
-    topic_id = getattr(message, "message_thread_id", None)
-    if topic_id is None:
-        topic_id = getattr(message, "reply_to_top_message_id", None)
-    if topic_id is None:
-        topic_id = getattr(message, "reply_to_message_id", None)
-    try:
-        return int(topic_id) if topic_id is not None else None
-    except Exception:
-        return None
-
-def _watcher_source_key(source_id, source_thread=None):
-    try:
-        return (int(source_id), int(source_thread) if source_thread is not None else None)
-    except Exception:
-        return None
-
-def _watcher_index_add(source_id, source_thread=None):
-    key = _watcher_source_key(source_id, source_thread)
-    if key is not None:
-        WATCHER_SOURCE_INDEX.add(key)
-
-def _watcher_index_remove(source_id, source_thread=None):
-    key = _watcher_source_key(source_id, source_thread)
-    if key is not None:
-        WATCHER_SOURCE_INDEX.discard(key)
-
-def _watcher_update_allowed(message):
-    if not WATCHER_SOURCE_INDEX or not getattr(message, "chat", None):
-        return False
-    try:
-        chat_id = int(message.chat.id)
-    except Exception:
-        return False
-    topic_id = _watcher_topic_id(message)
-    return (chat_id, topic_id) in WATCHER_SOURCE_INDEX or (chat_id, None) in WATCHER_SOURCE_INDEX
-
-watcher_update_filter = filters.create(lambda flt, _client, message: _watcher_update_allowed(message))
-
 WATCHER_MEDIA_GROUPS = {}              # ALBUM WATCHER TRACKER
 WATCHER_DEDUPE_CACHE = defaultdict(OrderedDict)  # bounded per-watcher event dedupe
 WATCHER_DEDUPE_LIMIT = 2000
@@ -2673,11 +2603,6 @@ async def unwatch_callback(client, query):
             t_fail += s.get("failed", 0)
             
         result = await db.db.watchers.delete_many({'user_id': int(user_id)})
-        # Rebuild routing index from the remaining watcher records.
-        WATCHER_SOURCE_INDEX.clear()
-        remaining_watchers = await db.get_all_watchers()
-        async for rw in remaining_watchers:
-            _watcher_index_add(rw.get('source_id'), rw.get('source_thread'))
         
         # Intercept and Cancel ALL Active Watcher Downloads
         cancelled_tasks = 0
@@ -2723,11 +2648,6 @@ async def unwatch_callback(client, query):
 
     # Delete JUST this specific route!
     await db.db.watchers.delete_one({"_id": ObjectId(wid)})
-    remaining = await db.db.watchers.find_one({"source_id": int(source_id), "source_thread": watcher.get("source_thread")})
-    if remaining:
-        _watcher_index_add(source_id, watcher.get("source_thread"))
-    else:
-        _watcher_index_remove(source_id, watcher.get("source_thread"))
 
     # Intercept and Cancel ongoing downloads tied to this source
     cancelled_tasks = 0
@@ -2978,7 +2898,7 @@ async def chats_cmd(client: Client, message: Message):
             api_id = await db.get_api_id(user_id) or API_ID
             api_hash = await db.get_api_hash(user_id) or API_HASH
             uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[user_id] = uclient
             await status.edit("🔄 <b>Session Active! Fetching your dialogs...</b>", parse_mode=enums.ParseMode.HTML)
@@ -3506,7 +3426,7 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
                 workers=100, # 🟢 FIX: Prevent queue overload
                 ipv6=False
             )
-            new_client.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+            new_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await new_client.start()
             USER_CLIENTS[user_id] = new_client
             await status_msg.delete()
@@ -8148,7 +8068,7 @@ HTML_DASHBOARD = """
             wakeHUD();
         }
 
-        async function commitSeek(e, bar) {
+        function commitSeek(e, bar) {
             const { target, dur } = getScrubberTime(e, bar);
             if (dur === 0) return;
             wakeHUD();
@@ -8169,14 +8089,13 @@ HTML_DASHBOARD = """
                 
                 if (targetTrackIndex !== window.currentPlayIndex) {
                     window.currentPlayIndex = targetTrackIndex;
-                    await refreshCurrentPlaylistTrackMetadata();
                     if (window.updateAlbumText) window.updateAlbumText();
                     
                     playerTimelineOffset = localTarget;
                     isTranscodeSeeking = false;
                     
                     const nextUrl = playerDirectCompatible ? buildNativeUrl() : buildStreamUrl(localTarget);
-                    await setVideoSource(nextUrl, localTarget, true);
+                    setVideoSource(nextUrl, localTarget, true);
                     return;
                 } else {
                     globalTargetTime = localTarget;
@@ -8501,7 +8420,7 @@ HTML_DASHBOARD = """
             if (scroller) { 
                 scroller.innerHTML = ''; 
                 scroller.style.display = 'none'; 
-                scroller.dataset.rendered = ''; 
+                scroller.dataset.rendered = ''; // 🟢 FIX: Force browser to rebuild DOM for new tracks
             }
             if (overlay) overlay.innerHTML = '';
             
@@ -8520,7 +8439,7 @@ HTML_DASHBOARD = """
                     const track = window.globalPlaylist[window.currentPlayIndex];
                     if (track) {
                         zipParam = `&zip_idx=${track.original_index}`;
-                        zipIdx = track.original_index;
+                        zipIdx = track.original_index; // 🟢 Keep zipIdx synced for the unique ID
                     }
                 }
 
@@ -8533,18 +8452,15 @@ HTML_DASHBOARD = """
                 
                 const lines = text.split('\\n');
                 const lrcCues = [];
-                // 🟢 FIX: Bulletproof Regex for timestamps with 0 to 3 millisecond digits
-                const timeRegex = /\\[(\\d{1,3}):(\\d{2})[\\.:]?(\\d{0,3})\\](.*)/;
+                const timeRegex = /\\[(\\d{2}):(\\d{2}\\.\\d{2,3})\\](.*)/;
                 
                 for (let line of lines) {
-                    const matchRegex = line.match(timeRegex);
-                    if (matchRegex) {
-                        const min = parseInt(matchRegex[1], 10);
-                        const sec = parseInt(matchRegex[2], 10);
-                        const msStr = matchRegex[3] ? matchRegex[3].padEnd(3, '0').slice(0,3) : '000';
-                        const totalSec = min * 60 + sec + parseInt(msStr, 10) / 1000;
-                        let textContent = matchRegex[4].replace(/<[^>]+>/g, '').replace(/\\[\\d{1,3}:\\d{2}\\.\\d{0,3}\\]/g, '').trim();
-                        if (textContent) lrcCues.push({ start: totalSec, text: textContent, isLrc: true });
+                    const match = line.match(timeRegex);
+                    if (match) {
+                        const min = parseInt(match[1], 10);
+                        const sec = parseFloat(match[2]);
+                        let textContent = match[3].replace(/<[^>]+>/g, '').replace(/\\[\\d{2}:\\d{2}\\.\\d{2,3}\\]/g, '').trim();
+                        if (textContent) lrcCues.push({ start: min * 60 + sec, text: textContent, isLrc: true });
                     } else if (line.trim() !== '' && !line.startsWith('[')) {
                         let textContent = line.replace(/<[^>]+>/g, '').trim();
                         if (textContent) lrcCues.push({ start: -1, text: textContent, isLrc: true });
@@ -8555,7 +8471,7 @@ HTML_DASHBOARD = """
                     for (let i = 0; i < lrcCues.length - 1; i++) lrcCues[i].end = lrcCues[i+1].start;
                     lrcCues[lrcCues.length - 1].end = 999999;
                     subtitleCues = lrcCues;
-                    activeSubtitleIndex = `metadata_lyrics_${zipIdx}`; 
+                    activeSubtitleIndex = `metadata_lyrics_${zipIdx}`; // 🟢 FIX: Unique ID per track (Prevents cache collision!)
                     renderCurrentSubtitle();
                 }
             } catch(e) { 
@@ -8582,6 +8498,7 @@ HTML_DASHBOARD = """
                 t = playerRequiresTranscode ? (playerTimelineOffset + cur) : cur;
             }
 
+            // 🟢 Apply the manual sync offset slider
             const adjustedTime = t - subtitleSyncOffset;
 
             // 🟢 STRICT SEPARATION: Use Scroller ONLY for explicitly parsed Lyrics (LRC)
@@ -8592,19 +8509,13 @@ HTML_DASHBOARD = """
                 if (scroller) {
                     scroller.style.display = 'block';
                     
-                    let isUnsynced = subtitleCues[0].start === -1;
-                    
                     if (scroller.dataset.rendered !== activeSubtitleIndex) {
-                        // 🟢 FIX: If unsynced, assign .active immediately so they are visible!
-                        scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line ${isUnsynced ? 'active' : ''}" id="lrc-${i}" style="${isUnsynced ? 'display:block; opacity:0.8; transform:none;' : ''}">${c.text}</div>`).join('');
+                        scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line" id="lrc-${i}">${c.text}</div>`).join('');
                         scroller.dataset.rendered = activeSubtitleIndex;
-                        
-                        // Make unsynced text manually scrollable
-                        scroller.style.overflowY = isUnsynced ? 'auto' : 'hidden';
                     }
                     
-                    if (!isUnsynced) {
-                        let activeIdx = -1;
+                    let activeIdx = -1;
+                    if (subtitleCues[0].start !== -1) { // Only scroll if synced
                         for (let i = 0; i < subtitleCues.length; i++) {
                             if (adjustedTime >= subtitleCues[i].start && adjustedTime < subtitleCues[i].end) {
                                 activeIdx = i; break;
@@ -8649,6 +8560,7 @@ HTML_DASHBOARD = """
                 htmlContent += `<div class="subtitle-text">${c.text}</div>`;
             });
             
+            // 3D Split-Screen (VR/SBS) Subtitle Duplication
             if (matrix3DOut === 'vr') {
                 overlay.style.left = '0';
                 overlay.style.right = '0';
@@ -8659,15 +8571,16 @@ HTML_DASHBOARD = """
                     </div>
                 `;
             } else {
-                overlay.style.left = '1%'; 
+                overlay.style.left = '1%'; /* 🟢 FIX: Allows the subtitle slider to stretch to 99% of screen width */
                 overlay.style.right = '1%';
                 overlay.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>`;
             }
             
+            // Flag the overlay so applySubtitleStyle knows where to put it
             overlay.dataset.isTop = hasTop ? 'true' : 'false';
             applySubtitleStyle();
         }
-
+        
         async function applySubtitleSelection() {
             const subSelect = document.getElementById('pop-sub-select');
             const overlay = document.getElementById('subtitle-overlay');
@@ -8986,8 +8899,7 @@ HTML_DASHBOARD = """
         function buildNativeUrl() {
             // 🟢 FAST NATIVE DIRECT LINK SEEKING BYPASS
             if (playerSourceKind === 'direct' && window.currentProbeData && window.currentProbeData.resolved_url) {
-                // Normal direct files can stream straight from the CDN. ZIP members
-                // must use /api/direct_stream?zip_idx=... so the player sees the entry.
+                // We must proxy ZIPs to extract files, but normal direct links can stream straight from the CDN!
                 if (!window.globalPlaylist || window.globalPlaylist.length === 0) {
                     return window.currentProbeData.resolved_url;
                 }
@@ -9004,71 +8916,12 @@ HTML_DASHBOARD = """
             return base;
         }
 
-
-        // ======================================================================
-        // PER-TRACK METADATA REFRESH (ZIP PLAYLISTS)
-        // ======================================================================
-        async function refreshCurrentPlaylistTrackMetadata() {
-            if (!window.globalPlaylist || window.globalPlaylist.length === 0 || !activeMediaLink) {
-                return window.currentProbeData;
-            }
-            const track = window.globalPlaylist[window.currentPlayIndex];
-            if (!track) return window.currentProbeData;
-            const zipParam = `&zip_idx=${encodeURIComponent(track.original_index)}`;
-            try {
-                const res = await fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(activeMediaLink)}${zipParam}`, { cache: 'no-store' });
-                const data = await res.json();
-                if (data.status !== 'success') throw new Error(data.message || 'Track probe failed');
-                window.currentProbeData = data;
-                playerDirectCompatible = Boolean(data.browser_compatible);
-                playerRequiresTranscode = !playerDirectCompatible;
-                playerTotalDuration = Number(data.duration) || 0;
-
-                const qSelect = document.getElementById('pop-quality-select');
-                const aSelect = document.getElementById('pop-audio-select');
-                const sSelect = document.getElementById('pop-sub-select');
-                if (qSelect) {
-                    qSelect.innerHTML = '';
-                    (data.qualities?.length ? data.qualities : ['Original']).forEach(q => addOption(qSelect, q, q));
-                }
-                if (aSelect) {
-                    aSelect.innerHTML = '';
-                    addOption(aSelect, '', 'Default Audio');
-                    (data.audio_tracks || []).forEach((a, i) => {
-                        const lang = a.language ? ` · ${a.language}` : '';
-                        const ch = a.channels ? ` · ${a.channels}ch` : '';
-                        addOption(aSelect, a.index, `${a.label || `Track ${i + 1}`}${lang}${ch}`, { codec: a.codec_name || '' });
-                    });
-                }
-                if (sSelect) {
-                    sSelect.innerHTML = '';
-                    addOption(sSelect, 'off', 'Off');
-                    (data.subtitles || []).forEach((sub, i) => {
-                        const lang = sub.language ? ` · ${sub.language}` : '';
-                        addOption(sSelect, sub.index, `${sub.label || `Subtitle ${i + 1}`}${lang}`);
-                    });
-                }
-                activeSubtitleIndex = 'off';
-                subtitleCues = [];
-                const overlay = document.getElementById('subtitle-overlay');
-                if (overlay) overlay.innerHTML = '';
-
-                if (typeof window.updateAlbumText === 'function') window.updateAlbumText();
-                return data;
-            } catch (err) {
-                console.warn('[PLAYER] Track metadata refresh failed:', err);
-                return window.currentProbeData;
-            }
-        }
-
         function openExternalPlayer(appType) {
             if (!activeMediaLink) return alert("Please load a stream first!");
             
             let streamUrl = "";
-            // External players bypass FFmpeg for normal direct files. For a direct ZIP,
-            // however, the selected track is a virtual file and must use direct_stream;
-            // the endpoint still does not transcode.
-            if (playerSourceKind === 'direct' && window.currentProbeData && window.currentProbeData.resolved_url && (!window.globalPlaylist || window.globalPlaylist.length === 0)) {
+            // 🟢 CRITICAL FIX: External players get raw CDN link for instant seeking!
+            if (playerSourceKind === 'direct' && window.currentProbeData && window.currentProbeData.resolved_url) {
                 streamUrl = window.currentProbeData.resolved_url;
             } else {
                 streamUrl = window.location.origin + buildNativeUrl();
@@ -9283,7 +9136,6 @@ HTML_DASHBOARD = """
             if (!link) return alert('Provide a valid Telegram or HTTP media link!');
 
             activeMediaLink = link;
-            window.currentProbeData = null;
             playerSourceKind = /(?:^|\/)t\.me\//i.test(link) || /telegram\.me\//i.test(link) ? 'tg' : 'direct';
             playerFallbackAttempted = false;
             const vp = document.getElementById('cinema-viewport');
@@ -9302,16 +9154,11 @@ HTML_DASHBOARD = """
             sSelect.innerHTML = ''; addOption(sSelect, 'off', 'Off');
 
             try {
-                // 🟢 FETCH PLAYLIST FIRST, THEN PROBE THE ACTUAL FIRST TRACK.
-                // A direct ZIP is a container; probing the outer ZIP tells us nothing
-                // reliable about the selected MP3/MKV member.
+                // 🟢 FETCH PROBE & PLAYLIST SIMULTANEOUSLY
+                const probePromise = fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' }).then(r => r.json());
                 const playlistPromise = fetch(`/api/playlist?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`, { cache: 'no-store' }).then(r => r.json()).catch(() => ({playlist:[]}));
-                const probePromise = playlistPromise.then(pl => {
-                    const firstIdx = pl?.playlist?.length ? `&zip_idx=${encodeURIComponent(pl.playlist[0].original_index)}` : '';
-                    return fetch(`/api/media_probe?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}${firstIdx}`, { cache: 'no-store' }).then(r => r.json());
-                });
                 
-                playerDirectCompatible = false;
+                playerDirectCompatible = true;
                 playerRequiresTranscode = false;
                 globalTargetTime = 0; 
                 
@@ -9389,15 +9236,14 @@ HTML_DASHBOARD = """
                     const trackInfo = document.getElementById('album-track-info');
                     
                     function updateAlbumText() {
-                        const currentData = window.currentProbeData || pdata;
                         let currentCoverUrl = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
                         let currentZipIdx = ''; 
                         let currentIsAudio = false;
                         let currentIsVideo = false;
 
-                        if (currentData && currentData.mime_type) {
-                            if (currentData.mime_type.startsWith('audio')) currentIsAudio = true;
-                            if (currentData.mime_type.startsWith('video')) currentIsVideo = true;
+                        if (pdata && pdata.mime_type) {
+                            if (pdata.mime_type.startsWith('audio')) currentIsAudio = true;
+                            if (pdata.mime_type.startsWith('video')) currentIsVideo = true;
                         }
 
                         if (window.globalPlaylist && window.globalPlaylist.length > 0) {
@@ -9419,14 +9265,14 @@ HTML_DASHBOARD = """
                             const zipLink = (typeof activeMediaLink !== 'undefined' && activeMediaLink) ? activeMediaLink : link;
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(zipLink)}&zip_idx=${track.original_index}`;
                         } else {
-                            let singleName = currentData.file_name || 'Media Stream';
+                            let singleName = pdata.file_name || 'Media Stream';
                             trackInfo.innerHTML = `<span style="color:var(--accent); font-size:12px; font-weight:900; letter-spacing:2px; text-transform:uppercase;">NOW PLAYING</span><br>${singleName}`;
                             if (titleEl) titleEl.innerText = singleName;
                             currentCoverUrl = `/api/cover?user_id=${encodeURIComponent(currentUser)}&link=${encodeURIComponent(link)}`;
                         }
 
                         // 🟢 Hide Cover Box for Videos so they aren't blocked!
-                        if ((currentData.has_cover || currentIsAudio) && !currentIsVideo) {
+                        if ((pdata.has_cover || currentIsAudio) && !currentIsVideo) {
                             coverContainer.style.display = 'flex';
                             coverContainer.style.zIndex = '50';
                             
@@ -9458,7 +9304,11 @@ HTML_DASHBOARD = """
                         
                         // 🟢 ONLY fetch smart lyrics automatically if it's an Audio track!
                         if (currentIsAudio && typeof fetchSmartLyrics === 'function') {
-                            fetchSmartLyrics(currentZipIdx);
+                            // 🟢 FIX: Ensure we wait for the cover art DOM updates to finish,
+                            // then forcefully trigger the lyrics fetch with the new zip index!
+                            setTimeout(() => {
+                                fetchSmartLyrics(currentZipIdx);
+                            }, 50);
                         } else {
                             // Clear out old lyrics if we switch to a video track
                             const scroller = document.getElementById('lyrics-scroller');
@@ -9704,7 +9554,6 @@ HTML_DASHBOARD = """
                 // 🟢 PLAYLIST AUTO-NEXT LOGIC
                 if (window.globalPlaylist && window.globalPlaylist.length > 0 && window.currentPlayIndex < window.globalPlaylist.length - 1) {
                     window.currentPlayIndex++;
-                    await refreshCurrentPlaylistTrackMetadata();
                     if (window.updateAlbumText) window.updateAlbumText();
                     
                     console.log("[PLAYLIST] Playing Next Track...");
@@ -10827,7 +10676,7 @@ async def _api_add_watcher(request):
                 u_api = await db.get_api_id(user_id) or API_ID
                 u_hash = await db.get_api_hash(user_id) or API_HASH
                 new_client = Client(f"User_{user_id}", session_string=user_session, api_id=u_api, api_hash=u_hash, workers=4, ipv6=False)
-                new_client.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+                new_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
                 await new_client.start()
                 USER_CLIENTS[user_id] = new_client
 
@@ -10860,14 +10709,7 @@ async def _api_cancel_watcher(request):
         watcher_id = data.get("watcher_id")
         user_id = int(data.get("user_id", 0))
         if watcher_id:
-            watcher = await db.db.watchers.find_one({"_id": ObjectId(watcher_id), "user_id": user_id})
-            if watcher:
-                await db.db.watchers.delete_one({"_id": watcher["_id"], "user_id": user_id})
-                remaining = await db.db.watchers.find_one({"source_id": int(watcher["source_id"]), "source_thread": watcher.get("source_thread")})
-                if remaining:
-                    _watcher_index_add(watcher["source_id"], watcher.get("source_thread"))
-                else:
-                    _watcher_index_remove(watcher["source_id"], watcher.get("source_thread"))
+            await db.db.watchers.delete_one({"_id": ObjectId(watcher_id), "user_id": user_id})
             return web.json_response({"status": "success"})
     except: pass
     return web.json_response({"status": "error"}, status=400)
@@ -11028,7 +10870,7 @@ async def _api_chats_handler(request):
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
         except Exception as e:
@@ -11294,7 +11136,7 @@ async def _api_topics_handler(request):
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
         except Exception as e:
@@ -11350,7 +11192,7 @@ async def _api_chat_details_handler(request):
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
         except Exception as e:
@@ -11450,7 +11292,7 @@ async def _api_mediainfo_web_handler(request):
                     api_id = await db.get_api_id(uid) or API_ID
                     api_hash = await db.get_api_hash(uid) or API_HASH
                     uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
-                    uclient.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+                    uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
                     await uclient.start()
                     USER_CLIENTS[uid] = uclient
                 except Exception as e:
@@ -11966,46 +11808,20 @@ async def _api_direct_stream_handler(request):
     virtual_size = -1
     virtual_data_offset = 0
     mime_type = None
-    zip_entry = None
 
-    # Reuse resolver-generated cookies/tokens for BOTH ordinary media and ZIP reads.
-    base_req_headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
-    }
-    if url in DIRECT_REQ_HEADERS_CACHE:
-        base_req_headers.update(DIRECT_REQ_HEADERS_CACHE[url])
-    elif resolved in DIRECT_REQ_HEADERS_CACHE:
-        base_req_headers.update(DIRECT_REQ_HEADERS_CACHE[resolved])
-
-    # [ZIP RESOLUTION] - Maps virtual media bytes to an entry inside the archive
+    # [STORED ZIP RESOLUTION] - Maps HTTP bytes to absolute payload boundaries
     zip_idx = request.query.get("zip_idx", "")
     if is_zip:
         try:
-            async with session.head(resolved, headers=base_req_headers, allow_redirects=True) as h_resp:
-                raw_size = int(h_resp.headers.get("Content-Length", 0) or 0)
-            if raw_size <= 0:
-                probe_headers = base_req_headers.copy()
-                probe_headers["Range"] = "bytes=0-0"
-                async with session.get(resolved, headers=probe_headers, allow_redirects=True) as r_resp:
-                    cr = r_resp.headers.get("Content-Range", "")
-                    if cr and "/" in cr:
-                        raw_size = int(cr.rsplit("/", 1)[1])
-                    else:
-                        raw_size = int(r_resp.headers.get("Content-Length", 0) or 0)
-
+            async with session.head(resolved, allow_redirects=True) as h_resp:
+                raw_size = int(h_resp.headers.get("Content-Length", 0))
+            
             if raw_size > 0:
                 async def zip_read_http(off, length):
-                    length = max(1, int(length))
-                    headers = base_req_headers.copy()
-                    headers["Range"] = f"bytes={int(off)}-{int(off) + length - 1}"
-                    async with session.get(resolved, headers=headers, allow_redirects=True) as r:
-                        data = await r.read()
-                        # If a server ignores Range, recover a zero-based slice where possible.
-                        if r.status == 200 and len(data) >= int(off) + length:
-                            return data[int(off):int(off) + length]
-                        return data[:length]
-
+                    headers = {"Range": f"bytes={off}-{off+length-1}", "User-Agent": "Mozilla/5.0"}
+                    async with session.get(resolved, headers=headers) as r:
+                        return await r.read()
+                        
                 playlist = await get_zip_playlist(zip_read_http, raw_size)
                 if playlist:
                     target_entry = playlist[0]
@@ -12014,11 +11830,11 @@ async def _api_direct_stream_handler(request):
                             if track["original_index"] == int(zip_idx):
                                 target_entry = track
                                 break
-                    zip_entry = await resolve_specific_zip_entry(zip_read_http, target_entry)
-                    if zip_entry:
-                        virtual_size = zip_entry["size"]
-                        virtual_data_offset = zip_entry["data_offset"]
-                        mime_type = mimetypes.guess_type(zip_entry["name"])[0] or "application/octet-stream"
+                    entry = await resolve_specific_zip_entry(zip_read_http, target_entry)
+                    if entry:
+                        virtual_size = entry["size"]
+                        virtual_data_offset = entry["data_offset"]
+                        mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
         except Exception as e:
             logger.warning(f"Direct ZIP resolution failed: {e}")
 
@@ -12029,7 +11845,10 @@ async def _api_direct_stream_handler(request):
     }
     
     # 🟢 INJECT SAVED WZML HEADERS
-    req_headers.update(base_req_headers)
+    if url in DIRECT_REQ_HEADERS_CACHE:
+        req_headers.update(DIRECT_REQ_HEADERS_CACHE[url])
+    elif resolved in DIRECT_REQ_HEADERS_CACHE:
+        req_headers.update(DIRECT_REQ_HEADERS_CACHE[resolved])
     
     client_range = request.headers.get("Range", "")
     start_byte = 0
@@ -12056,41 +11875,6 @@ async def _api_direct_stream_handler(request):
         val = request.headers.get(header)
         if val: req_headers[header] = val
 
-    # Stream Headers Formulation
-    out_headers = {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, ETag, Last-Modified, Cache-Control",
-        "Cache-Control": "public, max-age=300",
-        "Accept-Ranges": "bytes"
-    }
-
-    if virtual_size > 0:
-        out_headers["Content-Type"] = mime_type or "application/octet-stream"
-        if zip_entry and zip_entry.get("name"):
-            entry_name = zip_entry["name"].split("/")[-1].split("\\")[-1]
-            filename = entry_name
-            out_headers["Content-Disposition"] = f"inline; filename*=UTF-8''{quote(entry_name)}"
-
-    # DEFLATED ZIP entries are not byte-addressable in the upstream archive.
-    # Decompress them sequentially and emit only the requested virtual range.
-    if zip_entry and zip_entry.get("method") == 8 and virtual_size > 0 and request.method != "HEAD":
-        out_headers["Content-Length"] = str(end_byte - start_byte + 1)
-        out_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{virtual_size}"
-        out_status = 206 if client_range else 200
-        response = web.StreamResponse(status=out_status, headers=out_headers)
-        sid = _track_stream(request, filename, "Direct")
-        try:
-            await response.prepare(request)
-            async for chunk in _iter_deflated_zip_entry(zip_read_http, zip_entry, start_byte, end_byte or (virtual_size - 1)):
-                if chunk:
-                    await response.write(chunk)
-            await response.write_eof()
-            return response
-        except (ConnectionResetError, asyncio.CancelledError, BrokenPipeError, ConnectionAbortedError):
-            return response
-        finally:
-            _untrack_stream(sid)
-
     try:
         remote = await session.request(
             method=request.method,
@@ -12101,10 +11885,16 @@ async def _api_direct_stream_handler(request):
     except Exception as exc:
         return web.Response(status=502, text=f"Direct source connection failed: {exc}")
 
+    # Stream Headers Formulation
+    out_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Expose-Headers": "Content-Length, Content-Range, Accept-Ranges, Content-Disposition, ETag, Last-Modified, Cache-Control",
+        "Cache-Control": "public, max-age=300",
+        "Accept-Ranges": "bytes"
+    }
+    
     if virtual_size > 0:
-        if zip_entry and zip_entry.get("name"):
-            clean_name = zip_entry['name'].split('/')[-1].split('\\')[-1]
-            out_headers["Content-Disposition"] = f"inline; filename*=UTF-8''{quote(clean_name)}"
+        out_headers["Content-Type"] = mime_type
         chunk_len = end_byte - start_byte + 1
         out_headers["Content-Length"] = str(chunk_len)
         out_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{virtual_size}"
@@ -12185,42 +11975,42 @@ def _guess_browser_compatibility(mime_type, filename, streams):
     """Conservative browser-compatibility check used by the native player path."""
     mime = (mime_type or "").lower().split(";", 1)[0]
     ext = Path(str(filename or "")).suffix.lower()
+    # 🟢 FIX: Ignore cover art so audio files aren't mistakenly treated as videos
     videos = [s for s in (streams or []) if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
     audios = [s for s in (streams or []) if s.get("codec_type") == "audio"]
     vc = str(videos[0].get("codec_name") if videos else "").lower()
     ac = str(audios[0].get("codec_name") if audios else "").lower()
 
-    # Explicitly force the FFmpeg web path for codecs which are not dependable
-    # across Chrome/Firefox/Android/iOS. Artwork streams are never considered.
-    bad_audio = {"dts", "truehd", "ac3", "eac3", "alac", "wavpack", "dsd_lsbf_planar", "dsd_msbf_planar", "ape"}
+    # These audio codecs are deliberately kept off the native browser path.
+    # They need the compatibility/FFmpeg route for reliable playback.
+    bad_audio = {"dts", "truehd", "ac3", "eac3"}
 
+    # Standalone audio: preserve the original stream whenever its codec/MIME
+    # is something the browser can consume.
     if not videos:
-        # 🟢 FIX: Removed FLAC and WAV. 
-        # Formats like DSF, DTS, etc., naturally fail this list and will be safely transcoded.
-        native_audio = {
-            ".mp3": {"mp3"},
-            ".m4a": {"aac"},
-            ".aac": {"aac"},
-            ".ogg": {"vorbis", "opus"},
-            ".opus": {"opus"}
+        if mime in {
+            "audio/mpeg", "audio/mp4", "audio/m4a", "audio/aac", "audio/ogg",
+            "audio/webm", "audio/wav", "audio/flac", "audio/opus", "audio/x-m4a"
+        } or ext in {".m4a", ".mp3", ".aac", ".ogg", ".wav", ".flac", ".opus", ".mka", ".alac"}:
+            return ac not in {"dts", "truehd", "ac3", "eac3"}
+        return ac in {
+            "mp3", "aac", "flac", "opus", "vorbis",
+            "pcm_s16le", "pcm_s24le", "pcm_s32le",
+            "pcm_s16be", "pcm_s24be", "pcm_s32be",
+            "alac", "wavpack"
         }
-        if ac in bad_audio:
-            return False
-        if ext in native_audio:
-            return ac in native_audio[ext]
-        if mime in {"audio/mpeg"}:
-            return ac == "mp3"
-        if mime in {"audio/mp4", "audio/aac", "audio/x-m4a"}:
-            return ac == "aac"
-        if mime in {"audio/ogg", "audio/webm"}:
-            return ac in {"opus", "vorbis"}
-        return False
 
+    # WebM native route.
     if mime == "video/webm" or ext == ".webm":
-        return vc in {"vp8", "vp9", "av1"} and ac in {"opus", "vorbis"}
+        return vc in {"vp8", "vp9", "av1"} and ac not in bad_audio
 
+    # MP4/M4V native route. H.264/VP9/AV1 are allowed here; the
+    # browser-side player separately remains conservative about audio.
     if ext in {".mp4", ".m4v"} or mime in {"video/mp4", "application/mp4"}:
-        return vc in {"h264", "avc", "avc1"} and ac == "aac"
+        # 🟢 FIX 1: Removed 'hevc', 'h265', 'hvc1'. Chrome/Firefox/Android CANNOT play HEVC natively!
+        return vc in {
+            "h264", "avc", "avc1", "vp9", "av1"
+        } and ac not in bad_audio
 
     return False
 
@@ -12429,10 +12219,9 @@ async def _api_media_probe_handler(request):
 
     # 🟢 Check if the UI is specifically asking for deep tags (Editor)
     extract_tags_flag = request.query.get("extract_tags", "0") == "1"
-    zip_idx = request.query.get("zip_idx", "").strip()
 
-    # Cache independently per ZIP entry so tracks cannot reuse the outer ZIP metadata.
-    cache_key = _media_cache_key(user_id, link) + f":tags_{extract_tags_flag}:zip_{zip_idx}"
+    # Make cache key unique so Editor doesn't get Theater's tagless cache
+    cache_key = _media_cache_key(user_id, link) + f":tags_{extract_tags_flag}"
     cached = MEDIA_META_CACHE.get(cache_key)
     if cached and cached[1] > time.time():
         return web.json_response(cached[0])
@@ -12477,33 +12266,6 @@ async def _api_media_probe_handler(request):
                 actual_url = await resolve_direct_link(link, user_id)
                 real_file_name = _guess_filename_from_url(actual_url, _guess_filename_from_url(link, "Direct_Stream_Media"))
                 cached_headers = DIRECT_HEADER_CACHE.get(link) or DIRECT_HEADER_CACHE.get(actual_url)
-
-                # Resolve the selected ZIP member before probing. This makes the
-                # reported filename/MIME/codec decision belong to the actual track.
-                zip_member_name = None
-                if zip_idx.isdigit() and (real_file_name.lower().endswith(".zip") or ".zip." in real_file_name.lower()):
-                    try:
-                        probe_session = await _get_direct_http_session()
-                        probe_headers = {"User-Agent": "Mozilla/5.0"}
-                        probe_headers.update(DIRECT_REQ_HEADERS_CACHE.get(link) or DIRECT_REQ_HEADERS_CACHE.get(actual_url) or {})
-                        async with probe_session.head(actual_url, headers=probe_headers, allow_redirects=True) as hr:
-                            raw_size = int(hr.headers.get("Content-Length", 0) or 0)
-                        if raw_size > 0:
-                            async def _probe_zip_read(off, length):
-                                hh = probe_headers.copy()
-                                hh["Range"] = f"bytes={off}-{off+length-1}"
-                                async with probe_session.get(actual_url, headers=hh, allow_redirects=True) as rr:
-                                    data = await rr.read()
-                                    if rr.status == 200 and len(data) >= off + length:
-                                        return data[off:off+length]
-                                    return data[:length]
-                            pl = await get_zip_playlist(_probe_zip_read, raw_size)
-                            selected = next((x for x in pl if x.get("original_index") == int(zip_idx)), None)
-                            if selected:
-                                real_file_name = selected.get("name", real_file_name).split("/")[-1].split("\\")[-1]
-                                mime_type = mimetypes.guess_type(real_file_name)[0] or mime_type
-                    except Exception as zip_probe_err:
-                        logger.debug(f"[PROBE] Could not resolve direct ZIP member name: {zip_probe_err}")
                 if cached_headers:
                     mime_type = cached_headers.get("content_type") or mime_type
                     cd = cached_headers.get("content_disposition", "")
@@ -12516,19 +12278,10 @@ async def _api_media_probe_handler(request):
                             if m:
                                 real_file_name = unquote(m.group(1).strip())
 
-                # For a ZIP member, the outer archive headers must never overwrite
-                # the actual playable member's filename/MIME.
-                if zip_member_name:
-                    real_file_name = zip_member_name
-                    mime_type = mimetypes.guess_type(zip_member_name)[0] or mime_type
-
             probe_input = actual_url
             if not is_tg:
-                # Always probe through the same direct proxy used by the player so
-                # extractor cookies/tokens, ZIP virtual ranges and CDN quirks match playback.
-                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
-                if zip_idx:
-                    probe_input += f"&zip_idx={quote(zip_idx, safe='')}"
+                # 🟢 Restoring Loopback for Direct Links to prevent strict 5XX server blocks
+                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
                 logger.debug(f"🔎 [PROBE] Feeding Loopback Proxy to FFprobe: {probe_input[:100]}...")
 
             tg_duration = 0.0
@@ -12561,30 +12314,6 @@ async def _api_media_probe_handler(request):
             except Exception as probe_exc:
                 logger.warning(f"🔎 [PROBE HTTP] Loopback HTTP probe failed: {probe_exc}")
                 streams = []
-
-            # 🟢 HTTP SPARSE PROBE FALLBACK: direct CDNs can close the short FFprobe
-            # request after only a few KB. Reuse the existing bounded head+tail sampler
-            # through our own proxy before giving up.
-            if not streams and not is_tg:
-                temp_probe = Path(f"./probe_http_{user_id}_{uuid.uuid4().hex[:10]}.dat")
-                temp_named = None
-                try:
-                    _, detected_name = await partial_download_http(probe_input, temp_probe, limit_mb=16)
-                    real_ext = Path(real_file_name).suffix or Path(detected_name or "").suffix or ".dat"
-                    temp_named = temp_probe.with_suffix(real_ext)
-                    temp_probe.rename(temp_named)
-                    pdata = await _run_ffprobe_json(str(temp_named), fast=False, extract_tags=extract_tags_flag)
-                    streams = pdata.get("streams", []) or []
-                    if duration_val <= 0:
-                        duration_val = float((pdata.get("format") or {}).get("duration", 0) or 0)
-                    logger.info(f"🔎 [PROBE HTTP] Sparse probe succeeded: {len(streams)} streams found, Duration: {duration_val}s")
-                except Exception as sparse_http_err:
-                    logger.warning(f"🔎 [PROBE HTTP] Sparse fallback failed: {sparse_http_err}")
-                finally:
-                    for p in [temp_probe, temp_named]:
-                        if p and p.exists():
-                            try: os.remove(p)
-                            except Exception: pass
 
             # 🟢 MKV SPARSE PROBE FALLBACK: If HTTP probe returned no streams for a Telegram file,
             # sample the head & tail directly into a small temp file (just like /mediainfo)
@@ -12687,10 +12416,15 @@ async def _api_media_probe_handler(request):
             audio_codec = (audios[0].get("codec_name") if audios else "").lower()
             browser_compatible = _guess_browser_compatibility(mime_type, real_file_name, streams)
             if not streams:
-                # Unknown/unprobed direct media must go through /api/stream so FFmpeg
-                # gets the opportunity to identify and convert it. Never guess native
-                # compatibility from an extension alone.
-                browser_compatible = False
+                ext = Path(filename_lower).suffix
+                mime_guess = mime_type.lower().split(';')[0]
+                browser_compatible = (
+                    ext in {".mp4", ".m4v", ".webm", ".mp3", ".m4a", ".aac", ".ogg", ".wav", ".flac", ".opus"}
+                    or mime_guess in {
+                        "video/mp4", "video/webm", "application/mp4", "audio/mpeg", "audio/mp4",
+                        "audio/aac", "audio/ogg", "audio/webm", "audio/wav", "audio/flac", "audio/opus"
+                    }
+                )
 
             # 🟢 Extract global format tags (for the metadata editor)
             format_tags = pdata.get("format", {}).get("tags", {})
@@ -12724,13 +12458,12 @@ async def _api_media_probe_handler(request):
             return web.json_response({"status": "error", "message": str(exc)}, status=502)
 
 async def _api_cover_handler(request):
-    """Extract embedded artwork for AUDIO tracks only; never treat video frames as album art."""
+    """Extracts embedded Album Art/Cover Art from audio files on the fly."""
     try:
         user_id = int(request.query.get("user_id", 0))
-    except Exception:
+    except:
         user_id = 0
     link = request.query.get("link", "").strip()
-    zip_idx = request.query.get("zip_idx", "").strip()
     if not link:
         return web.Response(status=400, text="No link provided")
 
@@ -12742,42 +12475,31 @@ async def _api_cover_handler(request):
             parsed = _parse_source_link(link)
             chat_id = parsed.get("chat_id")
             msg_id = parsed.get("msg_id")
-            if chat_id is None or msg_id is None:
-                return web.Response(status=400, text="Invalid Telegram link")
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
-            if zip_idx:
-                actual_url += f"&zip_idx={quote(zip_idx, safe='')}"
         else:
-            # Keep direct artwork extraction behind the same resolver/proxy used by
-            # the web player. This is essential for Gofile/headers and direct ZIP entries.
-            actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
-            if zip_idx:
-                actual_url += f"&zip_idx={quote(zip_idx, safe='')}"
+            actual_url = await resolve_direct_link(link, user_id)
 
+        # Grabs the exact cover frame directly from the media container
         cmd = [
             "ffmpeg", "-hide_banner", "-loglevel", "error",
-            "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
             "-i", actual_url,
-            "-map", "0:v:0?",
-            "-frames:v", "1",
-            "-c:v", "mjpeg",
-            "-f", "image2",
-            "pipe:1",
+            "-map", "0:v:0",
+            "-vframes", "1", "-c:v", "mjpeg", "-f", "image2", "pipe:1"
         ]
-        proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        stdout, _ = await proc.communicate()
-        if proc.returncode == 0 and stdout:
-            return web.Response(body=stdout, content_type="image/jpeg", headers={
-                "Cache-Control": "public, max-age=86400",
-                "Access-Control-Allow-Origin": "*",
-            })
-        return web.Response(status=404, text="No embedded artwork found")
-    except asyncio.CancelledError:
-        raise
-    except Exception as e:
-        logger.debug(f"Cover extraction failed: {e}")
-        return web.Response(status=404, text="No cover found")
 
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
+        stdout, stderr = await proc.communicate()
+        
+        if proc.returncode == 0 and stdout:
+            return web.Response(body=stdout, content_type="image/jpeg", headers={"Cache-Control": "public, max-age=86400"})
+        else:
+            return web.Response(status=404, text="No cover found")
+    except Exception as e:
+        return web.Response(status=500, text=str(e))
 
 async def _api_stream_handler(request):
     """Adaptive stream pipeline: native redirect first, minimal FFmpeg fallback."""
@@ -12790,7 +12512,6 @@ async def _api_stream_handler(request):
     audio_idx = request.query.get("audio_idx", None)
     audio_codec = request.query.get("audio_codec", "").lower().strip()
     start_time = request.query.get("start", None)
-    zip_idx = request.query.get("zip_idx", "").strip()
     force_transcode = request.query.get("transcode", "") in ("1", "true")
     force_x264 = request.query.get("force_x264", "") == "1" # 🟢 NEW FLAG
     if not link:
@@ -12824,8 +12545,6 @@ async def _api_stream_handler(request):
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
             if msg_range:
                 actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
-            if zip_idx:
-                actual_url += f"&zip_idx={quote(zip_idx, safe='')}"
             is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac")) or "audio" in mime_type
         else:
             actual_url = await resolve_direct_link(link, user_id)
@@ -12849,30 +12568,21 @@ async def _api_stream_handler(request):
             # FFmpeg's native HTTP client gets stuck when seeking direct links. Route through Python proxy!
             from urllib.parse import quote
             actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
-            if zip_idx:
-                actual_url += f"&zip_idx={quote(zip_idx, safe='')}"
             logger.debug(f"🎬 [TRANSCODE] Using Local Proxy for FFmpeg: {actual_url[:100]}...")
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
-    # 🟢 DYNAMIC CODEC RETRIEVAL: use metadata specific to this ZIP member when applicable.
-    cache_key = _media_cache_key(user_id, link) + f":tags_False:zip_{zip_idx}"
-    cached_meta = MEDIA_META_CACHE.get(cache_key)
-
-    # Native is allowed only when the server has positively confirmed browser
-    # compatibility. Unsupported/unprobed direct media stays on the FFmpeg path.
+    # Always keep the browser on the byte-range path for the original/default
+    # stream. FFmpeg is reserved for explicit track/quality selection or codecs
+    # which the browser cannot decode directly.
     if quality == "Original" and (audio_idx is None or str(audio_idx).strip() == "") and not force_transcode:
-        cached_compatible = bool(cached_meta and cached_meta[0].get("browser_compatible"))
-        if cached_compatible:
-            if is_tg:
-                raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
-            raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
-        if cached_meta is None:
-            # 🟢 Preserve fast native transport for ALL links (Telegram & Direct, ZIP & Normal) when no probe metadata exists yet.
-            if is_tg:
-                raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
-            raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
-        force_transcode = True
+        if is_tg:
+            raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}")
+        raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}")
+
+    # 🟢 DYNAMIC CODEC RETRIEVAL: Pull cached metadata to ensure we don't blind-copy incompatible streams
+    cache_key = _media_cache_key(user_id, link)
+    cached_meta = MEDIA_META_CACHE.get(cache_key)
     video_codec = ""
     if cached_meta:
         meta = cached_meta[0]
@@ -12884,33 +12594,17 @@ async def _api_stream_handler(request):
         if meta.get("file_name") and meta.get("file_name").lower() not in ("unknown_media", "direct_stream_media", "download", "file", "media"):
             filename = meta.get("file_name").lower()
 
-        # CDN URLs are often extensionless. Let the probe decide whether this is
-        # a standalone audio asset or a video asset before selecting the FFmpeg muxer.
-        meta_streams = meta.get("streams") or []
-        meta_audio_streams = [st for st in meta_streams if st.get("codec_type") == "audio"]
-        meta_video_streams = [
-            st for st in meta_streams
-            if st.get("codec_type") == "video"
-            and st.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}
-        ]
-        if meta_audio_streams and not meta_video_streams:
-            is_audio = True
-        elif meta_video_streams:
-            is_audio = False
-        if meta.get("mime_type"):
-            mime_type = str(meta.get("mime_type"))
-
     # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
     unsupported_web_codecs = {"hevc", "h265", "hvc1", "x265"}
     needs_video_transcode = video_codec in unsupported_web_codecs or force_x264 or quality != "Original"
 
-    bad_audio = {"dts", "truehd", "ac3", "eac3", "alac", "wavpack", "dsd_lsbf_planar", "dsd_msbf_planar", "ape"}
-    # 🟢 FIX: If video is transcoding OR audio is unsupported, force audio transcode!
+    bad_audio = {"dts", "truehd", "ac3", "eac3"}
+    # 🟢 FIX: If we are transcoding the video for web compatibility, we MUST also force the audio to transcode!
+    # Browsers instantly crash or loop endlessly when fed 5.1/6-channel audio inside a fragmented MP4!
     if audio_codec in bad_audio or needs_video_transcode:
         copy_audio = False
     else:
-        # 🟢 FIX: Only allow native copying of strictly web-safe codecs
-        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'vorbis', 'ogg'} and (audio_idx is None and not force_transcode)
+        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'flac'} or (audio_idx is None and not force_transcode)
         
     if video_codec in unsupported_web_codecs:
         copy_video = False
@@ -12928,7 +12622,7 @@ async def _api_stream_handler(request):
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
         "-seekable", "1", 
         "-probesize", "5M", "-analyzeduration", "5M", 
-        "-fflags", "+nobuffer+flush_packets+genpts"
+        "-fflags", "+nobuffer+flush_packets+genpts" # 🟢 FIX: +genpts ensures synced timestamps, removed deprecated -async 1
     ]
 
     if start_time is not None:
@@ -12948,21 +12642,24 @@ async def _api_stream_handler(request):
             cmd += ["-map", "0:a:0?"]
         cmd += ["-vn", "-sn"]
         
+        # 🟢 FIX: Never use MP4 container for audio-only streams. Browsers wait for video frames and hang.
+        # Also, explicitly map compatible codecs to their native containers to prevent FFmpeg crashes.
         if copy_audio and audio_codec == "mp3":
             cmd += ["-c:a", "copy", "-f", "mp3", "pipe:1"]
             mime_type = "audio/mpeg"
         elif copy_audio and audio_codec in {"opus", "vorbis", "ogg"}:
             cmd += ["-c:a", "copy", "-f", "ogg", "pipe:1"]
             mime_type = "audio/ogg"
+        elif copy_audio and audio_codec == "flac":
+            cmd += ["-c:a", "copy", "-f", "flac", "pipe:1"]
+            mime_type = "audio/flac"
         elif copy_audio and audio_codec == "aac":
-            # 🟢 FIX: Wrap native AAC inside Fragmented MP4 for perfect seeking
-            cmd += ["-c:a", "copy", "-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
-            mime_type = "audio/mp4"
+            cmd += ["-c:a", "copy", "-f", "adts", "pipe:1"]
+            mime_type = "audio/aac"
         else:
-            # 🟢 ULTIMATE FALLBACK: Flawlessly Transcode ALL unsupported formats (FLAC, WAV, DSF, DTS, APE) 
-            # to AAC inside a Fragmented MP4 (fMP4) container. 
-            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
-            mime_type = "audio/mp4"
+            # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
+            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-f", "adts", "pipe:1"]
+            mime_type = "audio/aac"
     else:
         cmd += ["-map", "0:v:0?"]
         if audio_idx is not None and str(audio_idx).strip():
@@ -13511,54 +13208,35 @@ async def _api_subtitles_handler(request):
         else:
             actual_url = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
 
-    # 🟢 DEDICATED AUDIO LYRIC PATH. Never mix lyrics into the video-subtitle path.
+    # 🟢 FIX: Extract Embedded Metadata Lyrics directly!
     if sub_idx == "metadata_lyrics":
         cmd = [
             "ffprobe", "-v", "error",
-            "-show_entries",
-            "format_tags:stream_tags", # 🟢 FIX: Dump ALL tags to catch unusual lyrics keys
-            "-of", "json",
-            actual_url,
+            "-show_entries", "format_tags=lyrics,LYRICS,Lyrics,UNSYNCEDLYRICS,SYLT",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            actual_url
         ]
+            
         try:
-            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
             stdout, _ = await proc.communicate()
-            if proc.returncode != 0:
-                return web.Response(status=404, text="No lyrics found")
-            data = json.loads(stdout.decode("utf-8", errors="ignore") or "{}")
-            pieces = []
+            # 🟢 FIX: Decode and unescape literal FFprobe string newlines
+            raw_text = stdout.decode('utf-8', errors='ignore')
+            raw_text = raw_text.replace('\\r\\n', '\n').replace('\\n', '\n')
+            body = raw_text.encode('utf-8')
             
-            tag_sources = [(data.get("format") or {}).get("tags") or {}]
-            for stream in data.get("streams") or []:
-                if stream.get("codec_type") == "audio":
-                    tag_sources.append(stream.get("tags") or {})
-            
-            # 🟢 FIX: Dynamically search for the word 'lyric' or specific keys
-            for tags in tag_sources:
-                for key, value in tags.items():
-                    key_lower = str(key).lower()
-                    if "lyric" in key_lower or key_lower in {"sylt", "uslt", "©lyr", "text"}:
-                        if isinstance(value, list):
-                            value = "\n".join(str(x) for x in value)
-                        text_value = str(value).replace("\\r\\n", "\n").replace("\\n", "\n").strip()
-                        if text_value and text_value not in pieces:
-                            pieces.append(text_value)
-                            
-            raw_text = "\n\n".join(pieces).strip()
-            if not raw_text:
+            if not body.strip():
                 return web.Response(status=404, text="No lyrics found")
                 
-            body = raw_text.encode("utf-8")
             SUBTITLE_CACHE[cache_key] = (bytes(body), time.time() + SUBTITLE_CACHE_TTL)
             return web.Response(body=body, status=200, headers={
-                "Content-Type": "text/plain; charset=utf-8",
+                "Content-Type": "text/vtt; charset=utf-8",
                 "Content-Length": str(len(body)),
                 "Access-Control-Allow-Origin": "*",
                 "Cache-Control": "public, max-age=3600",
             })
         except Exception as exc:
-            logger.debug(f"Lyrics extraction failed: {exc}")
-            return web.Response(status=404, text="No lyrics found")
+            return web.Response(status=502, text=str(exc))
 
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
@@ -13616,7 +13294,6 @@ import mimetypes
 import math
 import re
 import asyncio
-import zlib
 
 def _u16(b, o): return int.from_bytes(b[o:o + 2], "little")
 def _u32(b, o): return int.from_bytes(b[o:o + 4], "little")
@@ -13685,68 +13362,21 @@ async def get_zip_playlist(read_fn, zip_size):
         valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm", ".avi", ".ts", ".m4v")
         playlist = []
         for idx, e in enumerate(entries):
-            # Media files are useful to the player whether the ZIP entry is
-            # STORED (0) or DEFLATED (8). Other methods are not safely streamable.
-            if e["name"].lower().endswith(valid_exts) and e["method"] in (0, 8):
+            if e["name"].lower().endswith(valid_exts) and e["method"] == 0:
                 e["original_index"] = idx
                 e["display_name"] = e["name"].split("/")[-1].split("\\")[-1]
                 playlist.append(e)
         return playlist
-    except Exception:
-        return []
+    except Exception: return []
 
 async def resolve_specific_zip_entry(read_fn, entry):
     try:
-        lh_buf = await read_fn(entry["local_offset"], 4096)
+        lh_buf = await read_fn(entry["local_offset"], min(4096, entry["size"] + 4096))
         lh = parse_local_header(lh_buf)
         if not lh: return None
         data_offset = entry["local_offset"] + lh["data_offset"]
-        return {
-            "method": int(entry.get("method", lh.get("method", 0))),
-            "name": entry["name"],
-            "data_offset": data_offset,
-            "size": int(entry["size"]),
-            "comp_size": int(entry["comp_size"]),
-        }
-    except Exception:
-        return None
-
-async def _iter_deflated_zip_entry(read_fn, entry, start, end, read_chunk=1024*1024):
-    """Sequentially decompress a ZIP method-8 entry while emitting only one HTTP range."""
-    start = max(0, int(start))
-    end = max(start, int(end))
-    produced = 0
-    comp_pos = 0
-    dec = zlib.decompressobj(-15)
-    while comp_pos < entry["comp_size"]:
-        take = min(read_chunk, entry["comp_size"] - comp_pos)
-        raw = await read_fn(entry["data_offset"] + comp_pos, take)
-        if not raw:
-            break
-        comp_pos += len(raw)
-        decoded = dec.decompress(raw)
-        if decoded:
-            d0 = produced
-            d1 = produced + len(decoded)
-            if d1 > start and d0 <= end:
-                left = max(0, start - d0)
-                right = min(len(decoded), end - d0 + 1)
-                if right > left:
-                    yield decoded[left:right]
-            produced = d1
-            if produced > end:
-                return
-        if len(raw) < take:
-            break
-    decoded = dec.flush()
-    if decoded:
-        d0 = produced
-        d1 = produced + len(decoded)
-        if d1 > start and d0 <= end:
-            left = max(0, start - d0)
-            right = min(len(decoded), end - d0 + 1)
-            if right > left:
-                yield decoded[left:right]
+        return {"method": 0, "name": entry["name"], "data_offset": data_offset, "size": entry["size"], "comp_size": entry["comp_size"]}
+    except Exception: return None
 
 CLIENT_MSG_CACHE = {}
 
@@ -15537,9 +15167,11 @@ async def watcher_worker_loop(wid_str):
 
 async def process_watcher_message(client, message):
     chat_id = message.chat.id
-    topic_id = _watcher_topic_id(message)
-    if not WATCHER_SOURCE_INDEX or ((int(chat_id), topic_id) not in WATCHER_SOURCE_INDEX and (int(chat_id), None) not in WATCHER_SOURCE_INDEX):
-        return
+    topic_id = getattr(message, "message_thread_id", None)
+    if topic_id is None:
+        topic_id = getattr(message, "reply_to_top_message_id", None)
+    if topic_id is None:
+        topic_id = getattr(message, "reply_to_message_id", None)
 
     cursor = await db.get_watchers_for_source(chat_id, topic_id)
     watchers = await cursor.to_list(length=100)
@@ -15601,8 +15233,8 @@ async def main():
     asyncio.create_task(cleanup_watchdog())
     logger.info("🛡️ Auto-Cleanup Watchdog Started") 
 
-    # Attach the listener to the main bot so public watcher sources still work without a User Session.
-    app.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+    # Attach the listener to the main bot so it functions without a User Session!
+    app.add_handler(MessageHandler(user_watcher_handler, filters.all))
 
     await app.start()
     logger.info("🤖 Bot Started") 
@@ -15655,11 +15287,9 @@ async def main():
     logger.info("🔄 Loading Sessions for Active Watchers...")
     
     active_watcher_users = set()
-    WATCHER_SOURCE_INDEX.clear()
     cursor = await db.get_all_watchers()
     async for w in cursor:
         active_watcher_users.add(w['user_id'])
-        _watcher_index_add(w.get('source_id'), w.get('source_thread'))
 
     for user_id in active_watcher_users:
         user_session = await db.get_session(user_id)
@@ -15684,7 +15314,7 @@ async def main():
                 no_updates=False 
             )
             
-            user_client.add_handler(MessageHandler(user_watcher_handler, watcher_update_filter))
+            user_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
             
             await user_client.start()
             USER_CLIENTS[user_id] = user_client
