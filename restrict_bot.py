@@ -204,10 +204,32 @@ ADMINS = [int(x) for x in str(os.environ.get("ADMINS", "")).split(",") if x.stri
 SUDOS = [int(x) for x in str(os.environ.get("SUDOS", "")).split(",") if x.strip().isdigit()]
 
 # --------------------------------------------------------------------------
-# --- APPLICATION STATE ---
+# --- APPLICATION STATE & HARDWARE AUTO-TUNER ---
 # --------------------------------------------------------------------------
+# 🟢 FIX: Dynamically scan server hardware to set safe RAM/CPU limits!
+_total_ram_gb = psutil.virtual_memory().total / (1024**3)
+_cpu_cores = os.cpu_count() or 2
+
+if _total_ram_gb <= 0.8:
+    DYNAMIC_CHUNK_SIZE = 1 * 1024 * 1024      # 1MB chunks for Micro VPS (<1GB RAM)
+    DYNAMIC_GLOBAL_UPLOADS = 5                # Max 5 active TCP connections
+    DYNAMIC_USER_UPLOADS = 2
+    DYNAMIC_CONCURRENCY = 2                   # Max 2 bots per stream
+elif _total_ram_gb <= 2.5:
+    DYNAMIC_CHUNK_SIZE = 3 * 1024 * 1024      # 3MB chunks for Medium (1-2GB RAM)
+    DYNAMIC_GLOBAL_UPLOADS = 15
+    DYNAMIC_USER_UPLOADS = 3
+    DYNAMIC_CONCURRENCY = 4                   # Max 4 bots per stream
+else:
+    DYNAMIC_CHUNK_SIZE = 5 * 1024 * 1024      # 5MB chunks for High-End (>3GB RAM)
+    DYNAMIC_GLOBAL_UPLOADS = 35
+    DYNAMIC_USER_UPLOADS = 5
+    DYNAMIC_CONCURRENCY = 8                   # Max 8 bots per stream
+
+logger.info(f"⚙️ Auto-Tuner: {_total_ram_gb:.1f}GB RAM | {_cpu_cores} CPUs ➔ Chunks: {DYNAMIC_CHUNK_SIZE//1024//1024}MB | Max Streams: {DYNAMIC_GLOBAL_UPLOADS}")
+
 TASK_QUEUE = defaultdict(list) 
-io_executor = ThreadPoolExecutor(max_workers=min(16, (os.cpu_count() or 2) * 4))
+io_executor = ThreadPoolExecutor(max_workers=min(32, _cpu_cores * 4))
 
 HELP_TXT = """<b>📚 ULTIMATE BOT USAGE GUIDE</b>
 
@@ -590,7 +612,8 @@ def get_transmission_kwargs(workers: int = 8, is_bot: bool = False) -> dict:
 
     return {"max_concurrent_transmissions": val}
 
-bot_workers = min(32, (os.cpu_count() or 2) * 8)
+# 🟢 FIX: Scale Pyrogram workers down drastically if server lacks RAM
+bot_workers = min(32, (_cpu_cores * 4) if _total_ram_gb < 1.0 else (_cpu_cores * 8))
 
 app = Client(
     name="RestrictedBot",
@@ -671,10 +694,11 @@ WATCHER_MEDIA_GROUPS = {}              # ALBUM WATCHER TRACKER
 WATCHER_DEDUPE_CACHE = defaultdict(OrderedDict)  # bounded per-watcher event dedupe
 WATCHER_DEDUPE_LIMIT = 2000
 
-SERVER_UPLOAD_LIMIT = asyncio.Semaphore(int(os.environ.get("SERVER_UPLOAD_LIMIT", 30))) 
-USER_SEMAPHORE_LIMIT = 3 
+# 🟢 FIX: Apply the dynamic RAM-based limits to prevent server nukes
+SERVER_UPLOAD_LIMIT = asyncio.Semaphore(int(os.environ.get("SERVER_UPLOAD_LIMIT", DYNAMIC_GLOBAL_UPLOADS))) 
+USER_SEMAPHORE_LIMIT = DYNAMIC_USER_UPLOADS 
 USER_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(USER_SEMAPHORE_LIMIT))
-USER_DOWNLOAD_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(3))
+USER_DOWNLOAD_SEMAPHORES = defaultdict(lambda: asyncio.Semaphore(DYNAMIC_USER_UPLOADS))
 
 from collections import defaultdict
 
@@ -13463,14 +13487,16 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
     if not working_pool:
         working_pool = [app]
     
-    # 🟢 Determine safe concurrency
+    # 🟢 Determine safe concurrency dynamically based on hardware!
     safe_concurrency = len(working_pool)
     if concurrency is not None:
         safe_concurrency = min(concurrency, safe_concurrency)
+    # Bound it by our RAM limit to prevent Out-Of-Memory kills
+    safe_concurrency = min(safe_concurrency, DYNAMIC_CONCURRENCY)
     safe_concurrency = max(1, safe_concurrency)
 
-    # 🟢 Fixed chunk size to 3MB. Perfect balance for speed and memory.
-    actual_chunk_size = 3 * 1024 * 1024
+    # 🟢 FIX: Use dynamic chunk size based on server RAM!
+    actual_chunk_size = DYNAMIC_CHUNK_SIZE
 
     range_start = int(start_byte)
     range_end = range_start + int(total_length)
