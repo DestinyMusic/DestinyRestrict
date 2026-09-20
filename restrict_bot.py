@@ -9782,6 +9782,40 @@ HTML_DASHBOARD = """
             }
         }
 
+        // 🟢 FIX: The missing Live Clock calculation function!
+        function updateLiveCountryTime(tzStr) {
+            const timeEl = document.getElementById('c-time');
+            if (!timeEl) return;
+            
+            try {
+                // tzStr is usually like "UTC+05:30" or "UTC-04:00"
+                let offsetMs = 0;
+                if (tzStr && tzStr !== "UTC") {
+                    const match = tzStr.match(/UTC([+-])(\\d{2}):?(\\d{2})?/);
+                    if (match) {
+                        const sign = match[1] === '+' ? 1 : -1;
+                        const hours = parseInt(match[2], 10);
+                        const mins = parseInt(match[3] || '0', 10);
+                        offsetMs = sign * ((hours * 60 * 60) + (mins * 60)) * 1000;
+                    }
+                }
+                
+                // Calculate current time at that offset
+                const now = new Date();
+                const utcTime = now.getTime() + (now.getTimezoneOffset() * 60000);
+                const countryTime = new Date(utcTime + offsetMs);
+                
+                // Format HH:MM:SS
+                const hh = String(countryTime.getHours()).padStart(2, '0');
+                const mm = String(countryTime.getMinutes()).padStart(2, '0');
+                const ss = String(countryTime.getSeconds()).padStart(2, '0');
+                
+                timeEl.innerText = `${hh}:${mm}:${ss}`;
+            } catch (e) {
+                timeEl.innerText = "--:--:--";
+            }
+        }
+        
         async function fetchCountryAnalytics(isoCode, countryName) {
             document.getElementById('country-data-panel').style.display = 'block';
             document.getElementById('c-name').innerText = "Scanning Data...";
@@ -9841,7 +9875,6 @@ HTML_DASHBOARD = """
 
             } catch (err) {
                 console.error("Proxy API failed:", err);
-                // 🟢 FIX: Graceful fallback instead of ugly errors, and DO NOT stop the Wikipedia fetch!
                 document.getElementById('c-name').innerText = countryName;
                 document.getElementById('c-cap').innerText = "Unavailable";
                 document.getElementById('c-pop').innerText = "Unavailable";
@@ -9849,7 +9882,8 @@ HTML_DASHBOARD = """
                 document.getElementById('c-curr').innerText = "Unavailable";
                 document.getElementById('c-lang').innerText = "Unavailable";
                 document.getElementById('c-time').innerText = "--:--:--";
-                document.getElementById('c-flag').src = "https://cdn-icons-png.flaticon.com/512/323/323315.png"; // Generic globe icon
+                // 🟢 FIX: Actually uses a Blue Earth/Globe icon now instead of the French Flag!
+                document.getElementById('c-flag').src = "https://cdn-icons-png.flaticon.com/512/44/44386.png"; 
             }
 
             // 🟢 BLOCK 2: Fetch Wikipedia via Backend Proxy
@@ -13664,22 +13698,19 @@ async def _api_proxy_country(request):
     from urllib.parse import quote
 
     async def fetch_api(url):
-        # 🟢 FIX: Added proper try/except and a strict 4-second timeout to prevent hanging!
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
-            timeout = aiohttp.ClientTimeout(total=4)
-            async with aiohttp.ClientSession(timeout=timeout) as session:
+            # 🟢 FIX: Increased timeout to 10s and disabled strict SSL to prevent Koyeb blocks
+            timeout = aiohttp.ClientTimeout(total=10)
+            connector = aiohttp.TCPConnector(ssl=False)
+            async with aiohttp.ClientSession(timeout=timeout, connector=connector) as session:
                 async with session.get(url, headers=headers) as resp:
                     if resp.status == 200:
-                        try:
-                            data = await resp.json()
-                            # Ensure we actually got data, not an empty list [] or error dict
-                            if isinstance(data, list) and len(data) > 0: return data
-                            if isinstance(data, dict) and "flags" in data: return data
-                        except Exception:
-                            pass
+                        data = await resp.json()
+                        if isinstance(data, list) and len(data) > 0: return data
+                        if isinstance(data, dict): return [data] # Always format as list
         except Exception as e:
-            print(f"[Globe API] Backend failed, switching to fallback... ({e})")
+            print(f"[Globe API] Backend failed: {e}")
         return None
 
     try:
@@ -13696,31 +13727,32 @@ async def _api_proxy_country(request):
         if not data and name:
             data = await fetch_api(f"https://restcountries.com/v3.1/name/{quote(name)}")
 
-        # 🟢 FIX: Attempt 4 - Fallback API (Often works when V3 is rate-limited)
+        # Attempt 4: Fallback to V2 API if V3 is rate-limited
         if not data and iso and iso != "-99":
             data = await fetch_api(f"https://restcountries.com/v2/alpha/{iso}")
 
-        # 🟢 FIX: If ALL APIs fail, return a mock success response so the UI stays beautiful and doesn't crash!
         if data:
             return web.json_response(data)
         else:
+            # 🟢 FIX: Return real Earth icon if API fails
             mock_data = {
                 "name": {"common": name or "Unknown Country"},
                 "capital": ["Unavailable"],
                 "region": "Unavailable",
                 "population": "Unavailable",
-                "flags": {"png": "https://cdn-icons-png.flaticon.com/512/323/323315.png"} # Generic globe icon
+                "timezones": ["UTC"],
+                "flags": {"png": "https://cdn-icons-png.flaticon.com/512/44/44386.png"} 
             }
             return web.json_response([mock_data])
             
     except Exception as e:
-        # Failsafe mock response
         mock_data = {
             "name": {"common": name or "Unknown Country"},
             "capital": ["Unavailable"],
             "region": "Unavailable",
             "population": "Unavailable",
-            "flags": {"png": "https://cdn-icons-png.flaticon.com/512/323/323315.png"}
+            "timezones": ["UTC"],
+            "flags": {"png": "https://cdn-icons-png.flaticon.com/512/44/44386.png"}
         }
         return web.json_response([mock_data])
 
