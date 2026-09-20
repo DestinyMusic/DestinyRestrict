@@ -9097,9 +9097,16 @@ HTML_DASHBOARD = """
 
                 playerDirectCompatible = Boolean(pdata.browser_compatible);
                 playerTotalDuration = Number(pdata.duration) || 0;
+                window.globalPlaylist = plistData.playlist || [];
+                
+                // 🟢 FIX: Ignore FFprobe's bad 19s guess on huge split MKVs so the browser scans the real duration!
+                if (playerTotalDuration > 0 && playerTotalDuration < 300 && window.globalPlaylist.length <= 1) {
+                    if (pdata.video_width > 0 && (!pdata.file_name || !pdata.file_name.toLowerCase().endsWith('.gif'))) { 
+                        playerTotalDuration = 0; 
+                    }
+                }
                 
                 // 🟢 PLAYLIST INITIALIZATION & GLOBAL TIMELINE MATH
-                window.globalPlaylist = plistData.playlist || [];
                 window.currentPlayIndex = 0;
                 
                 if (window.globalPlaylist.length > 0 && playerTotalDuration > 0) {
@@ -11767,8 +11774,8 @@ async def _api_direct_stream_handler(request):
     resolved = await resolve_direct_link(url)
     filename = _guess_filename_from_url(resolved, "direct_media").lower()
     
-    # 🟢 FIX: Recognize .7z, .rar, and split .001 archives correctly!
-    is_zip = filename.endswith((".zip", ".7z", ".rar", ".tar", ".gz")) or re.search(r'\.(zip|7z|rar)\.\d{3}$', filename)
+    # 🟢 FIX: Trigger your virtual concatenator perfectly for .zip AND .zip.001
+    is_zip = bool(re.search(r'\.zip(\.\d{3})?$', filename))
     
     session = await _get_direct_http_session()
     virtual_size = -1
@@ -12231,35 +12238,17 @@ async def _api_media_probe_handler(request):
                     mime_type = cached_headers.get("content_type") or mime_type
                     cd = cached_headers.get("content_disposition", "")
                     if cd:
-                        m = re.search(r"filename\*=UTF-8''([^;]+)", cd, re.I) 
+                        m = re.search(r"filename\*=UTF-8''([^;]+)", cd, re.I) # 🟢 FIX: Better Regex for RFC 5987
                         if m:
                             real_file_name = unquote(m.group(1).strip().strip('"'))
                         else:
-                            m = re.search(r'filename=["\']?([^"\';]+)', cd, re.I) 
+                            m = re.search(r'filename=["\']?([^"\';]+)', cd, re.I) # 🟢 FIX: Catches all standard filename headers
                             if m:
                                 real_file_name = unquote(m.group(1).strip())
 
-            # 🟢 FIX: Instantly reject Archives and Split files from FFprobe!
-            filename_lower = str(real_file_name).lower()
-            if filename_lower.endswith((".7z", ".rar", ".tar", ".gz", ".iso", ".bin")) or re.search(r'\.(00\d|part\d+|z\d+)$', filename_lower):
-                return web.json_response({
-                    "status": "error", 
-                    "message": f"This is an archive file ({Path(real_file_name).suffix}). You cannot play it in the Media Theater. Please use the 'Downloads' tab or /dl command."
-                })
-                
-            # 🟢 FIX: Bypass raw ZIP files to prevent FFprobe from hanging, allowing the ZIP Playlist extractor to take over!
-            if filename_lower.endswith(".zip"):
-                result = {
-                    "status": "success", "file_name": real_file_name, "mime_type": "application/zip",
-                    "requires_transcode": False, "format_tags": {}, "browser_compatible": True,
-                    "has_cover": False, "video_codec": "", "audio_codec": "", "video_width": 0, "video_height": 0,
-                    "duration": 0, "qualities": ["Original"], "audio_tracks": [], "subtitles": [],
-                    "resolved_url": actual_url if not is_tg else "", "streams": [],
-                }
-                return web.json_response(result)
-
             probe_input = actual_url
             if not is_tg:
+                # 🟢 Restoring Loopback for Direct Links to prevent strict 5XX server blocks
                 probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
                 logger.debug(f"🔎 [PROBE] Feeding Loopback Proxy to FFprobe: {probe_input[:100]}...")
 
@@ -12319,11 +12308,13 @@ async def _api_media_probe_handler(request):
                             try: os.remove(p)
                             except Exception: pass
 
-            # 🟢 FIX: Prevent FFprobe from outputting junk metadata for generic Archives
+            # 🟢 FIX: Strictly block solid archives (7z, rar) but PERFECTLY ALLOW .zip and media splits (.mkv.001)!
             filename_lower = str(real_file_name).lower()
-            if filename_lower.endswith((".zip", ".7z", ".rar", ".tar", ".gz")) or re.search(r'\.(zip|7z|rar)\.\d{3}$', filename_lower):
-                streams = []  # Force streams empty so it triggers the archive/download fallback
-                duration_val = 0.0
+            if re.search(r'\.(7z|rar|tar|gz|iso|bin)(\.\d{3})?$', filename_lower) or re.search(r'\.(part\d+|z\d+|r\d\d)$', filename_lower):
+                return web.json_response({
+                    "status": "error", 
+                    "message": f"Solid archives ({Path(real_file_name).suffix}) cannot be streamed in the Media Theater. Please use the 'Downloads' tab."
+                })
 
             # 🟢 Extract duration from stream DURATION tags if still not detected
             if duration_val <= 0:
@@ -12538,9 +12529,9 @@ async def _api_stream_handler(request):
             lower = actual_url.lower().split('?', 1)[0]
             is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac|wma|opus|dsf|ape|mka|alac)$", lower))
             
-            # 🟢 FIX: Hard block to prevent FFmpeg from crashing on Archive files!
-            if filename.endswith((".7z", ".rar", ".tar", ".gz", ".iso", ".bin")) or re.search(r'\.(00\d|part\d+|z\d+)$', filename):
-                return web.Response(status=400, text="Cannot stream compressed split archives.")
+            # 🟢 FIX: Hard block to prevent FFmpeg from crashing on solid Archive files!
+            if re.search(r'\.(7z|rar|tar|gz|iso|bin)(\.\d{3})?$', filename.lower()) or re.search(r'\.(part\d+|z\d+|r\d\d)$', filename.lower()):
+                return web.Response(status=400, text="Cannot stream compressed solid archives.")
                 
             mime_type = "audio/mpeg" if filename.endswith('.mp3') else (
                 "audio/mp4" if filename.endswith(('.m4a','.aac')) else (
@@ -13028,8 +13019,8 @@ async def _api_tg_stream_handler(request):
         virtual_data_offset = 0
         zip_idx = request.query.get("zip_idx", "")
         
-        # 🟢 FIX: Recognize .7z, .rar, and split .001 archives correctly!
-        is_zip = filename.endswith((".zip", ".7z", ".rar", ".tar", ".gz")) or re.search(r'\.(zip|7z|rar)\.\d{3}$', filename)
+        # 🟢 FIX: Trigger your virtual concatenator perfectly for .zip AND .zip.001
+        is_zip = bool(re.search(r'\.zip(\.\d{3})?$', filename.lower()))
         if is_zip:
             async def zip_read(off, length):
                 buf = bytearray()
@@ -13665,8 +13656,8 @@ async def _api_playlist_handler(request):
             media = msg.document or msg.video or msg.audio
             filename = str(getattr(media, "file_name", "")).lower()
             
-            # 🟢 FIX: Support all major archive extensions
-            is_zip = filename.endswith((".zip", ".7z", ".rar", ".tar", ".gz")) or re.search(r'\.(zip|7z|rar)\.\d{3}$', filename)
+            # 🟢 FIX: Support all major archive extensions for the playlist extractor (.zip.001, .7z.001, etc)
+            is_zip = bool(re.search(r'\.(zip|7z|rar|tar|gz)(\.\d{3})?$', filename))
             if not is_zip: return web.json_response({"status": "success", "playlist": []})
             
             parts_map = []
@@ -15432,4 +15423,3 @@ if __name__ == "__main__":
         loop.run_until_complete(main())
     except (KeyboardInterrupt, SystemExit):
         pass
-        
