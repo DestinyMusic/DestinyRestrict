@@ -694,6 +694,15 @@ WATCHER_MEDIA_GROUPS = {}              # ALBUM WATCHER TRACKER
 WATCHER_DEDUPE_CACHE = defaultdict(OrderedDict)  # bounded per-watcher event dedupe
 WATCHER_DEDUPE_LIMIT = 2000
 
+# 👇 NEW: Instant Memory Cache & Firewall Filter
+GLOBAL_WATCHER_SOURCES = set() 
+
+async def check_if_watched(_, __, message):
+    return bool(message.chat and message.chat.id in GLOBAL_WATCHER_SOURCES)
+
+is_watched_chat = filters.create(check_if_watched)
+# 👆 END NEW
+
 # 🟢 FIX: Apply the dynamic RAM-based limits to prevent server nukes
 SERVER_UPLOAD_LIMIT = asyncio.Semaphore(int(os.environ.get("SERVER_UPLOAD_LIMIT", DYNAMIC_GLOBAL_UPLOADS))) 
 USER_SEMAPHORE_LIMIT = DYNAMIC_USER_UPLOADS 
@@ -2917,7 +2926,7 @@ async def chats_cmd(client: Client, message: Message):
             api_id = await db.get_api_id(user_id) or API_ID
             api_hash = await db.get_api_hash(user_id) or API_HASH
             uclient = Client(f"User_{user_id}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=4, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            uclient.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
             await uclient.start()
             USER_CLIENTS[user_id] = uclient
             await status.edit("🔄 <b>Session Active! Fetching your dialogs...</b>", parse_mode=enums.ParseMode.HTML)
@@ -3445,7 +3454,7 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
                 workers=100, # 🟢 FIX: Prevent queue overload
                 ipv6=False
             )
-            new_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            new_client.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
             await new_client.start()
             USER_CLIENTS[user_id] = new_client
             await status_msg.delete()
@@ -3522,6 +3531,8 @@ async def finalize_watcher_setup(client, message, data, delay, user_id=None):
         dashboard_msg=message.id,
         last_msg_id=last_msg_id   # 🟢 PASS THE ID HERE
     )
+    
+    GLOBAL_WATCHER_SOURCES.add(source_id) # 🟢 UPDATE CACHE
 
     initial_text = (
         f"📡 **Live Watcher Started!**\n\n"
@@ -10762,7 +10773,7 @@ async def _api_add_watcher(request):
                 u_api = await db.get_api_id(user_id) or API_ID
                 u_hash = await db.get_api_hash(user_id) or API_HASH
                 new_client = Client(f"User_{user_id}", session_string=user_session, api_id=u_api, api_hash=u_hash, workers=4, ipv6=False)
-                new_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
+                new_client.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
                 await new_client.start()
                 USER_CLIENTS[user_id] = new_client
 
@@ -10785,6 +10796,7 @@ async def _api_add_watcher(request):
             allowed_types=allowed_types,
             last_msg_id=last_msg_id
         )
+        GLOBAL_WATCHER_SOURCES.add(source_id) # 🟢 UPDATE CACHE
         return web.json_response({"status": "success"})
     except Exception as e:
         return web.json_response({"status": "error", "message": str(e)}, status=500)
@@ -10969,7 +10981,7 @@ async def _api_chats_handler(request):
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            uclient.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
         except Exception as e:
@@ -11247,7 +11259,7 @@ async def _api_topics_handler(request):
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            uclient.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
         except Exception as e:
@@ -11309,7 +11321,7 @@ async def _api_chat_details_handler(request):
             api_id = await db.get_api_id(uid) or API_ID
             api_hash = await db.get_api_hash(uid) or API_HASH
             uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
-            uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            uclient.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
             await uclient.start()
             USER_CLIENTS[uid] = uclient
         except Exception as e:
@@ -11409,7 +11421,7 @@ async def _api_mediainfo_web_handler(request):
                     api_id = await db.get_api_id(uid) or API_ID
                     api_hash = await db.get_api_hash(uid) or API_HASH
                     uclient = Client(f"User_{uid}", session_string=session_str, api_id=api_id, api_hash=api_hash, workers=100, ipv6=False)
-                    uclient.add_handler(MessageHandler(user_watcher_handler, filters.all))
+                    uclient.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
                     await uclient.start()
                     USER_CLIENTS[uid] = uclient
                 except Exception as e:
@@ -13464,13 +13476,22 @@ async def resolve_specific_zip_entry(read_fn, entry):
 CLIENT_MSG_CACHE = {}
 
 async def get_client_msg(client, chat_id, msg_id):
-    """Caches Telegram messages per-client. Propagates errors instead of permanently caching None."""
+    """Caches Telegram messages per-client. Auto-wipes dead sessions mid-fetch."""
     key = (id(client), chat_id, msg_id)
     if key not in CLIENT_MSG_CACHE:
-        msg = await client.get_messages(chat_id, msg_id)
-        if getattr(msg, "empty", True) or not (msg.document or msg.video or msg.audio):
-            raise ValueError(f"Empty Message for client {getattr(client, 'name', 'Unknown')}")
-        CLIENT_MSG_CACHE[key] = msg
+        try:
+            msg = await client.get_messages(chat_id, msg_id)
+            if getattr(msg, "empty", True) or not (msg.document or msg.video or msg.audio):
+                raise ValueError(f"Empty Message for client {getattr(client, 'name', 'Unknown')}")
+            CLIENT_MSG_CACHE[key] = msg
+        except (AuthKeyUnregistered, UserDeactivated, UserDeactivatedBan) as e:
+            if getattr(client, "name", "").startswith("User_"):
+                try:
+                    uid = int(client.name.split("_")[1])
+                    import asyncio
+                    asyncio.create_task(auto_wipe_dead_session(client, uid))
+                except Exception: pass
+            raise e
     return CLIENT_MSG_CACHE[key]
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
@@ -15253,6 +15274,11 @@ async def watcher_worker_loop(wid_str):
 
 async def process_watcher_message(client, message):
     chat_id = message.chat.id
+    
+    # 👇 NEW: INSTANT EVENT LOOP RELIEF
+    if chat_id not in GLOBAL_WATCHER_SOURCES:
+        return
+
     topic_id = getattr(message, "message_thread_id", None)
     if topic_id is None:
         topic_id = getattr(message, "reply_to_top_message_id", None)
@@ -15311,6 +15337,25 @@ async def cleanup_startup():
             logger.info(f"🧹 Startup: Cleared temporary downloads folder for {INSTANCE_ID}.")
     finally:
         folder.mkdir(parents=True, exist_ok=True)
+
+# 👇 NEW: AUTO-WIPE DEAD SESSION HELPER
+async def auto_wipe_dead_session(client, user_id):
+    logger.error(f"🚨 Session dead for user {user_id}. Auto-wiping from database...")
+    if client in USER_CLIENTS.values():
+        USER_CLIENTS.pop(user_id, None)
+    try: await client.stop()
+    except Exception: pass
+    
+    await db.set_session(user_id, None)
+    await db.set_api_id(user_id, None)
+    await db.set_api_hash(user_id, None)
+    
+    user_tasks = list(ACTIVE_PROCESSES.get(user_id, {}).keys())
+    for tid in user_tasks: CANCEL_FLAGS[tid] = True
+    batch_temp.IS_BATCH[user_id] = True
+    try: await db.db.active_tasks.delete_many({"user_id": user_id})
+    except Exception: pass
+# 👆 END NEW
     
 async def main():
     global USER_CLIENTS
@@ -15320,7 +15365,7 @@ async def main():
     logger.info("🛡️ Auto-Cleanup Watchdog Started") 
 
     # Attach the listener to the main bot so it functions without a User Session!
-    app.add_handler(MessageHandler(user_watcher_handler, filters.all))
+    app.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
 
     await app.start()
     logger.info("🤖 Bot Started") 
@@ -15376,6 +15421,7 @@ async def main():
     cursor = await db.get_all_watchers()
     async for w in cursor:
         active_watcher_users.add(w['user_id'])
+        GLOBAL_WATCHER_SOURCES.add(w['source_id']) # 🟢 POPULATE FAST CACHE
 
     for user_id in active_watcher_users:
         user_session = await db.get_session(user_id)
@@ -15395,17 +15441,20 @@ async def main():
                 session_string=user_session, 
                 api_id=u_api, 
                 api_hash=u_hash, 
-                workers=100, # 🟢 FIX: Prevent queue overload on startup
+                workers=100,
                 ipv6=False,
                 no_updates=False 
             )
             
-            user_client.add_handler(MessageHandler(user_watcher_handler, filters.all))
+            user_client.add_handler(MessageHandler(user_watcher_handler, is_watched_chat))
             
             await user_client.start()
             USER_CLIENTS[user_id] = user_client
             logger.info(f"✅ Active: {user_id}")
             
+        except (AuthKeyUnregistered, UserDeactivated, UserDeactivatedBan):
+            logger.warning(f"❌ Session {user_id} was revoked. Auto-deleting...")
+            await auto_wipe_dead_session(user_client, user_id)
         except Exception as e:
             logger.error(f"❌ Failed to load {user_id}: {e}")
 
