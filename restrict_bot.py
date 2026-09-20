@@ -12867,9 +12867,11 @@ async def _api_stream_handler(request):
             if is_tg:
                 raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
             raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
-        if is_tg and cached_meta is None:
-            # Preserve Telegram's fast native transport when no probe metadata exists yet.
-            raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
+        if cached_meta is None:
+            # 🟢 Preserve fast native transport for ALL links (Telegram & Direct, ZIP & Normal) when no probe metadata exists yet.
+            if is_tg:
+                raise web.HTTPFound(f"/api/tg_stream?user_id={user_id}&chat_id={quote(str(chat_id), safe='')}&msg_id={msg_id}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
+            raise web.HTTPFound(f"/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}" + (f"&zip_idx={quote(zip_idx, safe='')}" if zip_idx else ""))
         force_transcode = True
     video_codec = ""
     if cached_meta:
@@ -12961,9 +12963,9 @@ async def _api_stream_handler(request):
             cmd += ["-c:a", "copy", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
         else:
-            # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
-            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-f", "adts", "pipe:1"]
-            mime_type = "audio/aac"
+            # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (FLAC, ALAC, WAV, DTS, Atmos, etc.) to MP3 for bulletproof browser <video> support!
+            cmd += ["-c:a", "libmp3lame", "-q:a", "2", "-ac", "2", "-f", "mp3", "pipe:1"]
+            mime_type = "audio/mpeg"
     else:
         cmd += ["-map", "0:v:0?"]
         if audio_idx is not None and str(audio_idx).strip():
