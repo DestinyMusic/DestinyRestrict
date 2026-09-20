@@ -4974,7 +4974,7 @@ HTML_DASHBOARD = """
 
         /* 🍎 Apple Music Style Dynamic Fluid Background Wrapper */
         #apple-music-bg {
-            display: none; /* 🟢 FIX: Hidden permanently until an Audio file demands it! */
+            display: none; /* 🟢 FIX: Hidden by default, ONLY turns on for Audio files! */
             position: absolute;
             inset: 0;
             z-index: 0;
@@ -8177,7 +8177,11 @@ HTML_DASHBOARD = """
             isSyncDebugEnabled = !isSyncDebugEnabled;
             const dbg = document.getElementById('sync-debugger');
             if (dbg) dbg.style.display = isSyncDebugEnabled ? 'block' : 'none';
-            if (isSyncDebugEnabled) console.log("[SYNC DEBUG] Logger Enabled.");
+            
+            // Show an alert so you know where to look!
+            if (isSyncDebugEnabled) {
+                alert("Sync Debugger Enabled! Look at the GREEN BOX in the top-left corner of the video player.");
+            }
         }
 
         function toggleFullScreen() {
@@ -9387,13 +9391,16 @@ HTML_DASHBOARD = """
                             }
                         } else {
                             if (coverContainer) coverContainer.style.display = 'none';
-                            if (vp) vp.style.backgroundImage = 'none';
+                            if (vp) {
+                                vp.style.backgroundImage = 'none';
+                                vp.style.backgroundColor = '#000'; // Force black background for videos
+                            }
                             
                             // 🟢 TURN OFF BLOBS FOR VIDEOS
                             const appleBg = document.getElementById('apple-music-bg');
                             if (appleBg) appleBg.style.display = 'none';
                         }
-                        
+
                         // 🟢 ONLY fetch smart lyrics automatically if it's an Audio track!
                         if (currentIsAudio && typeof fetchSmartLyrics === 'function') {
                             // 🟢 FIX: Ensure we wait for the cover art DOM updates to finish,
@@ -12842,7 +12849,7 @@ async def _api_stream_handler(request):
             mime_type = "audio/aac"
         else:
             # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
-            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-f", "adts", "pipe:1"]
+            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-af", "aresample=async=1:first_pts=0", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
     else:
         cmd += ["-map", "0:v:0?"]
@@ -12868,13 +12875,11 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            # 🟢 SYNC FIX 1: Remove aresample=async=1. It forces audio to stretch incorrectly when video is copied from a keyframe!
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
+            # 🟢 SYNC FIX: 'first_pts=0' forces the transcoded audio to pad/trim itself to match the video keyframe's exact start time at 0.0!
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1:first_pts=0"]
 
-        # 🟢 SYNC FIX 2: Use -copyts (Copy Timestamps) instead of make_zero!
-        # When seeking, video snaps to a keyframe (e.g. 10s) but audio cuts at exact time (e.g. 12s).
-        # -copyts preserves original timestamps so the browser plays them in perfect sync!
-        cmd += ["-copyts", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # 🟢 A/V SYNC FIX: 'make_zero' ensures both tracks start at exactly 0.0 in the fragmented MP4.
+        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
