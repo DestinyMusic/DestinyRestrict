@@ -8501,7 +8501,7 @@ HTML_DASHBOARD = """
             if (scroller) { 
                 scroller.innerHTML = ''; 
                 scroller.style.display = 'none'; 
-                scroller.dataset.rendered = ''; // 🟢 FIX: Force browser to rebuild DOM for new tracks
+                scroller.dataset.rendered = ''; 
             }
             if (overlay) overlay.innerHTML = '';
             
@@ -8520,7 +8520,7 @@ HTML_DASHBOARD = """
                     const track = window.globalPlaylist[window.currentPlayIndex];
                     if (track) {
                         zipParam = `&zip_idx=${track.original_index}`;
-                        zipIdx = track.original_index; // 🟢 Keep zipIdx synced for the unique ID
+                        zipIdx = track.original_index;
                     }
                 }
 
@@ -8533,15 +8533,18 @@ HTML_DASHBOARD = """
                 
                 const lines = text.split('\\n');
                 const lrcCues = [];
-                const timeRegex = /\\[(\\d{2}):(\\d{2}\\.\\d{2,3})\\](.*)/;
+                // 🟢 FIX: Bulletproof Regex for timestamps with 0 to 3 millisecond digits
+                const timeRegex = /\\[(\\d{1,3}):(\\d{2})[\\.:]?(\\d{0,3})\\](.*)/;
                 
                 for (let line of lines) {
-                    const match = line.match(timeRegex);
-                    if (match) {
-                        const min = parseInt(match[1], 10);
-                        const sec = parseFloat(match[2]);
-                        let textContent = match[3].replace(/<[^>]+>/g, '').replace(/\\[\\d{2}:\\d{2}\\.\\d{2,3}\\]/g, '').trim();
-                        if (textContent) lrcCues.push({ start: min * 60 + sec, text: textContent, isLrc: true });
+                    const matchRegex = line.match(timeRegex);
+                    if (matchRegex) {
+                        const min = parseInt(matchRegex[1], 10);
+                        const sec = parseInt(matchRegex[2], 10);
+                        const msStr = matchRegex[3] ? matchRegex[3].padEnd(3, '0').slice(0,3) : '000';
+                        const totalSec = min * 60 + sec + parseInt(msStr, 10) / 1000;
+                        let textContent = matchRegex[4].replace(/<[^>]+>/g, '').replace(/\\[\\d{1,3}:\\d{2}\\.\\d{0,3}\\]/g, '').trim();
+                        if (textContent) lrcCues.push({ start: totalSec, text: textContent, isLrc: true });
                     } else if (line.trim() !== '' && !line.startsWith('[')) {
                         let textContent = line.replace(/<[^>]+>/g, '').trim();
                         if (textContent) lrcCues.push({ start: -1, text: textContent, isLrc: true });
@@ -8552,7 +8555,7 @@ HTML_DASHBOARD = """
                     for (let i = 0; i < lrcCues.length - 1; i++) lrcCues[i].end = lrcCues[i+1].start;
                     lrcCues[lrcCues.length - 1].end = 999999;
                     subtitleCues = lrcCues;
-                    activeSubtitleIndex = `metadata_lyrics_${zipIdx}`; // 🟢 FIX: Unique ID per track (Prevents cache collision!)
+                    activeSubtitleIndex = `metadata_lyrics_${zipIdx}`; 
                     renderCurrentSubtitle();
                 }
             } catch(e) { 
@@ -8579,7 +8582,6 @@ HTML_DASHBOARD = """
                 t = playerRequiresTranscode ? (playerTimelineOffset + cur) : cur;
             }
 
-            // 🟢 Apply the manual sync offset slider
             const adjustedTime = t - subtitleSyncOffset;
 
             // 🟢 STRICT SEPARATION: Use Scroller ONLY for explicitly parsed Lyrics (LRC)
@@ -8590,13 +8592,19 @@ HTML_DASHBOARD = """
                 if (scroller) {
                     scroller.style.display = 'block';
                     
+                    let isUnsynced = subtitleCues[0].start === -1;
+                    
                     if (scroller.dataset.rendered !== activeSubtitleIndex) {
-                        scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line" id="lrc-${i}">${c.text}</div>`).join('');
+                        // 🟢 FIX: If unsynced, assign .active immediately so they are visible!
+                        scroller.innerHTML = subtitleCues.map((c, i) => `<div class="lrc-line ${isUnsynced ? 'active' : ''}" id="lrc-${i}" style="${isUnsynced ? 'display:block; opacity:0.8; transform:none;' : ''}">${c.text}</div>`).join('');
                         scroller.dataset.rendered = activeSubtitleIndex;
+                        
+                        // Make unsynced text manually scrollable
+                        scroller.style.overflowY = isUnsynced ? 'auto' : 'hidden';
                     }
                     
-                    let activeIdx = -1;
-                    if (subtitleCues[0].start !== -1) { // Only scroll if synced
+                    if (!isUnsynced) {
+                        let activeIdx = -1;
                         for (let i = 0; i < subtitleCues.length; i++) {
                             if (adjustedTime >= subtitleCues[i].start && adjustedTime < subtitleCues[i].end) {
                                 activeIdx = i; break;
@@ -8641,7 +8649,6 @@ HTML_DASHBOARD = """
                 htmlContent += `<div class="subtitle-text">${c.text}</div>`;
             });
             
-            // 3D Split-Screen (VR/SBS) Subtitle Duplication
             if (matrix3DOut === 'vr') {
                 overlay.style.left = '0';
                 overlay.style.right = '0';
@@ -8652,16 +8659,15 @@ HTML_DASHBOARD = """
                     </div>
                 `;
             } else {
-                overlay.style.left = '1%'; /* 🟢 FIX: Allows the subtitle slider to stretch to 99% of screen width */
+                overlay.style.left = '1%'; 
                 overlay.style.right = '1%';
                 overlay.innerHTML = `<div style="display: flex; flex-direction: column; align-items: center; gap: 4px;">${htmlContent}</div>`;
             }
             
-            // Flag the overlay so applySubtitleStyle knows where to put it
             overlay.dataset.isTop = hasTop ? 'true' : 'false';
             applySubtitleStyle();
         }
-        
+
         async function applySubtitleSelection() {
             const subSelect = document.getElementById('pop-sub-select');
             const overlay = document.getElementById('subtitle-overlay');
@@ -12186,17 +12192,17 @@ def _guess_browser_compatibility(mime_type, filename, streams):
 
     # Explicitly force the FFmpeg web path for codecs which are not dependable
     # across Chrome/Firefox/Android/iOS. Artwork streams are never considered.
-    bad_audio = {"dts", "truehd", "ac3", "eac3", "alac", "wavpack"}
+    bad_audio = {"dts", "truehd", "ac3", "eac3", "alac", "wavpack", "dsd_lsbf_planar", "dsd_msbf_planar", "ape"}
 
     if not videos:
+        # 🟢 FIX: Removed FLAC and WAV. 
+        # Formats like DSF, DTS, etc., naturally fail this list and will be safely transcoded.
         native_audio = {
             ".mp3": {"mp3"},
             ".m4a": {"aac"},
             ".aac": {"aac"},
             ".ogg": {"vorbis", "opus"},
-            ".opus": {"opus"},
-            ".wav": {"pcm_s16le", "pcm_s24le", "pcm_s32le", "pcm_s16be", "pcm_s24be", "pcm_s32be"},
-            ".flac": {"flac"},
+            ".opus": {"opus"}
         }
         if ac in bad_audio:
             return False
@@ -12208,21 +12214,15 @@ def _guess_browser_compatibility(mime_type, filename, streams):
             return ac == "aac"
         if mime in {"audio/ogg", "audio/webm"}:
             return ac in {"opus", "vorbis"}
-        if mime in {"audio/wav", "audio/x-wav"}:
-            return ac.startswith("pcm_")
-        if mime == "audio/flac":
-            return ac == "flac"
         return False
 
     if mime == "video/webm" or ext == ".webm":
         return vc in {"vp8", "vp9", "av1"} and ac in {"opus", "vorbis"}
 
     if ext in {".mp4", ".m4v"} or mime in {"video/mp4", "application/mp4"}:
-        # Keep this deliberately narrower than generic browser claims.
         return vc in {"h264", "avc", "avc1"} and ac == "aac"
 
     return False
-
 
 async def _run_ffprobe_json(input_url, fast=True, extract_tags=False):
     """Fast probe first; retry with a larger probe only when the small probe fails."""
@@ -12904,14 +12904,13 @@ async def _api_stream_handler(request):
     unsupported_web_codecs = {"hevc", "h265", "hvc1", "x265"}
     needs_video_transcode = video_codec in unsupported_web_codecs or force_x264 or quality != "Original"
 
-    bad_audio = {"dts", "truehd", "ac3", "eac3"}
-    # 🟢 FIX: If we are transcoding the video for web compatibility, we MUST also force the audio to transcode!
-    # Browsers instantly crash or loop endlessly when fed 5.1/6-channel audio inside a fragmented MP4!
+    bad_audio = {"dts", "truehd", "ac3", "eac3", "alac", "wavpack", "dsd_lsbf_planar", "dsd_msbf_planar", "ape"}
+    # 🟢 FIX: If video is transcoding OR audio is unsupported, force audio transcode!
     if audio_codec in bad_audio or needs_video_transcode:
         copy_audio = False
     else:
-        # 🟢 FIX: Removed 'flac' from safe codecs. Browsers reject raw FLAC copying, so it must be transcoded.
-        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'ogg'} or (audio_idx is None and not force_transcode)
+        # 🟢 FIX: Only allow native copying of strictly web-safe codecs
+        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'vorbis', 'ogg'} and (audio_idx is None and not force_transcode)
         
     if video_codec in unsupported_web_codecs:
         copy_video = False
@@ -12929,7 +12928,7 @@ async def _api_stream_handler(request):
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
         "-seekable", "1", 
         "-probesize", "5M", "-analyzeduration", "5M", 
-        "-fflags", "+nobuffer+flush_packets+genpts" # 🟢 FIX: +genpts ensures synced timestamps, removed deprecated -async 1
+        "-fflags", "+nobuffer+flush_packets+genpts"
     ]
 
     if start_time is not None:
@@ -12949,8 +12948,6 @@ async def _api_stream_handler(request):
             cmd += ["-map", "0:a:0?"]
         cmd += ["-vn", "-sn"]
         
-        # 🟢 FIX: Never use MP4 container for audio-only streams. Browsers wait for video frames and hang.
-        # Also, explicitly map compatible codecs to their native containers to prevent FFmpeg crashes.
         if copy_audio and audio_codec == "mp3":
             cmd += ["-c:a", "copy", "-f", "mp3", "pipe:1"]
             mime_type = "audio/mpeg"
@@ -12958,12 +12955,14 @@ async def _api_stream_handler(request):
             cmd += ["-c:a", "copy", "-f", "ogg", "pipe:1"]
             mime_type = "audio/ogg"
         elif copy_audio and audio_codec == "aac":
-            cmd += ["-c:a", "copy", "-f", "adts", "pipe:1"]
-            mime_type = "audio/aac"
+            # 🟢 FIX: Wrap native AAC inside Fragmented MP4 for perfect seeking
+            cmd += ["-c:a", "copy", "-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+            mime_type = "audio/mp4"
         else:
-            # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (FLAC, ALAC, WAV, DTS, Atmos, etc.) to MP3 for bulletproof browser <video> support!
-            cmd += ["-c:a", "libmp3lame", "-q:a", "2", "-ac", "2", "-f", "mp3", "pipe:1"]
-            mime_type = "audio/mpeg"
+            # 🟢 ULTIMATE FALLBACK: Flawlessly Transcode ALL unsupported formats (FLAC, WAV, DSF, DTS, APE) 
+            # to AAC inside a Fragmented MP4 (fMP4) container. 
+            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+            mime_type = "audio/mp4"
     else:
         cmd += ["-map", "0:v:0?"]
         if audio_idx is not None and str(audio_idx).strip():
@@ -13517,7 +13516,7 @@ async def _api_subtitles_handler(request):
         cmd = [
             "ffprobe", "-v", "error",
             "-show_entries",
-            "format_tags=lyrics,LYRICS,Lyrics,UNSYNCEDLYRICS,UNSYNCEDLYRIC,sylt,SYLT,uslt,USLT,©lyr,©LYR,----:com.apple.iTunes:lyrics,----:com.apple.itunes:lyrics,----:com.apple.iTunes:unsyncedlyrics,----:com.apple.itunes:unsyncedlyrics:stream=index,codec_type:stream_tags=lyrics,LYRICS,Lyrics,UNSYNCEDLYRICS,UNSYNCEDLYRIC,SYLT,sylt,USLT,uslt,©lyr,©LYR",
+            "format_tags:stream_tags", # 🟢 FIX: Dump ALL tags to catch unusual lyrics keys
             "-of", "json",
             actual_url,
         ]
@@ -13528,22 +13527,27 @@ async def _api_subtitles_handler(request):
                 return web.Response(status=404, text="No lyrics found")
             data = json.loads(stdout.decode("utf-8", errors="ignore") or "{}")
             pieces = []
+            
             tag_sources = [(data.get("format") or {}).get("tags") or {}]
             for stream in data.get("streams") or []:
                 if stream.get("codec_type") == "audio":
                     tag_sources.append(stream.get("tags") or {})
-            wanted = {"lyrics", "unsyncedlyrics", "unsyncedlyric", "sylt", "uslt", "©lyr", "----:com.apple.itunes:lyrics", "----:com.apple.itunes:unsyncedlyrics"}
+            
+            # 🟢 FIX: Dynamically search for the word 'lyric' or specific keys
             for tags in tag_sources:
                 for key, value in tags.items():
-                    if str(key).lower() in wanted:
+                    key_lower = str(key).lower()
+                    if "lyric" in key_lower or key_lower in {"sylt", "uslt", "©lyr", "text"}:
                         if isinstance(value, list):
                             value = "\n".join(str(x) for x in value)
                         text_value = str(value).replace("\\r\\n", "\n").replace("\\n", "\n").strip()
                         if text_value and text_value not in pieces:
                             pieces.append(text_value)
+                            
             raw_text = "\n\n".join(pieces).strip()
             if not raw_text:
                 return web.Response(status=404, text="No lyrics found")
+                
             body = raw_text.encode("utf-8")
             SUBTITLE_CACHE[cache_key] = (bytes(body), time.time() + SUBTITLE_CACHE_TTL)
             return web.Response(body=body, status=200, headers={
