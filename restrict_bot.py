@@ -4949,10 +4949,47 @@ HTML_DASHBOARD = """
         * { box-sizing: border-box; }
         /* 🌊 Dynamic Glowing Orbs */
         @keyframes flowPrimary {
-            0% { transform: translate(0, 0) scale(1); }
-            33% { transform: translate(15vw, -10vh) scale(1.1); }
-            66% { transform: translate(-15vw, 15vh) scale(0.9); }
-            100% { transform: translate(0, 0) scale(1); }
+            0% { transform: translate(0, 0) scale(1) rotate(0deg); }
+            33% { transform: translate(15vw, -10vh) scale(1.15) rotate(120deg); }
+            66% { transform: translate(-15vw, 15vh) scale(0.9) rotate(240deg); }
+            100% { transform: translate(0, 0) scale(1) rotate(360deg); }
+        }
+        @keyframes flowSecondary {
+            0% { transform: translate(0, 0) scale(1) rotate(360deg); }
+            33% { transform: translate(-20vw, 15vh) scale(1.25) rotate(240deg); }
+            66% { transform: translate(20vw, -15vh) scale(0.85) rotate(120deg); }
+            100% { transform: translate(0, 0) scale(1) rotate(0deg); }
+        }
+
+        /* 🍎 Apple Music Style Dynamic Fluid Background Wrapper */
+        #apple-music-bg {
+            position: absolute;
+            inset: 0;
+            z-index: 0;
+            overflow: hidden;
+            pointer-events: none;
+            opacity: 0.85;
+            transition: opacity 1s ease;
+            filter: blur(60px);
+            -webkit-filter: blur(60px);
+        }
+        .fluid-blob {
+            position: absolute;
+            border-radius: 50%;
+            mix-blend-mode: screen;
+            will-change: transform;
+        }
+        .blob-1 {
+            width: 70vw; height: 70vh;
+            top: -20%; left: -10%;
+            background: radial-gradient(circle, var(--accent-1, #ff758c) 0%, transparent 70%);
+            animation: flowPrimary 25s infinite alternate ease-in-out;
+        }
+        .blob-2 {
+            width: 80vw; height: 80vh;
+            bottom: -20%; right: -10%;
+            background: radial-gradient(circle, var(--accent-2, #ff7eb3) 0%, transparent 70%);
+            animation: flowSecondary 30s infinite alternate ease-in-out;
         }
         @keyframes flowSecondary {
             0% { transform: translate(0, 0) scale(1); }
@@ -5700,6 +5737,11 @@ HTML_DASHBOARD = """
                 </div>
 
                 <div class="cinema-viewport" id="cinema-viewport">
+                    <!-- 🍎 Apple Music Flowing Mesh Gradient Container -->
+                    <div id="apple-music-bg">
+                        <div class="fluid-blob blob-1"></div>
+                        <div class="fluid-blob blob-2"></div>
+                    </div>
                     <canvas id="webgl-canvas"></canvas>
                     <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline preload="auto"></video>
                     <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
@@ -9054,9 +9096,13 @@ HTML_DASHBOARD = """
             if (titleEl) titleEl.innerText = 'No Media Loaded';
             if (btn) { btn.innerText = 'Load & Play'; btn.disabled = false; }
             
-            // 🟢 Clear Cover Art
+            // 🟢 Clear Cover Art & Flowing Gradient
             const vpNode = document.getElementById('cinema-viewport');
-            if (vpNode) vpNode.style.backgroundImage = 'none';
+            if (vpNode) {
+                vpNode.style.backgroundImage = 'none';
+                vpNode.style.setProperty('--accent-1', '#f472b6');
+                vpNode.style.setProperty('--accent-2', '#8b5cf6');
+            }
             const coverImg = document.getElementById('album-cover-art');
             if (coverImg) coverImg.style.display = 'none';
             
@@ -9246,9 +9292,32 @@ HTML_DASHBOARD = """
                                 };
                                 coverImg.onload = function() {
                                     if (!this.src.includes('flaticon')) {
-                                        vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.7), rgba(0,0,0,0.9)), url('${this.src}')`;
+                                        // 🍎 APPLE MUSIC DYNAMIC FLUID BACKGROUND EXTRACTOR
+                                        vp.style.backgroundImage = `linear-gradient(rgba(0,0,0,0.65), rgba(0,0,0,0.85)), url('${this.src}')`;
                                         vp.style.backgroundSize = 'cover';
                                         vp.style.backgroundPosition = 'center';
+                                        
+                                        // Extract dominant colors from cover image for flowing blobs
+                                        try {
+                                            const canvas = document.createElement('canvas');
+                                            const ctx = canvas.getContext('2d');
+                                            canvas.width = 50; canvas.height = 50;
+                                            ctx.drawImage(coverImg, 0, 0, 50, 50);
+                                            
+                                            // Sample top-left and bottom-right regions for gradient accents
+                                            const p1 = ctx.getImageData(10, 10, 1, 1).data;
+                                            const p2 = ctx.getImageData(40, 40, 1, 1).data;
+                                            
+                                            const col1 = `rgb(${p1[0]}, ${p1[1]}, ${p1[2]})`;
+                                            const col2 = `rgb(${p2[0]}, ${p2[1]}, ${p2[2]})`;
+                                            
+                                            vp.style.setProperty('--accent-1', col1);
+                                            vp.style.setProperty('--accent-2', col2);
+                                        } catch(e) {
+                                            // Fallback default neon accents if CORS restricts canvas pixel reading
+                                            vp.style.setProperty('--accent-1', '#8b5cf6');
+                                            vp.style.setProperty('--accent-2', '#38bdf8');
+                                        }
                                     } else {
                                         vp.style.backgroundImage = 'none';
                                     }
