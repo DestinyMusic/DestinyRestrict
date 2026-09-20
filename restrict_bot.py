@@ -4418,16 +4418,43 @@ async def build_rich_caption(file_path, msg_type, msg):
         size_str = _pretty_bytes(size_bytes)
         
         if msg_type == "Audio":
-            bitrate_str = "16Bit - 44.1kHz" # Fallback Default
+            bitrate_str = "Unknown Quality"
             try:
-                cmd = ["mediainfo", "--Inform=Audio;%BitDepth%Bit - %SamplingRate/String%", str(file_path)]
+                # 🟢 FIX: Fetch Format, BitDepth, Bitrate, and SampleRate simultaneously
+                cmd = ["mediainfo", "--Inform=Audio;%Format%|%BitDepth%|%BitRate/String%|%SamplingRate/String%", str(file_path)]
                 proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
                 stdout, _ = await proc.communicate()
-                out = stdout.decode().strip()
-                if out and "Bit" in out:
-                    bitrate_str = out.replace(".1", "").replace(" kHz", "kHz")
-            except: pass
-            
+                
+                # Get the first audio stream only to prevent multiline errors
+                out = stdout.decode('utf-8', errors='ignore').strip().split('\n')[0] 
+                
+                if out:
+                    parts = out.split('|')
+                    if len(parts) >= 4:
+                        fmt = parts[0].strip()
+                        depth = parts[1].strip()
+                        bitrate = parts[2].strip().replace(" ", "")
+                        sample_rate = parts[3].strip().replace(" ", "")
+                        
+                        # Clean up technical formats for a beautiful UI display
+                        if "MPEG Audio" in fmt: fmt = "MP3"
+                        elif "AAC" in fmt: fmt = "AAC"
+                        elif "FLAC" in fmt: fmt = "FLAC"
+                        elif "ALAC" in fmt: fmt = "ALAC"
+                        elif "Wave" in fmt: fmt = "WAV"
+                        elif "Opus" in fmt: fmt = "OPUS"
+                        elif "Vorbis" in fmt: fmt = "OGG"
+                        
+                        # Lossless formats show Bit Depth (e.g. 24Bit), Lossy show Bitrate (e.g. 320kbps)
+                        if depth:
+                            bitrate_str = f"{fmt} • {depth}Bit - {sample_rate}"
+                        elif bitrate:
+                            bitrate_str = f"{fmt} • {bitrate} - {sample_rate}"
+                        else:
+                            bitrate_str = f"{fmt} • {sample_rate}"
+            except: 
+                pass
+                
             return f"<b>{html.escape(file_name)}</b>\n\n🗂 <code>{size_str}</code>\n🎧 <code>{bitrate_str}</code>"
             
         elif msg_type == "Video":
