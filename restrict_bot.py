@@ -4974,6 +4974,7 @@ HTML_DASHBOARD = """
 
         /* 🍎 Apple Music Style Dynamic Fluid Background Wrapper */
         #apple-music-bg {
+            display: none; /* 🟢 FIX: Hidden permanently until an Audio file demands it! */
             position: absolute;
             inset: 0;
             z-index: 0;
@@ -5012,11 +5013,8 @@ HTML_DASHBOARD = """
         body { 
             font-family: 'Nunito', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; 
             background-color: var(--bg); color: var(--text); margin: 0; overflow-x: hidden; 
-            /* FIX 1: Only transition the color! Transitioning the whole background drops images in Chrome Android */
             transition: background-color 0.5s ease; 
             position: relative; z-index: 0; 
-            
-            /* FIX 2: Reduced dark tint opacity so the anime images are bright and visible */
             background-image: linear-gradient(rgba(0, 0, 0, 0.2), rgba(0, 0, 0, 0.5)), var(--anime-bg);
             background-size: cover;
             background-position: center;
@@ -5209,11 +5207,10 @@ HTML_DASHBOARD = """
             will-change: width, height, transform;
         }
 
-        /* 🟢 FIX 1: Make the feed 99% transparent so Apple WebKit still decodes it, 
-           but it doesn't bleed out and stretch behind the WebGL canvas on mobile portrait! */
+        /* 🟢 FIX 1: Bring video to full opacity to fix browser-level frame dropping */
         .hidden-video-feed {
             position: absolute; inset: 0; width: 100%; height: 100%;
-            object-fit: contain; opacity: 0.01; pointer-events: none; z-index: 1;
+            object-fit: contain; opacity: 1; visibility: visible; pointer-events: none; z-index: 2;
         }
 
         /* iPad / PWA CSS Fullscreen Fallback */
@@ -7833,7 +7830,30 @@ HTML_DASHBOARD = """
             canvas.style.height = `${drawH}px`;
         }
 
+        // 🟢 NEW: Instantly disable the heavy WebGL engine for normal 2D Videos! (Fixes Audio/Video Sync Lag!)
+        function checkWebGLRequirement() {
+            const canvas = document.getElementById('webgl-canvas');
+            const video = document.getElementById('hidden-video');
+            if (!canvas || !video) return;
+            
+            if (matrix3DIn === 'none') {
+                canvas.style.display = 'none'; // Kill Canvas
+                video.style.opacity = '1';     // Force native video layer
+                video.style.zIndex = '2';      // Bring native video to front
+            } else {
+                canvas.style.display = 'block';
+                video.style.opacity = '0.01';  // Hide native video behind WebGL
+                video.style.zIndex = '1';
+            }
+        }
+
         function renderWebGLFrame() {
+            // 🟢 FAST RETURN: Skip processing entirely if user just wants normal 2D video!
+            if (matrix3DIn === 'none') {
+                requestAnimationFrame(renderWebGLFrame);
+                return;
+            }
+
             const video = document.getElementById('hidden-video');
             const canvas = document.getElementById('webgl-canvas');
             if (gl && glProgram && glTexture && video && video.readyState >= video.HAVE_CURRENT_DATA) {
@@ -7869,6 +7889,7 @@ HTML_DASHBOARD = """
             matrix3DIn = val;
             if (el?.parentElement) el.parentElement.querySelectorAll('.matrix-option').forEach(o => o.classList.remove('active'));
             el?.classList.add('active');
+            checkWebGLRequirement(); // 🟢 Fix Audio/Video Sync based on selection!
         }
 
         function setMatrix3DOut(val, el) {
@@ -9055,6 +9076,10 @@ HTML_DASHBOARD = """
             const titleEl = document.getElementById('cinema-title');
             const btn = document.getElementById('theater-load-btn') || document.querySelector('button[onclick="loadTheaterMedia()"]');
             
+            // 🟢 Instantly Kill Background Globs when Stop is pressed!
+            const appleBg = document.getElementById('apple-music-bg');
+            if (appleBg) appleBg.style.display = 'none';
+
             // 0. 🟢 SEND SIGNAL TO PYTHON BACKEND TO KILL INTERNAL PROCESSES FOR THIS USER ONLY
             try {
                 fetch('/api/stream/kill', { 
@@ -9291,6 +9316,9 @@ HTML_DASHBOARD = """
                             coverContainer.style.display = 'flex';
                             coverContainer.style.zIndex = '50';
                             
+                            const appleBg = document.getElementById('apple-music-bg');
+                            if (appleBg) appleBg.style.display = 'block'; // Turn ON background blobs
+                            
                             if (coverImg) {
                                 coverImg.style.display = 'block'; 
                                 coverImg.style.minHeight = '220px';
@@ -9338,6 +9366,9 @@ HTML_DASHBOARD = """
                         } else {
                             if (coverContainer) coverContainer.style.display = 'none';
                             if (vp) vp.style.backgroundImage = 'none';
+                            
+                            const appleBg = document.getElementById('apple-music-bg');
+                            if (appleBg) appleBg.style.display = 'none'; // Turn OFF background blobs for Videos!
                         }
                         
                         // 🟢 ONLY fetch smart lyrics automatically if it's an Audio track!
@@ -9399,6 +9430,7 @@ HTML_DASHBOARD = """
                 }
 
                 if (!gl) initWebGL();
+                checkWebGLRequirement(); // 🟢 Instantly disable WebGL logic if playing a standard video
                 wakeHUD();
                 
                 setTimeout(initCustomSelects, 50);
@@ -12751,7 +12783,7 @@ async def _api_stream_handler(request):
             mime_type = "audio/aac"
         else:
             # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
-            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-f", "adts", "pipe:1"]
+            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-af", "aresample=async=1", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
     else:
         cmd += ["-map", "0:v:0?"]
@@ -12777,7 +12809,8 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"] # 🟢 Downmix to Stereo for Web
+            # 🟢 FIX: Added aresample=async=1 so transcoded audio perfectly stretches to match video frame timestamps
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1"]
 
         cmd += ["-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
