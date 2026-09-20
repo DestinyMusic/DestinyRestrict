@@ -335,16 +335,6 @@ class Database:
         count = await self.col.count_documents({"session": {"$ne": None}})
         return count
 
-    async def set_user_cookies(self, user_id, site, cookies_data):
-        if cookies_data is None:
-            await self.col.update_one({'id': int(user_id)}, {'$unset': {f'cookies.{site}': 1}})
-        else:
-            await self.col.update_one({'id': int(user_id)}, {'$set': {f'cookies.{site}': cookies_data}})
-            
-    async def get_user_cookies(self, user_id):
-        user = await self.col.find_one({'id': int(user_id)})
-        return user.get('cookies') or {}
-        
     async def get_monthly_bandwidth(self):
         """Tracks, persists, and auto-resets monthly bandwidth usage in MongoDB across server reboots."""
         current_month = datetime.datetime.now().strftime("%Y-%m")
@@ -5944,44 +5934,8 @@ HTML_DASHBOARD = """
                     <!-- Hidden Audio Player for Sync -->
                     <audio id="ext-audio-player" style="display:none;" preload="auto"></audio>
                 </div>
-                
-                <!-- 🟢 PER-SITE COOKIES UI -->
-                <div style="margin-top: 20px; padding: 15px; border-radius: 12px; background: rgba(0,0,0,0.3); border: 1px solid var(--card-border);">
-                    <h4 style="margin: 0 0 10px 0; color: var(--accent); font-size: 13px;">🍪 PER-SITE COOKIES MANAGER</h4>
-                    <p style="font-size: 11px; color: var(--subtext); margin-bottom: 15px;">Some hosts require account cookies (Netscape format) to generate direct links. Upload a <code>cookies.txt</code> specific to the website you want to unlock.</p>
-                    
-                    <div style="display: flex; flex-direction: column; gap: 10px;">
-                        <!-- Terabox Row -->
-                        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <span style="color: #fff; font-size: 13px; font-weight: bold; min-width: 70px;">Terabox</span>
-                                <span id="badge-terabox" style="font-size: 10px; font-weight: bold; padding: 4px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ Missing</span>
-                            </div>
-                            <div style="display: flex; gap: 6px;">
-                                <label class="primary-btn" style="width: auto; padding: 6px 12px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 11px;">
-                                    📁 Upload <input type="file" accept=".txt" style="display: none;" onchange="uploadSiteCookie(event, 'terabox')">
-                                </label>
-                                <button class="primary-btn" style="width: auto; padding: 6px 12px; background: #ef4444; font-size: 11px; margin: 0;" onclick="deleteSiteCookie('terabox')">Remove</button>
-                            </div>
-                        </div>
-                        <!-- Hxfile Row -->
-                        <div style="display: flex; justify-content: space-between; align-items: center; background: rgba(0,0,0,0.4); padding: 10px 15px; border-radius: 10px; border: 1px solid var(--card-border);">
-                            <div style="display: flex; align-items: center; gap: 10px;">
-                                <span style="color: #fff; font-size: 13px; font-weight: bold; min-width: 70px;">Hxfile</span>
-                                <span id="badge-hxfile" style="font-size: 10px; font-weight: bold; padding: 4px 8px; border-radius: 6px; background: rgba(239, 68, 68, 0.2); color: #ef4444;">❌ Missing</span>
-                            </div>
-                            <div style="display: flex; gap: 6px;">
-                                <label class="primary-btn" style="width: auto; padding: 6px 12px; background: #38bdf8; cursor: pointer; margin: 0; font-size: 11px;">
-                                    📁 Upload <input type="file" accept=".txt" style="display: none;" onchange="uploadSiteCookie(event, 'hxfile')">
-                                </label>
-                                <button class="primary-btn" style="width: auto; padding: 6px 12px; background: #ef4444; font-size: 11px; margin: 0;" onclick="deleteSiteCookie('hxfile')">Remove</button>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-            </div> <!-- END OF VIEW-THEATER -->
-                                
+            </div>
+            
             <div id="view-downloads" class="view-section">
                 <div class="section-title">
                     <span>Downloads & Forwarding Tasks</span>
@@ -6643,73 +6597,8 @@ HTML_DASHBOARD = """
             
             // 🟢 Render initial static Glass Dropdowns (Aspect Ratio, Size, Speed)
             setTimeout(initCustomSelects, 200);
-
-            // 🟢 Load the Cookie Badge Status on Startup
-            checkUserCookies();
         }
 
-        async function checkUserCookies() {
-            if(!currentUser) return;
-            try {
-                const res = await fetch(`/api/settings/cookies?user_id=${currentUser}`);
-                const data = await res.json();
-                if(data.status === 'success') {
-                    const sites = ['terabox', 'hxfile'];
-                    sites.forEach(site => {
-                        const badge = document.getElementById('badge-' + site);
-                        if(badge) {
-                            if(data.cookies && data.cookies[site]) {
-                                badge.innerText = '✅ Active';
-                                badge.style.background = 'rgba(16, 185, 129, 0.2)';
-                                badge.style.color = '#10b981';
-                            } else {
-                                badge.innerText = '❌ Missing';
-                                badge.style.background = 'rgba(239, 68, 68, 0.2)';
-                                badge.style.color = '#ef4444';
-                            }
-                        }
-                    });
-                }
-            } catch(e) {}
-        }
-
-        function uploadSiteCookie(event, site) {
-            const file = event.target.files[0];
-            if(!file) return;
-            const reader = new FileReader();
-            reader.onload = async function(e) {
-                const text = e.target.result;
-                try {
-                    const res = await fetch('/api/settings/cookies', {
-                        method: 'POST', headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({user_id: currentUser, site: site, cookies_data: text})
-                    });
-                    const data = await res.json();
-                    if(data.status === 'success') {
-                        alert(`${site.toUpperCase()} cookies saved successfully!`);
-                        checkUserCookies();
-                    } else alert("Error saving cookies.");
-                } catch(err) { alert("Network error."); }
-            };
-            reader.readAsText(file);
-            event.target.value = ''; 
-        }
-
-        async function deleteSiteCookie(site) {
-            if(!confirm(`Remove your saved cookies for ${site}? Links may stop working.`)) return;
-            try {
-                const res = await fetch('/api/settings/cookies', {
-                    method: 'DELETE', headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser, site: site})
-                });
-                const data = await res.json();
-                if(data.status === 'success') {
-                    alert(`${site.toUpperCase()} cookies removed!`);
-                    checkUserCookies();
-                }
-            } catch(err) {}
-        }
-        
         async function handleLogin(e) {
             e.preventDefault();
             const uid = document.getElementById('login-uid').value;
@@ -11442,7 +11331,6 @@ DIRECT_URL_CACHE = {}
 DIRECT_URL_CACHE_TTL = 900
 DIRECT_RESOLVE_LOCKS = defaultdict(asyncio.Lock)
 DIRECT_HEADER_CACHE = {}
-DIRECT_REQ_HEADERS_CACHE = {} # 🟢 NEW: Stores generated Cookies/Tokens
 DIRECT_HTTP_SESSION = None
 DIRECT_HTTP_SESSION_LOCK = asyncio.Lock()
 
@@ -11486,7 +11374,7 @@ async def _close_direct_http_session():
             pass
 
 
-async def resolve_direct_link(url, user_id=0):
+async def resolve_direct_link(url):
     """Resolve common file-host pages to a stream URL, with coalesced/cached resolution."""
     original = str(url or '').strip()
     if not original:
@@ -11506,58 +11394,6 @@ async def resolve_direct_link(url, user_id=0):
 
         import re
         result = original
-
-        # ==========================================
-        # 🟢 NEW: WZML DIRECT LINK GENERATOR INTEGRATION
-        # ==========================================
-        try:
-            from extractor import direct_link_generator
-            import asyncio
-            
-            user_cookies = await db.get_user_cookies(user_id) if user_id else None
-            wzml_result = await asyncio.to_thread(direct_link_generator, original, user_cookies)
-            
-            req_headers = {}
-            if isinstance(wzml_result, tuple):
-                d_url = wzml_result[0]
-                h_data = wzml_result[1]
-                if isinstance(h_data, list):
-                    for h in h_data:
-                        if ":" in h:
-                            k, v = h.split(":", 1)
-                            req_headers[k.strip()] = v.strip()
-                elif isinstance(h_data, str):
-                    for line in h_data.split('\n'):
-                        if ":" in line:
-                            k, v = line.split(":", 1)
-                            req_headers[k.strip()] = v.strip()
-                wzml_result = d_url
-            elif isinstance(wzml_result, dict) and "contents" in wzml_result and len(wzml_result["contents"]) > 0:
-                d_url = wzml_result["contents"][0]["url"]
-                if "header" in wzml_result and wzml_result["header"]:
-                    h_data = wzml_result["header"]
-                    if isinstance(h_data, list):
-                        for h in h_data:
-                            if ":" in h:
-                                k, v = h.split(":", 1)
-                                req_headers[k.strip()] = v.strip()
-                    elif isinstance(h_data, str):
-                        for line in h_data.split('\n'):
-                            if ":" in line:
-                                k, v = line.split(":", 1)
-                                req_headers[k.strip()] = v.strip()
-                wzml_result = d_url
-                
-            if isinstance(wzml_result, str) and wzml_result.startswith("http") and wzml_result != original:
-                logger.info(f"✨ WZML Extractor successfully bypassed: {original} -> {wzml_result[:60]}...")
-                result = wzml_result
-                if req_headers:
-                    DIRECT_REQ_HEADERS_CACHE[result] = req_headers
-                    DIRECT_REQ_HEADERS_CACHE[original] = req_headers
-        except Exception as e:
-            logger.debug(f"WZML Extractor skipped/failed for {original}: {e}")
-        # ==========================================
-
         session = await _get_direct_http_session()
 
         # 1. Pixeldrain Auto-Bypass
@@ -11715,7 +11551,7 @@ async def resolve_direct_link(url, user_id=0):
 
 async def _direct_upstream_request(url, request):
     """Open a direct HTTP source through the shared keep-alive session."""
-    resolved = await resolve_direct_link(url, 0)
+    resolved = await resolve_direct_link(url)
     session = await _get_direct_http_session()
     
     from urllib.parse import urlparse
@@ -11800,7 +11636,7 @@ async def _api_direct_stream_handler(request):
     if not url or not url.lower().startswith(("http://", "https://")):
         return web.Response(status=400, text="Invalid direct media URL")
 
-    resolved = await resolve_direct_link(url, request.query.get("user_id", 0))
+    resolved = await resolve_direct_link(url)
     filename = _guess_filename_from_url(resolved, "direct_media").lower()
     is_zip = filename.endswith(".zip") or ".zip." in filename
     
@@ -11843,12 +11679,6 @@ async def _api_direct_stream_handler(request):
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Accept": "video/webm,video/ogg,video/*;q=0.9,application/ogg;q=0.7,audio/*;q=0.6,*/*;q=0.5",
     }
-    
-    # 🟢 INJECT SAVED WZML HEADERS
-    if url in DIRECT_REQ_HEADERS_CACHE:
-        req_headers.update(DIRECT_REQ_HEADERS_CACHE[url])
-    elif resolved in DIRECT_REQ_HEADERS_CACHE:
-        req_headers.update(DIRECT_REQ_HEADERS_CACHE[resolved])
     
     client_range = request.headers.get("Range", "")
     start_byte = 0
@@ -12240,7 +12070,6 @@ async def _api_media_probe_handler(request):
         mime_type = "video/mp4"
         streams = []
         duration_val = 0.0
-        pdata = {} # 🟢 FIX: Initialize empty dict to prevent UnboundLocalError crash
 
         try:
             if is_tg:
@@ -12263,7 +12092,7 @@ async def _api_media_probe_handler(request):
                 if msg_range:
                     actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
             else:
-                actual_url = await resolve_direct_link(link, user_id)
+                actual_url = await resolve_direct_link(link)
                 real_file_name = _guess_filename_from_url(actual_url, _guess_filename_from_url(link, "Direct_Stream_Media"))
                 cached_headers = DIRECT_HEADER_CACHE.get(link) or DIRECT_HEADER_CACHE.get(actual_url)
                 if cached_headers:
@@ -12477,7 +12306,7 @@ async def _api_cover_handler(request):
             msg_id = parsed.get("msg_id")
             actual_url = f"http://127.0.0.1:{PORT}/api/tg_stream?user_id={user_id}&chat_id={chat_id}&msg_id={msg_id}"
         else:
-            actual_url = await resolve_direct_link(link, user_id)
+            actual_url = await resolve_direct_link(link)
 
         # Grabs the exact cover frame directly from the media container
         cmd = [
@@ -12547,7 +12376,7 @@ async def _api_stream_handler(request):
                 actual_url += f"&range={msg_range[0]}-{msg_range[1]}" # 🟢 Send to stream backend
             is_audio = filename.endswith((".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac")) or "audio" in mime_type
         else:
-            actual_url = await resolve_direct_link(link, user_id)
+            actual_url = await resolve_direct_link(link)
             filename = _guess_filename_from_url(actual_url, "direct_media").lower()
             lower = actual_url.lower().split('?', 1)[0]
             is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac|wma|opus|dsf|ape|mka|alac)$", lower))
@@ -12593,22 +12422,6 @@ async def _api_stream_handler(request):
         # 🟢 FIX: Use the fully resolved filename, avoiding generics!
         if meta.get("file_name") and meta.get("file_name").lower() not in ("unknown_media", "direct_stream_media", "download", "file", "media"):
             filename = meta.get("file_name").lower()
-            
-        # 🟢 NEW: Bulletproof `is_audio` detection overriding the URL extension flaw
-        # This ensures direct links (like GoFile) that hide their extension don't get forced into video transcodes
-        streams = meta.get("streams", [])
-        videos = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
-        audios = [s for s in streams if s.get("codec_type") == "audio"]
-        
-        if audios and not videos:
-            is_audio = True
-            # Dynamically assign the correct mime type based on actual format
-            if filename.endswith((".m4a", ".aac")): mime_type = "audio/mp4"
-            elif filename.endswith(".mp3"): mime_type = "audio/mpeg"
-            elif filename.endswith(".flac"): mime_type = "audio/flac"
-            elif filename.endswith((".ogg", ".opus", ".mka")): mime_type = "audio/ogg"
-            elif filename.endswith(".wav"): mime_type = "audio/wav"
-            else: mime_type = "audio/mpeg"
 
     # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
     unsupported_web_codecs = {"hevc", "h265", "hvc1", "x265"}
@@ -13375,7 +13188,7 @@ async def get_zip_playlist(read_fn, zip_size):
         tail_len = min(262144, zip_size)
         tail = await read_fn(zip_size - tail_len, tail_len)
         entries = _parse_central_directory_full(tail, zip_size - tail_len, zip_size)
-        valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm", ".avi", ".ts", ".m4v")
+        valid_exts = (".flac", ".mp3", ".m4a", ".ogg", ".wav", ".aac", ".wma", ".opus", ".dsf", ".ape", ".mka", ".alac", ".mp4", ".mkv", ".webm")
         playlist = []
         for idx, e in enumerate(entries):
             if e["name"].lower().endswith(valid_exts) and e["method"] == 0:
@@ -13701,37 +13514,18 @@ async def _api_playlist_handler(request):
                 
             playlist = await get_zip_playlist(zip_read_tg, global_offset)
         else:
-            actual_url = await resolve_direct_link(link, user_id)
+            actual_url = await resolve_direct_link(link)
             filename = _guess_filename_from_url(actual_url).lower()
             is_zip = filename.endswith(".zip") or ".zip." in filename
             if not is_zip: return web.json_response({"status": "success", "playlist": []})
             
             session = await _get_direct_http_session()
-            
-            # 🟢 INJECT SAVED WZML HEADERS (Like GoFile accountTokens)
-            req_headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-            if link in DIRECT_REQ_HEADERS_CACHE:
-                req_headers.update(DIRECT_REQ_HEADERS_CACHE[link])
-            elif actual_url in DIRECT_REQ_HEADERS_CACHE:
-                req_headers.update(DIRECT_REQ_HEADERS_CACHE[actual_url])
-
-            async with session.head(actual_url, headers=req_headers, allow_redirects=True) as h_resp:
+            async with session.head(actual_url, allow_redirects=True) as h_resp:
                 raw_size = int(h_resp.headers.get("Content-Length", 0))
-            if raw_size == 0:
-                # 🟢 If host blocks HEAD requests, fallback to 0-byte GET
-                get_headers = req_headers.copy()
-                get_headers["Range"] = "bytes=0-0"
-                async with session.get(actual_url, headers=get_headers, allow_redirects=True) as r_resp:
-                    cr = r_resp.headers.get("Content-Range", "")
-                    if cr and "/" in cr:
-                        raw_size = int(cr.split("/")[-1])
-                    elif r_resp.headers.get("Content-Length"):
-                        raw_size = int(r_resp.headers.get("Content-Length"))
                 
             async def zip_read_http(off, length):
-                headers = req_headers.copy()
-                headers["Range"] = f"bytes={off}-{off+length-1}"
-                async with session.get(actual_url, headers=headers, allow_redirects=True) as r:
+                headers = {"Range": f"bytes={off}-{off+length-1}", "User-Agent": "Mozilla/5.0"}
+                async with session.get(actual_url, headers=headers) as r:
                     return await r.read()
                     
             playlist = await get_zip_playlist(zip_read_http, raw_size)
@@ -14000,7 +13794,7 @@ async def _api_edit_media_handler(request):
             
     asyncio.create_task(background_editor())
     return web.json_response({"status": "success", "task_uuid": task_uuid})
-    
+
 async def start_koyeb_health_check(host: str = "0.0.0.0"):
     if web is None: return
     global PORT
@@ -14028,32 +13822,6 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     app_web.router.add_post("/api/auth/password", _api_password_handler)
     app_web.router.add_get("/api/settings/tokens", _api_get_worker_tokens)
     app_web.router.add_post("/api/settings/tokens", _api_save_worker_tokens)
-
-    # 🟢 Cookies APIs
-    async def _api_cookies_get(request):
-        uid = int(request.query.get("user_id", 0))
-        cookies_dict = await db.get_user_cookies(uid)
-        # Returns True/False for each site based on whether data exists
-        return web.json_response({"status": "success", "cookies": {k: bool(v) for k, v in cookies_dict.items()}})
-
-    async def _api_cookies_post(request):
-        data = await request.json()
-        uid = int(data.get("user_id", 0))
-        site = data.get("site", "")
-        cookies_data = data.get("cookies_data", "")
-        await db.set_user_cookies(uid, site, cookies_data)
-        return web.json_response({"status": "success"})
-
-    async def _api_cookies_delete(request):
-        data = await request.json()
-        uid = int(data.get("user_id", 0))
-        site = data.get("site", "")
-        await db.set_user_cookies(uid, site, None)
-        return web.json_response({"status": "success"})
-        
-    app_web.router.add_get("/api/settings/cookies", _api_cookies_get)
-    app_web.router.add_post("/api/settings/cookies", _api_cookies_post)
-    app_web.router.add_delete("/api/settings/cookies", _api_cookies_delete)
     
     # Telegram Connect
     app_web.router.add_post("/api/tg/send_code", _api_tg_send_code)
@@ -14265,10 +14033,6 @@ async def partial_download_http(url, file_path, limit_mb=15):
         "Accept-Encoding": "identity",
         "Connection": "close",
     }
-    # 🟢 INJECT SAVED WZML HEADERS
-    if url in DIRECT_REQ_HEADERS_CACHE:
-        headers.update(DIRECT_REQ_HEADERS_CACHE[url])
-        
     timeout = aiohttp.ClientTimeout(total=None, connect=20, sock_connect=20, sock_read=25)
 
     def filename_from_headers(resp):
@@ -14428,9 +14192,6 @@ async def download_audio_snippet_http(url, file_path, limit_mb=15):
 async def full_download_http(url, file_path):
     """Full HTTP download for Spectrogram analysis."""
     headers = {"User-Agent": "Mozilla/5.0"}
-    if url in DIRECT_REQ_HEADERS_CACHE:
-        headers.update(DIRECT_REQ_HEADERS_CACHE[url])
-        
     async with aiohttp.ClientSession() as session:
         async with session.get(url, headers=headers) as resp:
             resp.raise_for_status()
