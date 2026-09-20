@@ -12097,7 +12097,8 @@ async def _api_direct_stream_handler(request):
 
     if virtual_size > 0:
         if zip_entry and zip_entry.get("name"):
-            out_headers["Content-Disposition"] = f"inline; filename*=UTF-8''{quote(zip_entry['name'].split('/')[-1].split('\\')[-1])}"
+            clean_name = zip_entry['name'].split('/')[-1].split('\\')[-1]
+            out_headers["Content-Disposition"] = f"inline; filename*=UTF-8''{quote(clean_name)}"
         chunk_len = end_byte - start_byte + 1
         out_headers["Content-Length"] = str(chunk_len)
         out_headers["Content-Range"] = f"bytes {start_byte}-{end_byte}/{virtual_size}"
