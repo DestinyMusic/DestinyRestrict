@@ -11766,7 +11766,9 @@ async def _api_direct_stream_handler(request):
 
     resolved = await resolve_direct_link(url)
     filename = _guess_filename_from_url(resolved, "direct_media").lower()
-    is_zip = filename.endswith(".zip") or ".zip." in filename
+    
+    # 🟢 FIX: Recognize .7z, .rar, and split .001 archives correctly!
+    is_zip = filename.endswith((".zip", ".7z", ".rar", ".tar", ".gz")) or re.search(r'\.(zip|7z|rar)\.\d{3}$', filename)
     
     session = await _get_direct_http_session()
     virtual_size = -1
@@ -12298,6 +12300,12 @@ async def _api_media_probe_handler(request):
                         if p and p.exists():
                             try: os.remove(p)
                             except Exception: pass
+
+            # 🟢 FIX: Prevent FFprobe from outputting junk metadata for generic Archives
+            filename_lower = str(real_file_name).lower()
+            if filename_lower.endswith((".zip", ".7z", ".rar", ".tar", ".gz")) or re.search(r'\.(zip|7z|rar)\.\d{3}$', filename_lower):
+                streams = []  # Force streams empty so it triggers the archive/download fallback
+                duration_val = 0.0
 
             # 🟢 Extract duration from stream DURATION tags if still not detected
             if duration_val <= 0:
@@ -12996,7 +13004,9 @@ async def _api_tg_stream_handler(request):
         virtual_size = global_offset
         virtual_data_offset = 0
         zip_idx = request.query.get("zip_idx", "")
-        is_zip = filename.endswith(".zip") or ".zip." in filename
+        
+        # 🟢 FIX: Recognize .7z, .rar, and split .001 archives correctly!
+        is_zip = filename.endswith((".zip", ".7z", ".rar", ".tar", ".gz")) or re.search(r'\.(zip|7z|rar)\.\d{3}$', filename)
         if is_zip:
             async def zip_read(off, length):
                 buf = bytearray()
@@ -13632,7 +13642,8 @@ async def _api_playlist_handler(request):
             media = msg.document or msg.video or msg.audio
             filename = str(getattr(media, "file_name", "")).lower()
             
-            is_zip = filename.endswith(".zip") or ".zip." in filename
+            # 🟢 FIX: Support all major archive extensions
+            is_zip = filename.endswith((".zip", ".7z", ".rar", ".tar", ".gz")) or re.search(r'\.(zip|7z|rar)\.\d{3}$', filename)
             if not is_zip: return web.json_response({"status": "success", "playlist": []})
             
             parts_map = []
