@@ -16,7 +16,3 @@ scipy
 Pillow
 pyloudnorm
 mutagen
-cloudscraper
-niquests
-lxml
-curl_cffi
