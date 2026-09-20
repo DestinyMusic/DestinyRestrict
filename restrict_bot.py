@@ -12910,7 +12910,8 @@ async def _api_stream_handler(request):
     if audio_codec in bad_audio or needs_video_transcode:
         copy_audio = False
     else:
-        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'flac'} or (audio_idx is None and not force_transcode)
+        # 🟢 FIX: Removed 'flac' from safe codecs. Browsers reject raw FLAC copying, so it must be transcoded.
+        copy_audio = audio_codec in {'aac', 'mp3', 'opus', 'ogg'} or (audio_idx is None and not force_transcode)
         
     if video_codec in unsupported_web_codecs:
         copy_video = False
@@ -12956,9 +12957,6 @@ async def _api_stream_handler(request):
         elif copy_audio and audio_codec in {"opus", "vorbis", "ogg"}:
             cmd += ["-c:a", "copy", "-f", "ogg", "pipe:1"]
             mime_type = "audio/ogg"
-        elif copy_audio and audio_codec == "flac":
-            cmd += ["-c:a", "copy", "-f", "flac", "pipe:1"]
-            mime_type = "audio/flac"
         elif copy_audio and audio_codec == "aac":
             cmd += ["-c:a", "copy", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
