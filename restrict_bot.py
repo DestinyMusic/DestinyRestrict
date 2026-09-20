@@ -12593,6 +12593,22 @@ async def _api_stream_handler(request):
         # 🟢 FIX: Use the fully resolved filename, avoiding generics!
         if meta.get("file_name") and meta.get("file_name").lower() not in ("unknown_media", "direct_stream_media", "download", "file", "media"):
             filename = meta.get("file_name").lower()
+            
+        # 🟢 NEW: Bulletproof `is_audio` detection overriding the URL extension flaw
+        # This ensures direct links (like GoFile) that hide their extension don't get forced into video transcodes
+        streams = meta.get("streams", [])
+        videos = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
+        audios = [s for s in streams if s.get("codec_type") == "audio"]
+        
+        if audios and not videos:
+            is_audio = True
+            # Dynamically assign the correct mime type based on actual format
+            if filename.endswith((".m4a", ".aac")): mime_type = "audio/mp4"
+            elif filename.endswith(".mp3"): mime_type = "audio/mpeg"
+            elif filename.endswith(".flac"): mime_type = "audio/flac"
+            elif filename.endswith((".ogg", ".opus", ".mka")): mime_type = "audio/ogg"
+            elif filename.endswith(".wav"): mime_type = "audio/wav"
+            else: mime_type = "audio/mpeg"
 
     # 🟢 SMART COPY LOGIC: Never copy E-AC3/AC3/DTS/TrueHD into MP4 for browsers
     unsupported_web_codecs = {"hevc", "h265", "hvc1", "x265"}
