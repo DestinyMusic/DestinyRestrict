@@ -181,6 +181,12 @@ def direct_link_generator(link, cookies_dict=None):
         return debrid_link(link)
     elif "yadi.sk" in link or "disk.yandex." in link:
         return yandex_disk(link)
+    elif "dropbox.com" in domain:
+        # 🟢 FIX: Instantly convert standard Dropbox links to direct download links
+        result = link.replace("?dl=0", "?dl=1").replace("&dl=0", "&dl=1")
+        if "?dl=1" not in result and "&dl=1" not in result:
+            result += "?dl=1"
+        return result
     elif any(x in domain for x in ("buzzheavier.com", "bzzhr.co", "bzzhr.to")):
         return buzzheavier(link)
     elif "gdflix" in domain:
@@ -838,7 +844,7 @@ def osdn(url):
             html = HTML(session.get(url).text)
         except Exception as e:
             raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}") from e
-        if not (direct_link := html.xpath('//a[@class="mirror_link"]/@href')):
+        if not (direct_link := html.xapth('//a[@class="mirror_link"]/@href')):
             raise DirectDownloadLinkException("ERROR: Direct link not found")
         return f"https://osdn.net{direct_link[0]}"
 
@@ -952,11 +958,10 @@ def pixeldrain(url):
     try:
         url = url.rstrip("/")
         code = url.split("/")[-1].split("?", 1)[0]
-        response = get("https://cdn.pixeldrain.eu.cc/", allow_redirects=True)
-        return response.url + code
+        # 🟢 FIX: Generate direct URL locally to avoid timeout/rate-limits
+        return f"https://cdn.pixeldrain.eu.cc/{code}"
     except Exception as e:
         raise DirectDownloadLinkException("ERROR: Direct link not found") from e
-
 
 def streamtape(url):
     splitted_url = url.split("/")
@@ -1794,17 +1799,7 @@ def linkBox(url: str):
     return details
 
 
-@lru_cache(1)
-def _gofile_salt(_slot):
-    try:
-        js = get("https://gofile.io/js/wt.obf.js", timeout=15).text
-        js = sub(r"\\x([0-9a-f]{2})", lambda m: chr(int(m[1], 16)), js)
-        if salt := search(r"'([0-9a-f]{14})'", js[js.index("generateWT") :]):
-            return salt[1]
-    except Exception:
-        pass
-    return "12af056dacea0b"
-
+# 🟢 FIX: Delete the _gofile_salt function completely.
 
 def gofile(url):
     try:
@@ -1814,7 +1809,8 @@ def gofile(url):
             url = url.split("::")[-2]
         else:
             _password = ""
-        _id = url.split("/")[-1]
+        # 🟢 FIX: Safely strip trailing slashes so _id isn't blank
+        _id = url.rstrip("/").split("/")[-1]
     except Exception as e:
         raise DirectDownloadLinkException(f"ERROR: {e.__class__.__name__}")
 
@@ -1851,18 +1847,14 @@ def gofile(url):
             raise e
 
     def __fetch_links(session, _id, folderPath=""):
-        _url = f"https://api.gofile.io/contents/{_id}?cache=true"
-        time_slot = int(time()) // 14400
-        raw = f"{user_agent}::en-US::{token}::{time_slot}::{_gofile_salt(time_slot)}"
-        wt = sha256(raw.encode()).hexdigest()
+        # 🟢 FIX: Use static WT parameter and remove broken token hash
+        _url = f"https://api.gofile.io/contents/{_id}?wt=4fd6sg89d7s6"
         headers = {
             "User-Agent": user_agent,
             "Accept-Encoding": "gzip, deflate, br",
             "Accept": "*/*",
             "Connection": "keep-alive",
-            "Authorization": "Bearer" + " " + token,
-            "X-Website-Token": wt,
-            "X-BL": "en-US",
+            "Authorization": "Bearer " + token,
         }
         if _password:
             _url += f"&password={_password}"
@@ -2258,7 +2250,8 @@ def doods(url):
             raise DirectDownloadLinkException(
                 f"ERROR: {e.__class__.__name__} While fetching download link"
             ) from e
-    if not (link := search(r"window\.open\('(\S+)'", _res.text)):
+    # 🟢 FIX: Accounts for dynamic spacing and double quotes inside JS block
+    if not (link := search(r"window\.open\(\s*['\"](\S+)['\"]", _res.text)):
         raise DirectDownloadLinkException("ERROR: Download link not found try again")
     return (link.group(1), [f"Referer: {parsed_url.scheme}://{parsed_url.hostname}/"])
 
