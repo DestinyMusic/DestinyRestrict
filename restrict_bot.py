@@ -119,6 +119,11 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger("BotLogger")
+
+# 🟢 FIX: Completely silence the spammy Uvicorn/Aiohttp 200 OK access logs and Pyrogram's Ping/Session connection spam!
+# Only actual Warnings and Errors will be printed from them now.
+logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+logging.getLogger("pyrogram").setLevel(logging.WARNING)
 # ----------------------------
 
 # --- TELEGRAPH SETUP FOR MEDIAINFO ---
@@ -6704,19 +6709,23 @@ HTML_DASHBOARD = """
                     if (data.active.length === 0) {
                         activeList.innerHTML = '<div style="color: #64748b; font-size: 13px;">No active streams right now.</div>';
                     } else {
+                        // 🟢 FIX: Beautiful Modern Cards + Text Truncation for massive filenames!
                         activeList.innerHTML = data.active.map(s => `
-                            <div class="task-row" style="margin-bottom: 8px;">
-                                <div style="flex:1;">
-                                    <div style="display:flex; justify-content: space-between; align-items:center;">
-                                        <div style="font-weight: 700; color: #fff; font-size: 13px; word-break: break-all;">${s.filename}</div>
-                                        <div style="background: rgba(34, 197, 94, 0.2); color: #22c55e; padding: 2px 8px; border-radius: 6px; font-size: 10px; font-weight: 800;">ACTIVE</div>
+                            <div style="background: rgba(0,0,0,0.3); border: 1px solid var(--card-border); border-radius: 16px; padding: 18px; margin-bottom: 12px; position: relative; box-shadow: inset 0 0 20px rgba(0,0,0,0.5);">
+                                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                                    <div style="font-weight: 800; color: #fff; font-size: 15px; display: flex; align-items: center; gap: 8px;">
+                                        👤 ID: ${s.user_id}
                                     </div>
-                                    <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-top: 6px; font-size: 11px; color: var(--subtext);">
-                                        <div>⏱ Started: ${new Date(s.start_time * 1000).toLocaleTimeString()}</div>
-                                        <div>📍 ${s.country} (${s.ip})</div>
-                                        <div>🌐 ${s.device}</div>
-                                        <div>👤 User: ${s.user_id}</div>
-                                    </div>
+                                    <div style="background: rgba(16, 185, 129, 0.15); color: #10b981; padding: 4px 10px; border-radius: 8px; font-size: 11px; font-weight: 800; border: 1px solid rgba(16,185,129,0.3);">ACTIVE</div>
+                                </div>
+                                <div style="color: var(--text); font-size: 13px; font-weight: 700; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                                    🎬 <span style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 90%; display: inline-block;" title="${s.filename}">${s.filename}</span>
+                                </div>
+                                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px; font-size: 12px; color: #94a3b8; background: rgba(255,255,255,0.02); padding: 10px; border-radius: 10px;">
+                                    <div style="display: flex; align-items: center; gap: 6px;">⏱ ${new Date(s.start_time * 1000).toLocaleTimeString()}</div>
+                                    <div style="display: flex; align-items: center; gap: 6px;">📍 ${s.country}</div>
+                                    <div style="display: flex; align-items: center; gap: 6px;">💻 ${s.device}</div>
+                                    <div style="display: flex; align-items: center; gap: 6px;">🌐 ${s.ip}</div>
                                 </div>
                             </div>
                         `).join('');
@@ -6726,11 +6735,12 @@ HTML_DASHBOARD = """
                     if (data.recent.length === 0) {
                         recentList.innerHTML = '<div style="color: #64748b; font-size: 13px;">No recent streams.</div>';
                     } else {
+                        // 🟢 FIX: Clean UI for Recent Streams too!
                         recentList.innerHTML = data.recent.map(s => `
-                            <div style="padding: 10px; border-bottom: 1px solid rgba(255,255,255,0.05);">
-                                <div style="font-weight: 700; color: #cbd5e1; font-size: 12px; word-break: break-all;">${s.filename}</div>
-                                <div style="display: flex; justify-content: space-between; margin-top: 4px; font-size: 10px; color: #64748b;">
-                                    <span>${s.device} • ${s.country}</span>
+                            <div style="background: rgba(0,0,0,0.2); border: 1px solid rgba(255,255,255,0.05); border-radius: 12px; padding: 14px; margin-bottom: 8px;">
+                                <div style="font-weight: 700; color: #cbd5e1; font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 8px;" title="${s.filename}">🎬 ${s.filename}</div>
+                                <div style="display: flex; justify-content: space-between; font-size: 11px; color: #64748b;">
+                                    <span>👤 ${s.user_id} • 💻 ${s.device} • 📍 ${s.country}</span>
                                     <span>Ended: ${new Date(s.end_time * 1000).toLocaleTimeString()}</span>
                                 </div>
                             </div>
@@ -11795,7 +11805,8 @@ async def _api_direct_stream_handler(request):
         return web.Response(status=out_status, headers=out_headers)
 
     response = web.StreamResponse(status=out_status, headers=out_headers)
-    sid = _track_stream(request, filename, "Direct")
+    # 🟢 FIX: Track the actual user_id instead of the word "Direct"
+    sid = _track_stream(request, filename, user_id)
     try:
         await response.prepare(request)
         async for chunk in remote.content.iter_chunked(524288):
@@ -13506,10 +13517,19 @@ async def _api_network_stats(request):
     if not user_doc or user_doc.get("web_token") != token:
         return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
         
+    # 🟢 PRIVACY FIX: Filter streams so normal users only see their own!
+    is_admin = await db.is_user_admin(uid)
+    active_list = list(GLOBAL_NETWORK_STATS["active"].values())
+    recent_list = GLOBAL_NETWORK_STATS["recent"]
+
+    if not is_admin:
+        active_list = [s for s in active_list if str(s.get("user_id", "")) == str(uid)]
+        recent_list = [s for s in recent_list if str(s.get("user_id", "")) == str(uid)]
+        
     return web.json_response({
         "status": "success",
-        "active": list(GLOBAL_NETWORK_STATS["active"].values()),
-        "recent": GLOBAL_NETWORK_STATS["recent"],
+        "active": active_list,
+        "recent": recent_list,
         "worker_bots_count": len(USER_WORKER_BOTS.get(uid, []))
     })
 
@@ -14010,7 +14030,8 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
 
     app_web.router.add_post("/api/stream/kill", _api_kill_stream)
         
-    runner = web.AppRunner(app_web)
+    # 🟢 FIX: 'access_log=None' officially kills the terminal web spam!
+    runner = web.AppRunner(app_web, access_log=None) 
     await runner.setup()
     site = web.TCPSite(runner, host, PORT)
     await site.start()
