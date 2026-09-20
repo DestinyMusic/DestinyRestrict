@@ -5487,6 +5487,14 @@ HTML_DASHBOARD = """
         .glass-select-item:hover { background: rgba(56, 189, 248, 0.15); color: #fff; padding-left: 20px; }
         .glass-select-item.same-as-selected { background: rgba(56, 189, 248, 0.25); color: #fff; font-weight: 800; border-left: 4px solid var(--accent); }
 
+        /* 🟢 SYNC DEBUGGER OVERLAY */
+        #sync-debugger {
+            position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.85);
+            color: #0f0; font-family: monospace; font-size: 12px; padding: 12px;
+            z-index: 9999; pointer-events: none; display: none; border: 1px solid #0f0;
+            border-radius: 8px; text-shadow: 0 0 5px #0f0; white-space: pre; line-height: 1.4;
+        }
+
         /* 3D Matrix Menu (Exact Layout from Image) */
         .matrix-3d-menu {
             position: absolute; top: 0; right: -360px; width: 340px; max-width: 94vw; height: 100%;
@@ -5753,6 +5761,7 @@ HTML_DASHBOARD = """
                     <canvas id="webgl-canvas"></canvas>
                     <video id="hidden-video" class="hidden-video-feed" playsinline webkit-playsinline preload="auto"></video>
                     <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
+                    <div id="sync-debugger"></div> <!-- 🟢 SYNC DEBUGGER LOGS -->
                     <div id="lyrics-scroller" class="lyrics-scroller"></div> <!-- 🟢 NEW: Lyrics Layer -->
 
                     <!-- Video Title Bar -->
@@ -5958,6 +5967,9 @@ HTML_DASHBOARD = """
                             <option value="21-9">21:9 Cinemascope</option>
                             <option value="4-3">4:3 Retro / IMAX</option>
                         </select>
+
+                        <!-- 🟢 TOGGLE BUTTON FOR DEBUGGER -->
+                        <button class="primary-btn" style="background: rgba(16, 185, 129, 0.2); color: #10b981; border: 1px solid #10b981; margin-top: 15px; padding: 10px;" onclick="toggleSyncDebugger()">🐛 Toggle A/V Sync Debugger</button>
                     </div>
 
                     <!-- HUD Overlay -->
@@ -8159,6 +8171,15 @@ HTML_DASHBOARD = """
             wakeHUD();
         }
 
+        // 🟢 SYNC DEBUGGER TOGGLE
+        let isSyncDebugEnabled = false;
+        function toggleSyncDebugger() {
+            isSyncDebugEnabled = !isSyncDebugEnabled;
+            const dbg = document.getElementById('sync-debugger');
+            if (dbg) dbg.style.display = isSyncDebugEnabled ? 'block' : 'none';
+            if (isSyncDebugEnabled) console.log("[SYNC DEBUG] Logger Enabled.");
+        }
+
         function toggleFullScreen() {
             const vp = document.getElementById('cinema-viewport');
             if (!vp) return;
@@ -9688,16 +9709,46 @@ HTML_DASHBOARD = """
                 clearTimeout(stallTimer); 
                 updateBufferBar(); 
 
+                let extDrift = 0;
                 // 🟢 FAST SYNC: Continuous drift correction for External Audio tracks
                 if (extAudio && extAudio.src && !vidElem.paused && !vidElem.seeking) {
-                    const drift = Math.abs(extAudio.currentTime - vidElem.currentTime);
-                    if (drift > 0.15) { 
+                    extDrift = extAudio.currentTime - vidElem.currentTime;
+                    if (Math.abs(extDrift) > 0.15) { 
                         extAudio.currentTime = vidElem.currentTime;
                     }
                 }
                 
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
+
+                // 🟢 LIVE SYNC DEBUGGER POPULATOR
+                if (isSyncDebugEnabled) {
+                    const dbg = document.getElementById('sync-debugger');
+                    if (dbg) {
+                        let vTime = cur.toFixed(3);
+                        let aTime = (extAudio && extAudio.src) ? extAudio.currentTime.toFixed(3) : vTime;
+                        let subTime = (cur - subtitleSyncOffset).toFixed(3);
+                        
+                        let logTxt = `[LIVE SYNC TRACKER]\n`;
+                        logTxt += `===================\n`;
+                        logTxt += `Video Time : ${vTime}s\n`;
+                        logTxt += `Audio Time : ${aTime}s\n`;
+                        logTxt += `Sub Time   : ${subTime}s\n`;
+                        logTxt += `Ext Drift  : ${extDrift.toFixed(3)}s\n`;
+                        logTxt += `V-Ready    : ${vidElem.readyState}\n`;
+                        logTxt += `Transcoding: ${playerRequiresTranscode}\n`;
+                        
+                        dbg.innerText = logTxt;
+                        
+                        // Console log exactly once per second to avoid crashing the browser devtools
+                        if (Math.floor(cur) % 2 === 0 && !vidElem._loggedThisSec) {
+                            console.log(`[SYNC] Video: ${vTime} | Audio: ${aTime} | Sub: ${subTime} | Drift: ${extDrift.toFixed(3)}`);
+                            vidElem._loggedThisSec = true;
+                        } else if (Math.floor(cur) % 2 !== 0) {
+                            vidElem._loggedThisSec = false;
+                        }
+                    }
+                }
 
                 if (playerRequiresTranscode) {
                     cur = playerTimelineOffset + cur;
@@ -12812,7 +12863,9 @@ async def _api_stream_handler(request):
             # 🟢 FIX: Added aresample=async=1 so transcoded audio perfectly stretches to match video frame timestamps
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1"]
 
-        cmd += ["-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # 🟢 A/V SYNC FIX: 'make_non_negative' shifts tracks independently, causing 1-2s drift.
+        # 'make_zero' shifts all streams by the EXACT same amount, locking Audio/Video/Subs together perfectly!
+        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
