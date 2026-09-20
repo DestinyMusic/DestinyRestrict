@@ -9337,15 +9337,16 @@ HTML_DASHBOARD = """
                             coverContainer.style.display = 'flex';
                             coverContainer.style.zIndex = '50';
                             
+                            // 🟢 TURN ON BLOBS FOR AUDIO ONLY
                             const appleBg = document.getElementById('apple-music-bg');
-                            if (appleBg) appleBg.style.display = 'block'; // Turn ON background blobs
+                            if (appleBg) appleBg.style.display = 'block';
                             
                             if (coverImg) {
                                 coverImg.style.display = 'block'; 
                                 coverImg.style.minHeight = '220px';
                                 coverImg.style.minWidth = '220px';
                                 coverImg.style.opacity = '1'; 
-                                
+
                                 coverImg.onerror = function() {
                                     if (!this.src.includes('flaticon')) this.src = 'https://cdn-icons-png.flaticon.com/512/2111/2111646.png';
                                     vp.style.backgroundImage = 'none';
@@ -9388,8 +9389,9 @@ HTML_DASHBOARD = """
                             if (coverContainer) coverContainer.style.display = 'none';
                             if (vp) vp.style.backgroundImage = 'none';
                             
+                            // 🟢 TURN OFF BLOBS FOR VIDEOS
                             const appleBg = document.getElementById('apple-music-bg');
-                            if (appleBg) appleBg.style.display = 'none'; // Turn OFF background blobs for Videos!
+                            if (appleBg) appleBg.style.display = 'none';
                         }
                         
                         // 🟢 ONLY fetch smart lyrics automatically if it's an Audio track!
@@ -9721,14 +9723,22 @@ HTML_DASHBOARD = """
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
 
-                // 🟢 LIVE SYNC DEBUGGER POPULATOR
+                // 🟢 FORCE KILL BACKGROUND BLOBS IF VIDEO IS PLAYING
+                if (vidElem.videoWidth > 0) {
+                    const appleBg = document.getElementById('apple-music-bg');
+                    if (appleBg && appleBg.style.display !== 'none') {
+                        appleBg.style.display = 'none';
+                    }
+                }
+
+                // 🟢 LIVE SYNC DEBUGGER & CONSOLE LOGGER
                 if (isSyncDebugEnabled) {
                     const dbg = document.getElementById('sync-debugger');
+                    let vTime = cur.toFixed(3);
+                    let aTime = (extAudio && extAudio.src) ? extAudio.currentTime.toFixed(3) : vTime;
+                    let subTime = (cur - subtitleSyncOffset).toFixed(3);
+                    
                     if (dbg) {
-                        let vTime = cur.toFixed(3);
-                        let aTime = (extAudio && extAudio.src) ? extAudio.currentTime.toFixed(3) : vTime;
-                        let subTime = (cur - subtitleSyncOffset).toFixed(3);
-                        
                         let logTxt = `[LIVE SYNC TRACKER]\n`;
                         logTxt += `===================\n`;
                         logTxt += `Video Time : ${vTime}s\n`;
@@ -9737,16 +9747,14 @@ HTML_DASHBOARD = """
                         logTxt += `Ext Drift  : ${extDrift.toFixed(3)}s\n`;
                         logTxt += `V-Ready    : ${vidElem.readyState}\n`;
                         logTxt += `Transcoding: ${playerRequiresTranscode}\n`;
-                        
                         dbg.innerText = logTxt;
-                        
-                        // Console log exactly once per second to avoid crashing the browser devtools
-                        if (Math.floor(cur) % 2 === 0 && !vidElem._loggedThisSec) {
-                            console.log(`[SYNC] Video: ${vTime} | Audio: ${aTime} | Sub: ${subTime} | Drift: ${extDrift.toFixed(3)}`);
-                            vidElem._loggedThisSec = true;
-                        } else if (Math.floor(cur) % 2 !== 0) {
-                            vidElem._loggedThisSec = false;
-                        }
+                    }
+                    
+                    // Console log roughly twice per second to track exact millisecond sync
+                    const nowSec = Math.floor(cur * 2);
+                    if (nowSec !== vidElem._lastLogSec) {
+                        console.log(`[SYNC LOG] 🎬 Video: ${vTime}s | 🎵 Audio: ${aTime}s | 💬 Sub: ${subTime}s | ⚠️ Drift: ${extDrift.toFixed(3)}s | Transcoding: ${playerRequiresTranscode}`);
+                        vidElem._lastLogSec = nowSec;
                     }
                 }
 
@@ -12834,7 +12842,7 @@ async def _api_stream_handler(request):
             mime_type = "audio/aac"
         else:
             # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
-            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-af", "aresample=async=1", "-f", "adts", "pipe:1"]
+            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
     else:
         cmd += ["-map", "0:v:0?"]
@@ -12860,12 +12868,13 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            # 🟢 FIX: Added aresample=async=1 so transcoded audio perfectly stretches to match video frame timestamps
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1"]
+            # 🟢 SYNC FIX 1: Remove aresample=async=1. It forces audio to stretch incorrectly when video is copied from a keyframe!
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2"]
 
-        # 🟢 A/V SYNC FIX: 'make_non_negative' shifts tracks independently, causing 1-2s drift.
-        # 'make_zero' shifts all streams by the EXACT same amount, locking Audio/Video/Subs together perfectly!
-        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # 🟢 SYNC FIX 2: Use -copyts (Copy Timestamps) instead of make_zero!
+        # When seeking, video snaps to a keyframe (e.g. 10s) but audio cuts at exact time (e.g. 12s).
+        # -copyts preserves original timestamps so the browser plays them in perfect sync!
+        cmd += ["-copyts", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
