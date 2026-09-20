@@ -9032,9 +9032,8 @@ HTML_DASHBOARD = """
             // selected audio, and encodes only when the requested output needs it.
             playerRequiresTranscode = true;
             const serverStart = current > 0 ? current : null;
-            // 🟢 CRITICAL SYNC FIX: Set offset to 0 and seek directly to serverStart
-            playerTimelineOffset = 0;
-            await setVideoSource(buildStreamUrl(serverStart), serverStart || 0, wasPlaying || video.readyState < 2);
+            playerTimelineOffset = serverStart || 0;
+            await setVideoSource(buildStreamUrl(serverStart), 0, wasPlaying || video.readyState < 2);
             wakeHUD();
         }
         
@@ -9045,10 +9044,10 @@ HTML_DASHBOARD = """
                 ? playerTotalDuration
                 : (Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity);
             const safeTarget = Math.max(0, Math.min(duration, Number(target) || 0));
-            // 🟢 CRITICAL SYNC FIX: Because of -copyts, timestamps are natively absolute!
-            playerTimelineOffset = 0; 
+            
+            playerTimelineOffset = safeTarget; 
             isTranscodeSeeking = true;
-            setVideoSource(buildStreamUrl(safeTarget), safeTarget, true);
+            setVideoSource(buildStreamUrl(safeTarget), 0, true);
             renderCurrentSubtitle(safeTarget);
         }
 
@@ -9082,8 +9081,8 @@ HTML_DASHBOARD = """
                 if (video.error || video.readyState < 2) {
                     playerFallbackAttempted = true;
                     playerRequiresTranscode = true;
-                    playerTimelineOffset = 0; // 🟢 Absolute timestamp fix
-                    await setVideoSource(buildStreamUrl(globalTargetTime || 0), globalTargetTime || 0, true);
+                    playerTimelineOffset = globalTargetTime || 0;
+                    await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true);
                 }
             }, 6000); // 🟢 Increased to 6s to allow deep Telegram chunks time to load!
         }
@@ -9679,8 +9678,8 @@ HTML_DASHBOARD = """
                     }
                     window.endedRetryCount = (window.endedRetryCount || 0) + 1;
 
-                    playerTimelineOffset = 0; // 🟢 Absolute timestamp fix
-                    try { await setVideoSource(buildStreamUrl(globalTargetTime || 0), globalTargetTime || 0, true); } catch (_) {}
+                    playerTimelineOffset = globalTargetTime || 0;
+                    try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
                 }
             });
             vidElem.addEventListener('waiting', () => { 
