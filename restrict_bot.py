@@ -12849,7 +12849,7 @@ async def _api_stream_handler(request):
             mime_type = "audio/aac"
         else:
             # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
-            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-af", "aresample=async=1:first_pts=0", "-f", "adts", "pipe:1"]
+            cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-af", "aresample=async=1", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
     else:
         cmd += ["-map", "0:v:0?"]
@@ -12875,11 +12875,11 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            # 🟢 SYNC FIX: 'first_pts=0' forces the transcoded audio to pad/trim itself to match the video keyframe's exact start time at 0.0!
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1:first_pts=0"]
+            # Removed first_pts=0 to retain relative A/V offset, preserving perfect lip-sync.
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1"]
 
-        # 🟢 A/V SYNC FIX: 'make_zero' ensures both tracks start at exactly 0.0 in the fragmented MP4.
-        cmd += ["-avoid_negative_ts", "make_zero", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # make_non_negative preserves original track delays (B-frames) instead of crushing them to zero.
+        cmd += ["-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
