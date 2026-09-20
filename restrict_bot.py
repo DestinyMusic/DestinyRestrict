@@ -9032,11 +9032,12 @@ HTML_DASHBOARD = """
             // selected audio, and encodes only when the requested output needs it.
             playerRequiresTranscode = true;
             const serverStart = current > 0 ? current : null;
-            playerTimelineOffset = serverStart || 0;
-            await setVideoSource(buildStreamUrl(serverStart), 0, wasPlaying || video.readyState < 2);
+            // 🟢 CRITICAL SYNC FIX: Set offset to 0 and seek directly to serverStart
+            playerTimelineOffset = 0;
+            await setVideoSource(buildStreamUrl(serverStart), serverStart || 0, wasPlaying || video.readyState < 2);
             wakeHUD();
         }
-
+        
         function restartStreamAt(target) {
             const video = document.getElementById('hidden-video');
             if (!video || !activeMediaLink) return;
@@ -9044,9 +9045,10 @@ HTML_DASHBOARD = """
                 ? playerTotalDuration
                 : (Number.isFinite(video.duration) && video.duration > 0 ? video.duration : Infinity);
             const safeTarget = Math.max(0, Math.min(duration, Number(target) || 0));
-            playerTimelineOffset = safeTarget;
+            // 🟢 CRITICAL SYNC FIX: Because of -copyts, timestamps are natively absolute!
+            playerTimelineOffset = 0; 
             isTranscodeSeeking = true;
-            setVideoSource(buildStreamUrl(safeTarget), 0, true);
+            setVideoSource(buildStreamUrl(safeTarget), safeTarget, true);
             renderCurrentSubtitle(safeTarget);
         }
 
@@ -9080,8 +9082,8 @@ HTML_DASHBOARD = """
                 if (video.error || video.readyState < 2) {
                     playerFallbackAttempted = true;
                     playerRequiresTranscode = true;
-                    playerTimelineOffset = globalTargetTime || 0; // 🟢 Use global tracker
-                    await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true);
+                    playerTimelineOffset = 0; // 🟢 Absolute timestamp fix
+                    await setVideoSource(buildStreamUrl(globalTargetTime || 0), globalTargetTime || 0, true);
                 }
             }, 6000); // 🟢 Increased to 6s to allow deep Telegram chunks time to load!
         }
@@ -9677,8 +9679,8 @@ HTML_DASHBOARD = """
                     }
                     window.endedRetryCount = (window.endedRetryCount || 0) + 1;
 
-                    playerTimelineOffset = globalTargetTime || 0;
-                    try { await setVideoSource(buildStreamUrl(playerTimelineOffset), 0, true); } catch (_) {}
+                    playerTimelineOffset = 0; // 🟢 Absolute timestamp fix
+                    try { await setVideoSource(buildStreamUrl(globalTargetTime || 0), globalTargetTime || 0, true); } catch (_) {}
                 }
             });
             vidElem.addEventListener('waiting', () => { 
@@ -12813,7 +12815,8 @@ async def _api_stream_handler(request):
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
         "-seekable", "1", 
         "-probesize", "5M", "-analyzeduration", "5M", 
-        "-fflags", "+nobuffer+flush_packets+genpts" # 🟢 FIX: +genpts ensures synced timestamps, removed deprecated -async 1
+        "-fflags", "+nobuffer+flush_packets+genpts",
+        "-copyts" # 🟢 CRITICAL SYNC FIX: Preserves original absolute timestamps to survive network drops!
     ]
 
     if start_time is not None:
@@ -12875,11 +12878,12 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            # Removed first_pts=0 to retain relative A/V offset, preserving perfect lip-sync.
+            # 🟢 SYNC FIX: Remove first_pts=0. async=1 naturally aligns the audio because we use -copyts
             cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1"]
 
-        # make_non_negative preserves original track delays (B-frames) instead of crushing them to zero.
-        cmd += ["-avoid_negative_ts", "make_non_negative", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # 🟢 CRITICAL SYNC FIX: 'disabled' prevents FFmpeg from shifting timestamps to 0. 
+        # The browser will play the absolute times natively, flawlessly surviving disconnects!
+        cmd += ["-avoid_negative_ts", "disabled", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
