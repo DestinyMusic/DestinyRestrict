@@ -12070,6 +12070,7 @@ async def _api_media_probe_handler(request):
         mime_type = "video/mp4"
         streams = []
         duration_val = 0.0
+        pdata = {}  # 🟢 FIX: Initialize pdata here to prevent UnboundLocalError
 
         try:
             if is_tg:
@@ -12143,6 +12144,7 @@ async def _api_media_probe_handler(request):
             except Exception as probe_exc:
                 logger.warning(f"🔎 [PROBE HTTP] Loopback HTTP probe failed: {probe_exc}")
                 streams = []
+                pdata = {}  # 🟢 FIX: Ensure pdata exists even if probe fails
 
             # 🟢 MKV SPARSE PROBE FALLBACK: If HTTP probe returned no streams for a Telegram file,
             # sample the head & tail directly into a small temp file (just like /mediainfo)
