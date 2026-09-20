@@ -12231,17 +12231,35 @@ async def _api_media_probe_handler(request):
                     mime_type = cached_headers.get("content_type") or mime_type
                     cd = cached_headers.get("content_disposition", "")
                     if cd:
-                        m = re.search(r"filename\*=UTF-8''([^;]+)", cd, re.I) # 🟢 FIX: Better Regex for RFC 5987
+                        m = re.search(r"filename\*=UTF-8''([^;]+)", cd, re.I) 
                         if m:
                             real_file_name = unquote(m.group(1).strip().strip('"'))
                         else:
-                            m = re.search(r'filename=["\']?([^"\';]+)', cd, re.I) # 🟢 FIX: Catches all standard filename headers
+                            m = re.search(r'filename=["\']?([^"\';]+)', cd, re.I) 
                             if m:
                                 real_file_name = unquote(m.group(1).strip())
 
+            # 🟢 FIX: Instantly reject Archives and Split files from FFprobe!
+            filename_lower = str(real_file_name).lower()
+            if filename_lower.endswith((".7z", ".rar", ".tar", ".gz", ".iso", ".bin")) or re.search(r'\.(00\d|part\d+|z\d+)$', filename_lower):
+                return web.json_response({
+                    "status": "error", 
+                    "message": f"This is an archive file ({Path(real_file_name).suffix}). You cannot play it in the Media Theater. Please use the 'Downloads' tab or /dl command."
+                })
+                
+            # 🟢 FIX: Bypass raw ZIP files to prevent FFprobe from hanging, allowing the ZIP Playlist extractor to take over!
+            if filename_lower.endswith(".zip"):
+                result = {
+                    "status": "success", "file_name": real_file_name, "mime_type": "application/zip",
+                    "requires_transcode": False, "format_tags": {}, "browser_compatible": True,
+                    "has_cover": False, "video_codec": "", "audio_codec": "", "video_width": 0, "video_height": 0,
+                    "duration": 0, "qualities": ["Original"], "audio_tracks": [], "subtitles": [],
+                    "resolved_url": actual_url if not is_tg else "", "streams": [],
+                }
+                return web.json_response(result)
+
             probe_input = actual_url
             if not is_tg:
-                # 🟢 Restoring Loopback for Direct Links to prevent strict 5XX server blocks
                 probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
                 logger.debug(f"🔎 [PROBE] Feeding Loopback Proxy to FFprobe: {probe_input[:100]}...")
 
@@ -12519,6 +12537,11 @@ async def _api_stream_handler(request):
             filename = _guess_filename_from_url(actual_url, "direct_media").lower()
             lower = actual_url.lower().split('?', 1)[0]
             is_audio = bool(re.search(r"\.(flac|mp3|m4a|ogg|wav|aac|wma|opus|dsf|ape|mka|alac)$", lower))
+            
+            # 🟢 FIX: Hard block to prevent FFmpeg from crashing on Archive files!
+            if filename.endswith((".7z", ".rar", ".tar", ".gz", ".iso", ".bin")) or re.search(r'\.(00\d|part\d+|z\d+)$', filename):
+                return web.Response(status=400, text="Cannot stream compressed split archives.")
+                
             mime_type = "audio/mpeg" if filename.endswith('.mp3') else (
                 "audio/mp4" if filename.endswith(('.m4a','.aac')) else (
                     "audio/ogg" if filename.endswith('.ogg') else (
