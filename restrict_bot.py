@@ -9814,11 +9814,15 @@ HTML_DASHBOARD = """
 
             } catch (err) {
                 console.error("Proxy API failed:", err);
+                // 🟢 FIX: Graceful fallback instead of ugly errors, and DO NOT stop the Wikipedia fetch!
                 document.getElementById('c-name').innerText = countryName;
-                document.getElementById('c-cap').innerText = "Error";
-                document.getElementById('c-pop').innerText = "Error";
-                document.getElementById('c-wiki').innerHTML = '<span style="color:#ef4444;">Network Error: Backend Proxy failed. ' + err.message + '</span>';
-                return; 
+                document.getElementById('c-cap').innerText = "Unavailable";
+                document.getElementById('c-pop').innerText = "Unavailable";
+                document.getElementById('c-reg').innerText = "Unavailable";
+                document.getElementById('c-curr').innerText = "Unavailable";
+                document.getElementById('c-lang').innerText = "Unavailable";
+                document.getElementById('c-time').innerText = "--:--:--";
+                document.getElementById('c-flag').src = "https://cdn-icons-png.flaticon.com/512/323/323315.png"; // Generic globe icon
             }
 
             // 🟢 BLOCK 2: Fetch Wikipedia via Backend Proxy
@@ -13633,18 +13637,23 @@ async def _api_proxy_country(request):
     from urllib.parse import quote
 
     async def fetch_api(url):
-        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers) as resp:
-                if resp.status == 200:
-                    try:
-                        data = await resp.json()
-                        # Ensure we actually got data, not an empty list [] or error dict
-                        if isinstance(data, list) and len(data) > 0: return data
-                        if isinstance(data, dict) and "flags" in data: return data
-                    except Exception:
-                        pass
-                return None
+        # 🟢 FIX: Added proper try/except and a strict 4-second timeout to prevent hanging!
+        headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"}
+        try:
+            timeout = aiohttp.ClientTimeout(total=4)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        try:
+                            data = await resp.json()
+                            # Ensure we actually got data, not an empty list [] or error dict
+                            if isinstance(data, list) and len(data) > 0: return data
+                            if isinstance(data, dict) and "flags" in data: return data
+                        except Exception:
+                            pass
+        except Exception as e:
+            print(f"[Globe API] Backend failed, switching to fallback... ({e})")
+        return None
 
     try:
         data = None
@@ -13660,14 +13669,33 @@ async def _api_proxy_country(request):
         if not data and name:
             data = await fetch_api(f"https://restcountries.com/v3.1/name/{quote(name)}")
 
-        # Return Success or clear 404 Error
+        # 🟢 FIX: Attempt 4 - Fallback API (Often works when V3 is rate-limited)
+        if not data and iso and iso != "-99":
+            data = await fetch_api(f"https://restcountries.com/v2/alpha/{iso}")
+
+        # 🟢 FIX: If ALL APIs fail, return a mock success response so the UI stays beautiful and doesn't crash!
         if data:
             return web.json_response(data)
         else:
-            return web.Response(status=404, text=json.dumps({"error": "Country data not found or API rate limited."}), content_type="application/json")
+            mock_data = {
+                "name": {"common": name or "Unknown Country"},
+                "capital": ["Unavailable"],
+                "region": "Unavailable",
+                "population": "Unavailable",
+                "flags": {"png": "https://cdn-icons-png.flaticon.com/512/323/323315.png"} # Generic globe icon
+            }
+            return web.json_response([mock_data])
             
     except Exception as e:
-        return web.Response(status=500, text=json.dumps({"error": str(e)}), content_type="application/json")
+        # Failsafe mock response
+        mock_data = {
+            "name": {"common": name or "Unknown Country"},
+            "capital": ["Unavailable"],
+            "region": "Unavailable",
+            "population": "Unavailable",
+            "flags": {"png": "https://cdn-icons-png.flaticon.com/512/323/323315.png"}
+        }
+        return web.json_response([mock_data])
 
 async def _api_proxy_wiki(request):
     q = request.query.get("q", "").strip()
