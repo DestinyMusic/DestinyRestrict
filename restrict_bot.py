@@ -6692,7 +6692,7 @@ HTML_DASHBOARD = """
         async function fetchNetworkStats() {
             if (!currentUser) return;
             try {
-                const res = await fetch(`/api/network?user_id=${currentUser}`);
+                const res = await fetch(`/api/network?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
                 if (data.status === 'success') {
                     document.getElementById('net-active-count').innerText = `${data.active.length} ONLINE`;
@@ -6747,7 +6747,7 @@ HTML_DASHBOARD = """
             resultsEl.style.display = 'none';
 
             try {
-                const res = await fetch(`/api/speedtest?user_id=${currentUser}`);
+                const res = await fetch(`/api/speedtest?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
                 
                 if (data.status === 'success') {
@@ -6776,7 +6776,7 @@ HTML_DASHBOARD = """
         async function loadSosStats() {
             if (!currentUser) return;
             try {
-                const res = await fetch(`/api/sos?user_id=${currentUser}`);
+                const res = await fetch(`/api/sos?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
                 
                 if (data.status === 'success') {
@@ -6951,7 +6951,7 @@ HTML_DASHBOARD = """
             document.getElementById('cd-title').innerText = "Analyzing Chat...";
 
             try {
-                const res = await fetch(`/api/chat_details?user_id=${currentUser}&chat_id=${chatId}`);
+                const res = await fetch(`/api/chat_details?user_id=${currentUser}&token=${currentToken}&chat_id=${chatId}`);
                 const textRaw = await res.text();
                 
                 let data;
@@ -7051,7 +7051,7 @@ HTML_DASHBOARD = """
 
         async function loadAdminUsers() {
             try {
-                const res = await fetch(`/api/admin/users?user_id=${currentUser}`);
+                const res = await fetch(`/api/admin/users?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
                 if (data.status === 'success') {
                     const list = document.getElementById('admin-users-list');
@@ -7116,7 +7116,7 @@ HTML_DASHBOARD = """
         async function loadWorkerTokens() {
             if (!currentUser) return;
             try {
-                const res = await fetch(`/api/settings/tokens?user_id=${currentUser}`);
+                const res = await fetch(`/api/settings/tokens?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
                 if (data.status === 'success' && data.tokens) {
                     const el = document.getElementById('worker-tokens-input');
@@ -7144,7 +7144,7 @@ HTML_DASHBOARD = """
         async function fetchStats() {
             if (!currentUser) return;
             try {
-                const res = await fetch(`/api/stats?user_id=${currentUser}`);
+                const res = await fetch(`/api/stats?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
                 
                 if (data.is_admin) {
@@ -7377,7 +7377,7 @@ HTML_DASHBOARD = """
             if (isFetchingLogs) return; // Prevent freeze if you click refresh 10 times fast
             isFetchingLogs = true;
             try {
-                const res = await fetch(`/api/logs?user_id=${currentUser}`);
+                const res = await fetch(`/api/logs?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
                 const term = document.getElementById('log-terminal');
                 term.innerText = data.logs || "No logs generated yet.";
@@ -10298,6 +10298,12 @@ async def _api_stats_handler(request):
     except:
         user_id = 0
 
+    # 🟢 TOKEN CHECK
+    token = request.query.get("token", "")
+    user_doc = await db.col.find_one({"id": user_id})
+    if not user_doc or user_doc.get("web_token") != token:
+        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
+
     uptime_seconds = int(time.time() - BOT_START_TIME)
     days, rem = divmod(uptime_seconds, 86400)
     hours, rem = divmod(rem, 3600)
@@ -10632,6 +10638,12 @@ async def _api_logs_handler(request):
     except:
         uid = 0
         
+    # 🟢 TOKEN CHECK
+    token = request.query.get("token", "")
+    user_doc = await db.col.find_one({"id": uid})
+    if not user_doc or user_doc.get("web_token") != token:
+        return web.json_response({"logs": "⚠️ Unauthorized: Invalid or expired Web Token. Please log in again."})
+        
     if uid not in ADMINS and uid not in SUDOS:
         return web.json_response({"logs": "⚠️ ACCESS DENIED: You must be a Bot Admin to view server logs."})
         
@@ -10762,13 +10774,13 @@ async def _api_tg_logout(request):
 
 async def _api_chats_handler(request):
     uid = int(request.query.get("user_id", 0))
-    token = request.query.get("token", "")
     
-    # 🟢 SECURE TOKEN CHECK
+    # 🟢 TOKEN CHECK
+    token = request.query.get("token", "")
     user_doc = await db.col.find_one({"id": uid})
     if not user_doc or user_doc.get("web_token") != token:
-        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token. Please logout and login again."})
-
+        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
+        
     session_str = await db.get_session(uid)
     
     if not session_str:
@@ -10922,6 +10934,12 @@ async def _api_speedtest_handler(request):
         uid = int(request.query.get("user_id", 0))
     except:
         uid = 0
+        
+    # 🟢 TOKEN CHECK
+    token = request.query.get("token", "")
+    user_doc = await db.col.find_one({"id": uid})
+    if not user_doc or user_doc.get("web_token") != token:
+        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
     
     session_str = await db.get_session(uid)
     if not session_str and uid not in ADMINS:
@@ -10973,6 +10991,12 @@ async def _api_sos_handler(request):
         uid = int(request.query.get("user_id", 0))
     except:
         uid = 0
+        
+    # 🟢 TOKEN CHECK
+    token = request.query.get("token", "")
+    user_doc = await db.col.find_one({"id": uid})
+    if not user_doc or user_doc.get("web_token") != token:
+        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
         
     session_str = await db.get_session(uid)
     if not session_str and uid not in ADMINS:
@@ -11083,6 +11107,12 @@ import traceback
 async def _api_chat_details_handler(request):
     uid = int(request.query.get("user_id", 0))
     raw_chat_string = request.query.get("chat_id", "").strip()
+    
+    # 🟢 TOKEN CHECK
+    token = request.query.get("token", "")
+    user_doc = await db.col.find_one({"id": uid})
+    if not user_doc or user_doc.get("web_token") != token:
+        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
     
     if not raw_chat_string:
         return web.json_response({"status": "error", "message": "Missing required chat_id parameter."})
@@ -13443,7 +13473,13 @@ async def init_worker_bots(user_id=None):
 
 async def _api_get_worker_tokens(request):
     uid = int(request.query.get("user_id", 0))
+    
+    # 🟢 TOKEN CHECK
+    token = request.query.get("token", "")
     doc = await db.col.find_one({"id": uid})
+    if not doc or doc.get("web_token") != token:
+        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
+        
     return web.json_response({"status": "success", "tokens": doc.get("bot_tokens", []) if doc else []})
 
 async def _api_save_worker_tokens(request):
@@ -13463,6 +13499,13 @@ async def _api_save_worker_tokens(request):
 async def _api_network_stats(request):
     try: uid = int(request.query.get("user_id", 0))
     except: uid = 0
+    
+    # 🟢 TOKEN CHECK
+    token = request.query.get("token", "")
+    user_doc = await db.col.find_one({"id": uid})
+    if not user_doc or user_doc.get("web_token") != token:
+        return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
+        
     return web.json_response({
         "status": "success",
         "active": list(GLOBAL_NETWORK_STATS["active"].values()),
@@ -13885,6 +13928,13 @@ async def start_koyeb_health_check(host: str = "0.0.0.0"):
     async def _api_admin_get_users(request):
         try: uid = int(request.query.get("user_id", 0))
         except: uid = 0
+        
+        # 🟢 TOKEN CHECK
+        token = request.query.get("token", "")
+        user_doc = await db.col.find_one({"id": uid})
+        if not user_doc or user_doc.get("web_token") != token:
+            return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
+            
         if not await db.is_user_admin(uid):
             return web.json_response({"status": "error", "message": "Unauthorized"})
         
