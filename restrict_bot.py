@@ -11766,6 +11766,12 @@ def _untrack_stream(sid):
 
 async def _api_direct_stream_handler(request):
     """Native direct-link proxy with full HTTP Range support, keep-alive reuse, and STORED ZIP resolution."""
+    # 🟢 FIX: Extract user_id so it doesn't crash the proxy tracker with a NameError!
+    try:
+        user_id = int(request.query.get("user_id", 0))
+    except Exception:
+        user_id = 0
+        
     url = request.query.get("url", "").strip()
     logger.info(f"🌐 [DIRECT STREAM] Proxying {request.method} request for: {url[:100]}...")
     if not url or not url.lower().startswith(("http://", "https://")):
