@@ -740,7 +740,7 @@ def _watcher_update_allowed(message):
     topic_id = _watcher_topic_id(message)
     return (chat_id, topic_id) in WATCHER_SOURCE_INDEX or (chat_id, None) in WATCHER_SOURCE_INDEX
 
-watcher_update_filter = filters.create(lambda _client, message: _watcher_update_allowed(message))
+watcher_update_filter = filters.create(lambda flt, _client, message: _watcher_update_allowed(message))
 
 WATCHER_MEDIA_GROUPS = {}              # ALBUM WATCHER TRACKER
 WATCHER_DEDUPE_CACHE = defaultdict(OrderedDict)  # bounded per-watcher event dedupe
