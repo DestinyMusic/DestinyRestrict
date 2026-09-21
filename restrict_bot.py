@@ -4296,7 +4296,7 @@ def _get_client_label(c):
 async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, dest_thread_id, msg, msg_type, user_id, task_uuid, delay):
     # 🟢 Select an Upload Client (Worker Bot > Main Bot)
     upload_client = client
-    worker_bots = USER_WORKER_BOTS.get(user_id, [])
+    worker_bots = USER_TASK_BOTS.get(user_id, [])
     if worker_bots:
         connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
         if connected_workers:
@@ -4364,7 +4364,7 @@ async def _execute_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, 
 async def _execute_public_live_unrestricted_copy(client, acc, chat_id, msgid, dest_chat_id, dest_thread_id, msg, msg_type, user_id, task_uuid, delay):
     # 🟢 Select an Upload Client (Worker Bot > Main Bot)
     upload_client = client
-    worker_bots = USER_WORKER_BOTS.get(user_id, [])
+    worker_bots = USER_TASK_BOTS.get(user_id, [])
     if worker_bots:
         connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
         if connected_workers:
@@ -4585,7 +4585,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
         ACTIVE_PROCESSES[user_id][task_uuid]["fetcher"] = _get_client_label(fetcher)
         
         predicted_uploader = client
-        worker_bots = USER_WORKER_BOTS.get(user_id, [])
+        worker_bots = USER_TASK_BOTS.get(user_id, [])
         if worker_bots:
             connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
             if connected_workers:
@@ -4814,7 +4814,7 @@ async def _execute_restricted_download_upload(client, acc, chatid, msgid, dest_c
 
         # 🟢 NEW: Select an Upload Client (Worker Bot > Main Bot)
         upload_client = client
-        worker_bots = USER_WORKER_BOTS.get(user_id, [])
+        worker_bots = USER_TASK_BOTS.get(user_id, [])
         if worker_bots:
             connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
             if connected_workers:
@@ -10783,7 +10783,7 @@ async def _api_add_task(request):
                 dest_title = str(dest_chat_id)
 
         # 🟢 NEW: Check Worker Bots access and warn via PM if missing!
-        worker_bots = USER_WORKER_BOTS.get(user_id, [])
+        worker_bots = USER_TASK_BOTS.get(user_id, [])
         is_dm = str(dest_chat_id).lstrip("-").isdigit() and not str(dest_chat_id).startswith("-100") and int(dest_chat_id) > 0
         if worker_bots and not is_dm:
             has_worker_access = False
@@ -10901,7 +10901,7 @@ async def _api_add_watcher(request):
             except: pass
 
         # 🟢 NEW: Check Worker Bots access and warn via PM if missing!
-        worker_bots = USER_WORKER_BOTS.get(user_id, [])
+        worker_bots = USER_TASK_BOTS.get(user_id, [])
         is_dm = str(dest_chat_id).lstrip("-").isdigit() and not str(dest_chat_id).startswith("-100") and int(dest_chat_id) > 0
         if worker_bots and not is_dm:
             has_worker_access = False
@@ -12345,47 +12345,64 @@ async def _probe_tg_client(client, chat_id, msg_id):
                 pass
         return None
 
-async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
-    """Return accessible bot clients first, then one user-session fallback. Strictly scoped to user_id."""
-    key = (user_id, chat_id, int(msg_id))
+async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None, pool_type='stream'):
+    """Return accessible bot clients with smart borrowing if the other pool is idle."""
+    
+    # 1. 🟢 Detect if the "other" side of the bot is currently busy doing work
+    is_streaming_active = any(str(s.get("user_id", "")) == str(user_id) for s in GLOBAL_NETWORK_STATS.get("active", {}).values())
+    is_tasks_active = len(ACTIVE_PROCESSES.get(user_id, {})) > 0
+    
+    can_borrow = False
+    if pool_type == 'stream':
+        can_borrow = not is_tasks_active # Stream can borrow if tasks are idle
+    else:
+        can_borrow = not is_streaming_active # Tasks can borrow if stream is idle
+
+    # 2. 🟢 Add 'can_borrow' to the cache key! 
+    # If a task suddenly starts, this key changes, instantly releasing the borrowed bots!
+    key = (user_id, chat_id, int(msg_id), pool_type, can_borrow)
     cached = TG_ACCESS_CACHE.get(key)
     now = time.time()
+    
     if cached and cached[1] > now:
         pool = [c for c in cached[0] if getattr(c, "is_connected", True)]
-        if pool:
-            return pool, False
+        if pool: return pool, False
 
     lock = TG_ACCESS_LOCKS[key]
     async with lock:
         cached = TG_ACCESS_CACHE.get(key)
         if cached and cached[1] > time.time():
             pool = [c for c in cached[0] if getattr(c, "is_connected", True)]
-            if pool:
-                return pool, False
+            if pool: return pool, False
 
+        primary_pool = list(USER_STREAM_BOTS.get(user_id, [])) if pool_type == 'stream' else list(USER_TASK_BOTS.get(user_id, []))
+        secondary_pool = list(USER_TASK_BOTS.get(user_id, [])) if pool_type == 'stream' else list(USER_STREAM_BOTS.get(user_id, []))
+        
         candidates = []
         seen = set()
         
-        # Use ONLY this specific user's worker bots! Ignored main app bot for privacy.
-        user_worker_bots = list(USER_WORKER_BOTS.get(user_id, []))
-        
-        for client in user_worker_bots:
-            if client is None:
-                continue
-                
-            # 🟢 FIX: Properly refresh bot connections if they disconnected to check access correctly!
+        # 3. 🟢 Always load your primary assigned bots first
+        for client in primary_pool:
+            if client is None: continue
             if not getattr(client, "is_connected", False):
-                try:
-                    await client.connect()
-                except Exception as e:
-                    logger.debug(f"Worker bot refresh failed: {e}")
-                    continue
-                    
+                try: await client.connect()
+                except Exception: continue
             marker = _tg_client_cache_name(client)
-            if marker in seen:
-                continue
+            if marker in seen: continue
             seen.add(marker)
             candidates.append(client)
+            
+        # 4. 🟢 ONLY load the secondary bots if they are completely free, OR if you have zero primary bots configured
+        if can_borrow or len(primary_pool) == 0:
+            for client in secondary_pool:
+                if client is None: continue
+                if not getattr(client, "is_connected", False):
+                    try: await client.connect()
+                    except Exception: continue
+                marker = _tg_client_cache_name(client)
+                if marker in seen: continue
+                seen.add(marker)
+                candidates.append(client)
 
         pool = []
         if candidates:
@@ -12403,9 +12420,8 @@ async def _get_working_tg_pool(user_id, chat_id, msg_id, fallback_client=None):
             TG_ACCESS_CACHE[key] = (pool, time.time() + TG_ACCESS_CACHE_TTL)
             return pool, False
 
-        # 🟢 FIX: If the user has worker bots configured, DO NOT fallback to the user session for streaming!
-        # The user session should ONLY be used if the user hasn't provided any bot tokens.
-        if user_worker_bots:
+        # 5. 🟢 Only block the User Session fallback if AT LEAST ONE bot pool was configured
+        if primary_pool or secondary_pool:
              logger.warning(f"All worker bots failed to access {chat_id}. Blocking fallback to prevent User Session FloodWaits.")
              return [], False
 
@@ -15260,7 +15276,7 @@ async def watcher_worker_loop(wid_str):
 
             # 🟢 Determine Uploader early so we can show it in the UI even if restricted
             upload_client = app
-            worker_bots = USER_WORKER_BOTS.get(owner_id, [])
+            worker_bots = USER_TASK_BOTS.get(owner_id, [])
             if worker_bots:
                 connected_workers = [wb for wb in worker_bots if getattr(wb, "is_connected", False)]
                 if connected_workers:
