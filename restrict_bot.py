@@ -12836,12 +12836,12 @@ async def _api_stream_handler(request):
     # 🟢 [RESTORED & FIXED] ZIP TRACK HANDLING
     zip_idx = request.query.get("zip_idx", "")
     if zip_idx:
-        # Append zip_idx to actual_url so FFmpeg targets the internal track!
+        # 🟢 CRITICAL FIX: Append zip_idx directly to actual_url so FFmpeg extracts the track!
         if "zip_idx=" not in actual_url: 
             actual_url += f"&zip_idx={zip_idx}"
             
         try:
-            # Safely detect if an internal ZIP file is an Audio Track!
+            # 🟢 DYNAMIC INTERNAL ZIP PROBE: Safely detect if an internal ZIP file is an Audio Track!
             pdata = await _run_ffprobe_json(actual_url, fast=True, extract_tags=False)
             streams = pdata.get("streams", [])
             videos = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
@@ -13095,41 +13095,58 @@ async def get_client_msg(client, chat_id, msg_id):
         return msg
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk continuously using precise byte offsets."""
+    """Fetches a chunk continuously. Translates raw bytes into Pyrogram Chunk Indexes."""
+    import math
+    import asyncio
+    CHUNK_SIZE = 1048576
+    
+    # 🟢 CRITICAL FIX: Pyrogram offset expects CHUNK INDEX, not raw bytes!
+    chunk_index = offset // CHUNK_SIZE
+    skip_bytes = offset % CHUNK_SIZE
+    
+    target_bytes = limit
+    # Calculate how many 1MB chunks we need to fetch to satisfy the request
+    total_bytes_to_fetch = skip_bytes + target_bytes
+    chunk_limit = math.ceil(total_bytes_to_fetch / CHUNK_SIZE)
+    
     for attempt in range(6): 
         if not getattr(client, "is_connected", False):
-            try: 
-                await client.connect()
-            except Exception: 
-                pass
+            try: await client.connect()
+            except Exception: pass
 
+        current_skip = skip_bytes
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
             async def fetch_continuous():
-                # 🟢 REAL CRITICAL FIX: Pyrogram 3.x expects raw BYTES for offset!
-                # We use limit=0 to let Pyrogram stream naturally, and break when we hit our target size.
-                async for chunk in client.stream_media(msg, offset=offset, limit=0):
+                nonlocal current_skip
+                # 🟢 Pass the correct Chunk Index (e.g. 1) and Chunk Limit (e.g. 4)
+                async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunk_limit):
+                    if current_skip > 0:
+                        if len(chunk) <= current_skip:
+                            current_skip -= len(chunk)
+                            continue
+                        else:
+                            chunk = chunk[current_skip:]
+                            current_skip = 0
+                            
                     data.extend(chunk)
-                    if len(data) >= limit:
+                    if len(data) >= target_bytes:
                         break
                         
             # Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
-            dynamic_timeout = max(15.0, (limit / 1024 / 1024) * 5.0)
+            dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 5.0)
             await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
                     
             if not data: 
                 raise ValueError("EOF Reached or Empty Chunk")
-            
-            # Return exactly the requested byte size
-            return bytes(data[:limit])
+            return bytes(data[:target_bytes])
             
         except FloodWait as e:
             await asyncio.sleep(e.value + 1)
         except Exception as e:
-            if attempt == 5: 
-                raise e
+            if attempt == 5: raise e
             await asyncio.sleep(1.5 + attempt) 
             
     raise TimeoutError("Exceeded max retries for chunk")
