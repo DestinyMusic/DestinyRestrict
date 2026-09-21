@@ -12526,7 +12526,8 @@ async def _api_media_probe_handler(request):
             probe_input = actual_url
             if not is_tg:
                 # 🟢 Restoring Loopback for Direct Links to prevent strict 5XX server blocks
-                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
+                # MUST pass original `link` so DIRECT_REQ_HEADERS_CACHE can inject the GoFile accountToken!
+                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
                 logger.debug(f"🔎 [PROBE] Feeding Loopback Proxy to FFprobe: {probe_input[:100]}...")
 
             tg_duration = 0.0
@@ -12563,7 +12564,8 @@ async def _api_media_probe_handler(request):
 
             # 🟢 MKV SPARSE PROBE FALLBACK: If HTTP probe returned no streams for a Telegram file,
             # sample the head & tail directly into a small temp file (just like /mediainfo)
-            if not streams and is_tg and 'pool' in locals() and pool and 'msg' in locals() and msg:
+            is_archive_probe = bool(re.search(r'\.(zip|7z|rar|tar|gz|iso|bin)(\.\d{3})?$', str(real_file_name).lower()))
+            if not streams and is_tg and 'pool' in locals() and pool and 'msg' in locals() and msg and not is_archive_probe:
                 logger.info("🔎 [PROBE TG] Falling back to fast local sparse-file probe for MKV/Telegram...")
                 temp_probe = Path(f"./probe_{user_id}_{int(time.time())}.dat")
                 temp_named = None
@@ -12831,6 +12833,25 @@ async def _api_stream_handler(request):
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
+    zip_idx = request.query.get("zip_idx", "")
+    if zip_idx:
+        try:
+            # 🟢 DYNAMIC INTERNAL ZIP PROBE: Safely detect if an internal ZIP file is an Audio Track!
+            # Prevents FFmpeg from crashing by forcing `-vf scale=` onto FLAC/MP3 files.
+            probe_url = actual_url
+            if zip_idx and "zip_idx=" not in probe_url: probe_url += f"&zip_idx={zip_idx}"
+            pdata = await _run_ffprobe_json(probe_url, fast=True, extract_tags=False)
+            streams = pdata.get("streams", [])
+            videos = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
+            audios = [s for s in streams if s.get("codec_type") == "audio"]
+            if audios and not videos:
+                is_audio = True
+                filename = "internal_track.mp3"
+                mime_type = "audio/mpeg"
+                logger.info(f"🎵 Dynamic Probe: Internal ZIP file confirmed as Audio-Only!")
+        except Exception as e:
+            logger.debug(f"Stream dynamic probe failed: {e}")
+
     # Always keep the browser on the byte-range path for the original/default
     # stream. FFmpeg is reserved for explicit track/quality selection or codecs
     # which the browser cannot decode directly.
@@ -12873,7 +12894,7 @@ async def _api_stream_handler(request):
     res_scale_map = {"4K":"3840:-2", "1080p":"1920:-2", "720p":"1280:-2", "480p":"854:-2", "360p":"640:-2"}
     scale_filter = res_scale_map.get(quality)
 
-    # 1. 🟢 Base Command
+    # 1. 🟢 Base Command (Do NOT use -copyts, and do NOT put -ss here)
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
@@ -12885,7 +12906,10 @@ async def _api_stream_handler(request):
         "-fflags", "+nobuffer+flush_packets+genpts"
     ]
 
-    # 2. 🟢 KEEP -ss BEFORE -i (Crucial for ZIP files and remote range seeking!)
+    # 2. 🟢 Input URL goes FIRST
+    cmd += ["-i", actual_url]
+
+    # 3. 🟢 Put -ss AFTER -i for Frame-Accurate A/V/S Sync!
     if start_time is not None:
         try:
             start_float = max(0.0, float(start_time))
@@ -12894,9 +12918,6 @@ async def _api_stream_handler(request):
         except Exception:
             pass
 
-    # 3. Input URL goes after -ss
-    cmd += ["-i", actual_url]
-
     if is_audio:
         if audio_idx is not None and str(audio_idx).strip():
             cmd += ["-map", f"0:{audio_idx}"]
@@ -12904,6 +12925,8 @@ async def _api_stream_handler(request):
             cmd += ["-map", "0:a:0?"]
         cmd += ["-vn", "-sn"]
         
+        # 🟢 FIX: Never use MP4 container for audio-only streams. Browsers wait for video frames and hang.
+        # Also, explicitly map compatible codecs to their native containers to prevent FFmpeg crashes.
         if copy_audio and audio_codec == "mp3":
             cmd += ["-c:a", "copy", "-f", "mp3", "pipe:1"]
             mime_type = "audio/mpeg"
@@ -12917,6 +12940,7 @@ async def _api_stream_handler(request):
             cmd += ["-c:a", "copy", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
         else:
+            # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
             cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-af", "aresample=async=1", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
     else:
@@ -12943,10 +12967,10 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            # 4. 🟢 FIXED SYNC: Using aresample with correct time-stretching parameters to prevent audio/video drift
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1000:min_hard_comp=0.100000"]
+            # 4. 🟢 HARD SYNC FIX: Force audio to stretch perfectly to the video frame
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1000:min_hard_comp=0.100000:first_pts=0"]
 
-        # 5. Muxing parameters
+        # 5. 🟢 Add muxdelay 0 and remove avoid_negative_ts
         cmd += ["-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-muxdelay", "0", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
@@ -12955,7 +12979,7 @@ async def _api_stream_handler(request):
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.DEVNULL, # 🟢 FIX: Prevents OS pipe buffer deadlock
     )
     import aiohttp
     
@@ -13663,45 +13687,36 @@ async def get_client_msg(client, chat_id, msg_id):
     return CLIENT_MSG_CACHE[key]
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk continuously. Translates raw bytes into Pyrogram Chunk Indexes."""
-    import math
+    """Fetches a chunk continuously using precise byte offsets."""
     import asyncio
-    CHUNK_SIZE = 1048576
-    
-    # 🟢 CRITICAL FIX: Pyrogram offset expects CHUNK INDEX, not raw bytes!
-    chunk_index = offset // CHUNK_SIZE
-    skip_bytes = offset % CHUNK_SIZE
-    
-    target_bytes = limit
-    # Calculate how many 1MB chunks we need to fetch to satisfy the request
-    total_bytes_to_fetch = skip_bytes + target_bytes
-    chunk_limit = math.ceil(total_bytes_to_fetch / CHUNK_SIZE)
-    
     for attempt in range(6): 
         if not getattr(client, "is_connected", False):
-            try: await client.connect()
-            except Exception: pass
+            try: 
+                await client.connect()
+            except Exception: 
+                pass
 
-        current_skip = skip_bytes
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
             async def fetch_continuous():
-                nonlocal current_skip
-                # 🟢 Pass the correct Chunk Index (e.g. 1) and Chunk Limit (e.g. 4)
-                async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunk_limit):
-                    if current_skip > 0:
-                        if len(chunk) <= current_skip:
-                            current_skip -= len(chunk)
-                            continue
-                        else:
-                            chunk = chunk[current_skip:]
-                            current_skip = 0
-                            
+                # 🟢 REAL CRITICAL FIX: Pyrogram 3.x expects raw BYTES for offset!
+                # We use limit=0 to let Pyrogram stream naturally, and break when we hit our target size.
+                async for chunk in client.stream_media(msg, offset=offset, limit=0):
                     data.extend(chunk)
-                    if len(data) >= target_bytes:
+                    if len(data) >= limit:
                         break
+                        
+            # Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
+            dynamic_timeout = max(15.0, (limit / 1024 / 1024) * 5.0)
+            await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
+                    
+            if not data: 
+                raise ValueError("EOF Reached or Empty Chunk")
+            
+            # Return exactly the requested byte size
+            return bytes(data[:limit])
                         
             # Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
             dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 5.0)
