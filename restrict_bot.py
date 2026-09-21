@@ -12873,7 +12873,7 @@ async def _api_stream_handler(request):
     res_scale_map = {"4K":"3840:-2", "1080p":"1920:-2", "720p":"1280:-2", "480p":"854:-2", "360p":"640:-2"}
     scale_filter = res_scale_map.get(quality)
 
-    # 1. 🟢 Base Command (Do NOT use -copyts, and do NOT put -ss here)
+    # 1. 🟢 Base Command
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
@@ -12885,10 +12885,7 @@ async def _api_stream_handler(request):
         "-fflags", "+nobuffer+flush_packets+genpts"
     ]
 
-    # 2. 🟢 Input URL goes FIRST
-    cmd += ["-i", actual_url]
-
-    # 3. 🟢 Put -ss AFTER -i for Frame-Accurate A/V/S Sync!
+    # 2. 🟢 KEEP -ss BEFORE -i (Crucial for ZIP files and remote range seeking!)
     if start_time is not None:
         try:
             start_float = max(0.0, float(start_time))
@@ -12897,6 +12894,9 @@ async def _api_stream_handler(request):
         except Exception:
             pass
 
+    # 3. Input URL goes after -ss
+    cmd += ["-i", actual_url]
+
     if is_audio:
         if audio_idx is not None and str(audio_idx).strip():
             cmd += ["-map", f"0:{audio_idx}"]
@@ -12904,8 +12904,6 @@ async def _api_stream_handler(request):
             cmd += ["-map", "0:a:0?"]
         cmd += ["-vn", "-sn"]
         
-        # 🟢 FIX: Never use MP4 container for audio-only streams. Browsers wait for video frames and hang.
-        # Also, explicitly map compatible codecs to their native containers to prevent FFmpeg crashes.
         if copy_audio and audio_codec == "mp3":
             cmd += ["-c:a", "copy", "-f", "mp3", "pipe:1"]
             mime_type = "audio/mpeg"
@@ -12919,7 +12917,6 @@ async def _api_stream_handler(request):
             cmd += ["-c:a", "copy", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
         else:
-            # 🟢 ULTIMATE FALLBACK: Transcode EVERYTHING else (ALAC, WAV, DTS, Atmos, DSF, MKA, etc.) to AAC!
             cmd += ["-c:a", "aac", "-b:a", "256k", "-ac", "2", "-af", "aresample=async=1", "-f", "adts", "pipe:1"]
             mime_type = "audio/aac"
     else:
@@ -12946,10 +12943,10 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            # 4. 🟢 HARD SYNC FIX: Force audio to stretch perfectly to the video frame
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1000:min_hard_comp=0.100000:first_pts=0"]
+            # 4. 🟢 FIXED SYNC: Using aresample with correct time-stretching parameters to prevent audio/video drift
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1000:min_hard_comp=0.100000"]
 
-        # 5. 🟢 Add muxdelay 0 and remove avoid_negative_ts
+        # 5. Muxing parameters
         cmd += ["-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-muxdelay", "0", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
@@ -12958,7 +12955,7 @@ async def _api_stream_handler(request):
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.DEVNULL, # 🟢 FIX: Prevents OS pipe buffer deadlock
+        stderr=asyncio.subprocess.DEVNULL,
     )
     import aiohttp
     
