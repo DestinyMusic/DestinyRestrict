@@ -516,7 +516,26 @@ class Database:
     async def get_all_active_tasks(self):
         return self.db.active_tasks.find({})
 
+    def __init__(self, uri, database_name):
+        self._client = motor.motor_asyncio.AsyncIOMotorClient(
+            uri,
+            serverSelectionTimeoutMS=5000,
+            connectTimeoutMS=5000,
+            maxPoolSize=50
+        )
+        self.db = self._client[database_name]
+        self.col = self.db.users
+        
+        # 🟢 Added Memory Cache Variables
+        self._access_cache = None
+        self._access_cache_time = 0
+
     async def get_access_control(self):
+        now = time.time()
+        # 🟢 Return memory cache if less than 60 seconds old
+        if self._access_cache and (now - self._access_cache_time) < 60:
+            return self._access_cache
+            
         doc = await self.db.config.find_one({"_id": "access_control"}) or {}
         revoked = doc.get("revoked_users", [])
         approved = doc.get("approved_users", [])
@@ -527,7 +546,11 @@ class Database:
         effective_admins = list(set([x for x in ADMINS if x not in revoked] + [x for x in dyn_admins if x not in revoked]))
         effective_sudos = list(set([x for x in SUDOS if x not in revoked] + [x for x in dyn_sudos if x not in revoked]))
         
-        return effective_admins, effective_sudos, approved, revoked
+        # 🟢 Save to Cache before returning
+        self._access_cache = (effective_admins, effective_sudos, approved, revoked)
+        self._access_cache_time = now
+        
+        return self._access_cache
 
     async def is_user_approved(self, user_id):
         user_id = int(user_id)
@@ -653,7 +676,7 @@ async def global_command_reactor(client: Client, message: Message):
     except Exception as e:
         logger.debug(f"Reaction failed for msg {message.id}: {e}")
 
-@app.on_message(filters.all, group=-2)
+@app.on_message(filters.private | filters.group, group=-2)
 async def access_control_guard(client: Client, message: Message):
     if message.from_user:
         user_id = message.from_user.id
@@ -8001,17 +8024,19 @@ HTML_DASHBOARD = """
             const video = document.getElementById('hidden-video');
             if (!video) return;
             
-            let current = video.currentTime || 0;
+            let cur = video.currentTime || 0;
+            // 1. 🟢 Translate to Absolute Time FIRST
+            let absoluteTime = playerRequiresTranscode ? (playerTimelineOffset + cur) : cur;
             let dur = video.duration || Infinity;
             
             if (playerRequiresTranscode && playerTotalDuration > 0) {
-                current = playerTimelineOffset + current;
                 dur = playerTotalDuration;
             } else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur === 0 || dur === Infinity)) {
                 dur = playerTotalDuration;
             }
 
-            const target = Math.max(0, Math.min(dur, current + Number(sec || 0)));
+            // 2. 🟢 Add the 15s skip directly to the absolute timeline
+            const target = Math.max(0, Math.min(dur, absoluteTime + Number(sec || 0)));
             wakeHUD();
 
             const fill = document.getElementById('scrubber-fill');
@@ -9719,19 +9744,30 @@ HTML_DASHBOARD = """
                 clearTimeout(stallTimer); 
                 updateBufferBar(); 
 
-                let extDrift = 0;
-                // 🟢 FAST SYNC: Continuous drift correction for External Audio tracks
-                if (extAudio && extAudio.src && !vidElem.paused && !vidElem.seeking) {
-                    extDrift = extAudio.currentTime - vidElem.currentTime;
-                    if (Math.abs(extDrift) > 0.15) { 
-                        extAudio.currentTime = vidElem.currentTime;
-                    }
-                }
-                
                 let cur = vidElem.currentTime || 0;
                 let dur = vidElem.duration || 0;
 
-                // 🟢 FORCE KILL BACKGROUND BLOBS IF VIDEO IS PLAYING
+                // 1. 🟢 Calculate TRUE Absolute Time First!
+                let absoluteTime = cur;
+                if (playerRequiresTranscode) {
+                    absoluteTime = cur + (playerTimelineOffset || 0);
+                    if (playerTotalDuration > 0) dur = playerTotalDuration;
+                } else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) {
+                    dur = playerTotalDuration;
+                }
+                cur = Math.min(cur, dur);
+                absoluteTime = Math.min(absoluteTime, dur);
+
+                let extDrift = 0;
+                // 2. 🟢 FAST SYNC: Sync External Audio to ABSOLUTE time, not relative time!
+                if (extAudio && extAudio.src && !vidElem.paused && !vidElem.seeking) {
+                    extDrift = extAudio.currentTime - absoluteTime;
+                    if (Math.abs(extDrift) > 0.15) { 
+                        extAudio.currentTime = absoluteTime;
+                    }
+                }
+
+                // 3. 🟢 FORCE KILL BACKGROUND BLOBS IF VIDEO IS PLAYING
                 if (vidElem.videoWidth > 0) {
                     const appleBg = document.getElementById('apple-music-bg');
                     if (appleBg && appleBg.style.display !== 'none') {
@@ -9739,17 +9775,17 @@ HTML_DASHBOARD = """
                     }
                 }
 
-                // 🟢 LIVE SYNC DEBUGGER & CONSOLE LOGGER
+                // 4. 🟢 LIVE SYNC DEBUGGER & CONSOLE LOGGER
                 if (isSyncDebugEnabled) {
                     const dbg = document.getElementById('sync-debugger');
-                    let vTime = cur.toFixed(3);
+                    let vTime = absoluteTime.toFixed(3);
                     let aTime = (extAudio && extAudio.src) ? extAudio.currentTime.toFixed(3) : vTime;
-                    let subTime = (cur - subtitleSyncOffset).toFixed(3);
+                    let subTime = (absoluteTime - subtitleSyncOffset).toFixed(3);
                     
                     if (dbg) {
                         let logTxt = `[LIVE SYNC TRACKER]\n`;
                         logTxt += `===================\n`;
-                        logTxt += `Video Time : ${vTime}s\n`;
+                        logTxt += `Absolute Time : ${vTime}s\n`;
                         logTxt += `Audio Time : ${aTime}s\n`;
                         logTxt += `Sub Time   : ${subTime}s\n`;
                         logTxt += `Ext Drift  : ${extDrift.toFixed(3)}s\n`;
@@ -9758,41 +9794,32 @@ HTML_DASHBOARD = """
                         dbg.innerText = logTxt;
                     }
                     
-                    // Console log roughly twice per second to track exact millisecond sync
                     const nowSec = Math.floor(cur * 2);
                     if (nowSec !== vidElem._lastLogSec) {
-                        console.log(`[SYNC LOG] 🎬 Video: ${vTime}s | 🎵 Audio: ${aTime}s | 💬 Sub: ${subTime}s | ⚠️ Drift: ${extDrift.toFixed(3)}s | Transcoding: ${playerRequiresTranscode}`);
+                        console.log(`[SYNC LOG] 🎬 AbsTime: ${vTime}s | 🎵 Audio: ${aTime}s | 💬 Sub: ${subTime}s | ⚠️ Drift: ${extDrift.toFixed(3)}s | Transcoding: ${playerRequiresTranscode}`);
                         vidElem._lastLogSec = nowSec;
                     }
                 }
 
-                if (playerRequiresTranscode) {
-                    cur = playerTimelineOffset + cur;
-                    if (playerTotalDuration > 0) dur = playerTotalDuration;
-                } else if (playerTotalDuration > 0 && (!Number.isFinite(dur) || dur <= 0 || dur === Infinity)) {
-                    dur = playerTotalDuration;
-                }
-                cur = Math.min(cur, dur);
-
                 if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
-                    globalTargetTime = cur; 
+                    globalTargetTime = absoluteTime; 
                 }
 
-                // 🟢 CONTINUOUS ALBUM TIMELINE LOGIC
-                let displayCur = cur;
-                let displayDur = dur;
+                // 5. 🟢 CONTINUOUS ALBUM/ZIP TIMELINE (For the UI Scrubber)
+                let albumTime = absoluteTime;
+                let albumDur = dur;
 
                 if (window.globalPlaylist && window.globalPlaylist.length > 0) {
                     const track = window.globalPlaylist[window.currentPlayIndex];
                     if (track) {
-                        displayCur = (track.startTime || 0) + cur;
-                        displayDur = window.totalAlbumDuration || dur;
+                        albumTime = absoluteTime + (track.startTime || 0);
+                        albumDur = window.totalAlbumDuration || dur;
                     }
                 }
                 
-                displayCur = Math.min(displayCur, displayDur);
+                albumTime = Math.min(albumTime, albumDur);
 
-                const percent = displayDur ? Math.max(0, Math.min(100, displayCur / displayDur * 100)) : 0;
+                const percent = albumDur ? Math.max(0, Math.min(100, albumTime / albumDur * 100)) : 0;
                 const time = document.getElementById('hud-time');
                 
                 if (!isTranscodeSeeking && !vidElem.seeking && !isDraggingScrubber) {
@@ -9807,10 +9834,13 @@ HTML_DASHBOARD = """
                         const hh = h > 0 ? `${String(h).padStart(2, '0')}:` : '';
                         return `${hh}${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}`;
                     };
-                    if (time) time.innerText = `${fmt(displayCur)} / ${fmt(displayDur)}`;
+                    if (time) time.innerText = `${fmt(albumTime)} / ${fmt(albumDur)}`;
                 }
-                renderCurrentSubtitle(cur);
+                
+                // 6. 🟢 Pass the Absolute Time directly to the Subtitles engine
+                renderCurrentSubtitle(absoluteTime);
             });
+            
             vidElem.addEventListener('error', async () => {
                 const mediaError = vidElem.error;
                 console.warn('Video element error:', mediaError);
@@ -11615,7 +11645,7 @@ async def _api_spectrogram_web_handler(request):
         if not wav_file.exists(): return web.json_response({"status": "error", "message": "Audio Extraction Failed."})
 
         # 3. DSP & SOX
-        stats = generate_audio_stats_dsp(str(wav_file), str(original_file), "Web Audio")
+        stats = await asyncio.to_thread(generate_audio_stats_dsp, str(wav_file), str(original_file), "Web Audio")
         if not stats: return web.json_response({"status": "error", "message": "DSP Processing Failed."})
 
         sox_cmd = ["sox", str(wav_file), "-n", "spectrogram", "-o", str(output_img), "-x", "1000", "-Y", "800", "-c", "Audio", "-t", " "]
@@ -12806,6 +12836,7 @@ async def _api_stream_handler(request):
     res_scale_map = {"4K":"3840:-2", "1080p":"1920:-2", "720p":"1280:-2", "480p":"854:-2", "360p":"640:-2"}
     scale_filter = res_scale_map.get(quality)
 
+    # 1. 🟢 Base Command (Do NOT use -copyts, and do NOT put -ss here)
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-user_agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36", 
@@ -12814,10 +12845,13 @@ async def _api_stream_handler(request):
         "-reconnect_at_eof", "1", "-reconnect_on_network_error", "1", 
         "-seekable", "1", 
         "-probesize", "5M", "-analyzeduration", "5M", 
-        "-fflags", "+nobuffer+flush_packets+genpts",
-        "-copyts" # 🟢 CRITICAL SYNC FIX: Preserves original absolute timestamps to survive network drops!
+        "-fflags", "+nobuffer+flush_packets+genpts"
     ]
 
+    # 2. 🟢 Input URL goes FIRST
+    cmd += ["-i", actual_url]
+
+    # 3. 🟢 Put -ss AFTER -i for Frame-Accurate A/V/S Sync!
     if start_time is not None:
         try:
             start_float = max(0.0, float(start_time))
@@ -12825,8 +12859,6 @@ async def _api_stream_handler(request):
                 cmd += ["-ss", f"{start_float:.3f}"]
         except Exception:
             pass
-
-    cmd += ["-i", actual_url]
 
     if is_audio:
         if audio_idx is not None and str(audio_idx).strip():
@@ -12877,12 +12909,11 @@ async def _api_stream_handler(request):
         if copy_audio:
             cmd += ["-c:a", "copy"]
         else:
-            # 🟢 SYNC FIX: Remove first_pts=0. async=1 naturally aligns the audio because we use -copyts
-            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1"]
+            # 4. 🟢 HARD SYNC FIX: Force audio to stretch perfectly to the video frame
+            cmd += ["-c:a", "aac", "-b:a", "192k", "-ac", "2", "-af", "aresample=async=1000:min_hard_comp=0.100000:first_pts=0"]
 
-        # 🟢 CRITICAL SYNC FIX: 'disabled' prevents FFmpeg from shifting timestamps to 0. 
-        # The browser will play the absolute times natively, flawlessly surviving disconnects!
-        cmd += ["-avoid_negative_ts", "disabled", "-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-f", "mp4", "pipe:1"]
+        # 5. 🟢 Add muxdelay 0 and remove avoid_negative_ts
+        cmd += ["-max_muxing_queue_size", "9999", "-movflags", "frag_keyframe+empty_moov+default_base_moof", "-muxdelay", "0", "-f", "mp4", "pipe:1"]
 
     logger.info(f"🎬 [STREAMING] User: {user_id} | File: {filename} | Quality: {quality} | AudioIdx: {audio_idx} | StartTime: {start_time}")
     logger.info(f"🎬 [FFMPEG CMD] {' '.join(cmd)}")
@@ -13238,7 +13269,7 @@ async def _api_tg_stream_handler(request):
         if is_zip:
             async def zip_read(off, length):
                 buf = bytearray()
-                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length, concurrency=6):
+                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length):
                     buf.extend(chunk)
                     if len(buf) >= length:
                         break
@@ -13314,7 +13345,7 @@ async def _api_tg_stream_handler(request):
         response = web.StreamResponse(status=206 if range_header else 200, headers=headers)
         
         adjusted_start = start_byte + virtual_data_offset
-        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len, concurrency=6)
+        gen = parallel_stream_generator(primary_client, chat_id, parts_map, adjusted_start, chunk_len)
         
         sid = _track_stream(request, filename, user_id)
         try:
@@ -13910,7 +13941,7 @@ async def _api_playlist_handler(request):
                 
             async def zip_read_tg(off, length):
                 buf = bytearray()
-                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length, concurrency=6):
+                async for chunk in parallel_stream_generator(primary_client, chat_id, parts_map, off, length):
                     buf.extend(chunk)
                     if len(buf) >= length: break
                 return bytes(buf[:length])
@@ -15015,7 +15046,7 @@ async def tg_spectrogram_cmd(client: Client, message: Message):
         if not wav_file.exists(): return await status_msg.edit_text("❌ Audio Extraction Failed.")
 
         # 3. STATS & SOX
-        stats = generate_audio_stats_dsp(str(wav_file), str(original_file), "Audio Analysis")
+        stats = await asyncio.to_thread(generate_audio_stats_dsp, str(wav_file), str(original_file), "Audio Analysis")
         if not stats: return await status_msg.edit_text("❌ DSP Processing Failed.")
 
         sox_cmd = ["sox", str(wav_file), "-n", "spectrogram", "-o", str(output_img), "-x", "1000", "-Y", "800", "-c", "Audio", "-t", " "]
