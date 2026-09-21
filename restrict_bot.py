@@ -12043,34 +12043,25 @@ async def _api_direct_stream_handler(request):
     virtual_data_offset = 0
     mime_type = None
 
-    # [STORED ZIP RESOLUTION] - Maps HTTP bytes to absolute payload boundaries
     zip_idx = request.query.get("zip_idx", "")
-    if is_zip:
-        try:
-            async with session.head(resolved, allow_redirects=True) as h_resp:
-                raw_size = int(h_resp.headers.get("Content-Length", 0))
+    if zip_idx:
+        # 🟢 FIX 1: Append zip_idx to actual_url so FFmpeg targets the internal track, not the raw zip!
+        if "zip_idx=" not in actual_url:
+            actual_url += f"&zip_idx={zip_idx}"
             
-            if raw_size > 0:
-                async def zip_read_http(off, length):
-                    headers = {"Range": f"bytes={off}-{off+length-1}", "User-Agent": "Mozilla/5.0"}
-                    async with session.get(resolved, headers=headers) as r:
-                        return await r.read()
-                        
-                playlist = await get_zip_playlist(zip_read_http, raw_size)
-                if playlist:
-                    target_entry = playlist[0]
-                    if zip_idx.isdigit():
-                        for track in playlist:
-                            if track["original_index"] == int(zip_idx):
-                                target_entry = track
-                                break
-                    entry = await resolve_specific_zip_entry(zip_read_http, target_entry)
-                    if entry:
-                        virtual_size = entry["size"]
-                        virtual_data_offset = entry["data_offset"]
-                        mime_type = mimetypes.guess_type(entry["name"])[0] or "video/x-matroska"
+        try:
+            # 🟢 DYNAMIC INTERNAL ZIP PROBE: Safely detect if an internal ZIP file is an Audio Track!
+            pdata = await _run_ffprobe_json(actual_url, fast=True, extract_tags=False)
+            streams = pdata.get("streams", [])
+            videos = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
+            audios = [s for s in streams if s.get("codec_type") == "audio"]
+            if audios and not videos:
+                is_audio = True
+                filename = "internal_track.mp3"
+                mime_type = "audio/mpeg"
+                logger.info(f"🎵 Dynamic Probe: Internal ZIP file confirmed as Audio-Only!")
         except Exception as e:
-            logger.warning(f"Direct ZIP resolution failed: {e}")
+            logger.debug(f"Stream dynamic probe failed: {e}")
 
     # Construct payload-aligned Range Headers
     req_headers = {
@@ -12526,8 +12517,7 @@ async def _api_media_probe_handler(request):
             probe_input = actual_url
             if not is_tg:
                 # 🟢 Restoring Loopback for Direct Links to prevent strict 5XX server blocks
-                # MUST pass original `link` so DIRECT_REQ_HEADERS_CACHE can inject the GoFile accountToken!
-                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(link, safe='')}"
+                probe_input = f"http://127.0.0.1:{PORT}/api/direct_stream?user_id={user_id}&url={quote(actual_url, safe='')}"
                 logger.debug(f"🔎 [PROBE] Feeding Loopback Proxy to FFprobe: {probe_input[:100]}...")
 
             tg_duration = 0.0
@@ -12564,8 +12554,7 @@ async def _api_media_probe_handler(request):
 
             # 🟢 MKV SPARSE PROBE FALLBACK: If HTTP probe returned no streams for a Telegram file,
             # sample the head & tail directly into a small temp file (just like /mediainfo)
-            is_archive_probe = bool(re.search(r'\.(zip|7z|rar|tar|gz|iso|bin)(\.\d{3})?$', str(real_file_name).lower()))
-            if not streams and is_tg and 'pool' in locals() and pool and 'msg' in locals() and msg and not is_archive_probe:
+            if not streams and is_tg and 'pool' in locals() and pool and 'msg' in locals() and msg:
                 logger.info("🔎 [PROBE TG] Falling back to fast local sparse-file probe for MKV/Telegram...")
                 temp_probe = Path(f"./probe_{user_id}_{int(time.time())}.dat")
                 temp_named = None
@@ -12833,25 +12822,6 @@ async def _api_stream_handler(request):
     except Exception as exc:
         return web.Response(status=502, text=f"Source resolution failed: {exc}")
 
-    zip_idx = request.query.get("zip_idx", "")
-    if zip_idx:
-        try:
-            # 🟢 DYNAMIC INTERNAL ZIP PROBE: Safely detect if an internal ZIP file is an Audio Track!
-            # Prevents FFmpeg from crashing by forcing `-vf scale=` onto FLAC/MP3 files.
-            probe_url = actual_url
-            if zip_idx and "zip_idx=" not in probe_url: probe_url += f"&zip_idx={zip_idx}"
-            pdata = await _run_ffprobe_json(probe_url, fast=True, extract_tags=False)
-            streams = pdata.get("streams", [])
-            videos = [s for s in streams if s.get("codec_type") == "video" and s.get("codec_name") not in {"mjpeg", "png", "bmp", "webp"}]
-            audios = [s for s in streams if s.get("codec_type") == "audio"]
-            if audios and not videos:
-                is_audio = True
-                filename = "internal_track.mp3"
-                mime_type = "audio/mpeg"
-                logger.info(f"🎵 Dynamic Probe: Internal ZIP file confirmed as Audio-Only!")
-        except Exception as e:
-            logger.debug(f"Stream dynamic probe failed: {e}")
-
     # Always keep the browser on the byte-range path for the original/default
     # stream. FFmpeg is reserved for explicit track/quality selection or codecs
     # which the browser cannot decode directly.
@@ -12870,6 +12840,12 @@ async def _api_stream_handler(request):
             audio_codec = meta.get("audio_codec", "").lower()
         video_codec = meta.get("video_codec", "").lower()
         
+        # 🟢 FIX 2: Accurately detect Audio vs Video based on REAL FFprobe metadata!
+        if not video_codec and audio_codec:
+            is_audio = True
+        elif video_codec:
+            is_audio = False
+            
         # 🟢 FIX: Use the fully resolved filename, avoiding generics!
         if meta.get("file_name") and meta.get("file_name").lower() not in ("unknown_media", "direct_stream_media", "download", "file", "media"):
             filename = meta.get("file_name").lower()
@@ -13687,36 +13663,45 @@ async def get_client_msg(client, chat_id, msg_id):
     return CLIENT_MSG_CACHE[key]
 
 async def fetch_single_chunk(client, chat_id, msg_id, offset, limit):
-    """Fetches a chunk continuously using precise byte offsets."""
+    """Fetches a chunk continuously. Translates raw bytes into Pyrogram Chunk Indexes."""
+    import math
     import asyncio
+    CHUNK_SIZE = 1048576
+    
+    # 🟢 CRITICAL FIX: Pyrogram offset expects CHUNK INDEX, not raw bytes!
+    chunk_index = offset // CHUNK_SIZE
+    skip_bytes = offset % CHUNK_SIZE
+    
+    target_bytes = limit
+    # Calculate how many 1MB chunks we need to fetch to satisfy the request
+    total_bytes_to_fetch = skip_bytes + target_bytes
+    chunk_limit = math.ceil(total_bytes_to_fetch / CHUNK_SIZE)
+    
     for attempt in range(6): 
         if not getattr(client, "is_connected", False):
-            try: 
-                await client.connect()
-            except Exception: 
-                pass
+            try: await client.connect()
+            except Exception: pass
 
+        current_skip = skip_bytes
         try:
             msg = await get_client_msg(client, chat_id, msg_id)
             data = bytearray()
             
             async def fetch_continuous():
-                # 🟢 REAL CRITICAL FIX: Pyrogram 3.x expects raw BYTES for offset!
-                # We use limit=0 to let Pyrogram stream naturally, and break when we hit our target size.
-                async for chunk in client.stream_media(msg, offset=offset, limit=0):
+                nonlocal current_skip
+                # 🟢 Pass the correct Chunk Index (e.g. 1) and Chunk Limit (e.g. 4)
+                async for chunk in client.stream_media(msg, offset=chunk_index, limit=chunk_limit):
+                    if current_skip > 0:
+                        if len(chunk) <= current_skip:
+                            current_skip -= len(chunk)
+                            continue
+                        else:
+                            chunk = chunk[current_skip:]
+                            current_skip = 0
+                            
                     data.extend(chunk)
-                    if len(data) >= limit:
+                    if len(data) >= target_bytes:
                         break
-                        
-            # Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
-            dynamic_timeout = max(15.0, (limit / 1024 / 1024) * 5.0)
-            await asyncio.wait_for(fetch_continuous(), timeout=dynamic_timeout)
-                    
-            if not data: 
-                raise ValueError("EOF Reached or Empty Chunk")
-            
-            # Return exactly the requested byte size
-            return bytes(data[:limit])
                         
             # Allow enough time for large blocks (e.g. 3MB chunk = 15 seconds max)
             dynamic_timeout = max(15.0, (target_bytes / 1024 / 1024) * 5.0)
