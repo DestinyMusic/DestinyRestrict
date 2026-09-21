@@ -7275,8 +7275,9 @@ HTML_DASHBOARD = """
                 if (data.status === 'success') {
                     const sEl = document.getElementById('stream-tokens-input');
                     const tEl = document.getElementById('task-tokens-input');
-                    if (sEl) sEl.value = (data.stream_tokens || []).join('\n');
-                    if (tEl) tEl.value = (data.task_tokens || []).join('\n');
+                    // 🟢 FIX: Added \\n so Python escapes it properly
+                    if (sEl) sEl.value = (data.stream_tokens || []).join('\\n');
+                    if (tEl) tEl.value = (data.task_tokens || []).join('\\n');
                 }
             } catch (_) {}
         }
@@ -7284,8 +7285,9 @@ HTML_DASHBOARD = """
         async function saveWorkerTokens() {
             const sRaw = document.getElementById('stream-tokens-input').value;
             const tRaw = document.getElementById('task-tokens-input').value;
-            const stream_tokens = sRaw.split(/[\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
-            const task_tokens = tRaw.split(/[\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
+            // 🟢 FIX: Added \\n so the JavaScript Regex doesn't break
+            const stream_tokens = sRaw.split(/[\\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
+            const task_tokens = tRaw.split(/[\\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
             
             const btn = document.querySelector('button[onclick="saveWorkerTokens()"]');
             const origText = btn.innerText;
