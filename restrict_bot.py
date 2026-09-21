@@ -13809,7 +13809,8 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
             if not task.done():
                 task.cancel()
                 
-USER_WORKER_BOTS = defaultdict(list)
+USER_STREAM_BOTS = defaultdict(list)
+USER_TASK_BOTS = defaultdict(list)
 
 async def init_worker_bots(user_id=None):
     """Initializes isolated bot clients for streaming vs tasks."""
