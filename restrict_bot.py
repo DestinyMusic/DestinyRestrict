@@ -13812,41 +13812,60 @@ async def parallel_stream_generator(fallback_client, chat_id, msg_parts, start_b
 USER_WORKER_BOTS = defaultdict(list)
 
 async def init_worker_bots(user_id=None):
-    """Initializes extra bot clients from MongoDB for parallel downloads per user."""
+    """Initializes isolated bot clients for streaming vs tasks."""
     user_ids_to_init = [user_id] if user_id else []
     if not user_id:
-        # Find all users with tokens
-        cursor = db.col.find({"bot_tokens": {"$exists": True, "$ne": []}})
+        # 🟢 FIX: Check all 3 arrays so it boots up perfectly on startup
+        cursor = db.col.find({"$or": [
+            {"stream_tokens": {"$exists": True, "$ne": []}}, 
+            {"task_tokens": {"$exists": True, "$ne": []}},
+            {"bot_tokens": {"$exists": True, "$ne": []}}
+        ]})
         async for u in cursor:
             user_ids_to_init.append(u["id"])
             
     for uid in user_ids_to_init:
-        # Stop existing bots for this user
-        for c in USER_WORKER_BOTS.get(uid, []):
+        # Stop existing Stream Bots
+        for c in USER_STREAM_BOTS.get(uid, []):
             try: await c.stop()
             except Exception: pass
-        USER_WORKER_BOTS[uid].clear()
+        USER_STREAM_BOTS[uid].clear()
         
-        # Fetch tokens uniquely for this user
+        # Stop existing Task Bots
+        for c in USER_TASK_BOTS.get(uid, []):
+            try: await c.stop()
+            except Exception: pass
+        USER_TASK_BOTS[uid].clear()
+        
         user_doc = await db.col.find_one({"id": uid})
-        tokens = user_doc.get("bot_tokens", []) if user_doc else []
+        if not user_doc: continue
         
-        for idx, token in enumerate(tokens, start=1):
+        # 🟢 Migrate old tokens to stream array if necessary
+        stream_tokens = user_doc.get("stream_tokens", [])
+        if not stream_tokens and user_doc.get("bot_tokens"):
+            stream_tokens = user_doc.get("bot_tokens")
+            
+        task_tokens = user_doc.get("task_tokens", [])
+        
+        # 1. Initialize Stream Bots
+        for idx, token in enumerate(stream_tokens, start=1):
             try:
-                bot_client = Client(
-                    f"worker_bot_{uid}_{idx}",
-                    api_id=API_ID,
-                    api_hash=API_HASH,
-                    bot_token=token.strip(),
-                    workers=4,
-                    no_updates=True, # 🟢 REVERT: Must be True to save RAM and prevent background update floods.
-                    ipv6=False
-                )
+                bot_client = Client(f"stream_bot_{uid}_{idx}", api_id=API_ID, api_hash=API_HASH, bot_token=token.strip(), workers=4, no_updates=True, ipv6=False)
                 await bot_client.start()
-                USER_WORKER_BOTS[uid].append(bot_client)
-                logger.info(f"🚀 Worker Bot {idx} active for user {uid} parallel streaming.")
+                USER_STREAM_BOTS[uid].append(bot_client)
+                logger.info(f"🚀 Stream Bot {idx} active for user {uid}")
             except Exception as e:
-                logger.warning(f"Could not load worker token {idx} for user {uid}: {e}")
+                logger.warning(f"Failed to load stream token {idx} for {uid}: {e}")
+
+        # 2. Initialize Task Bots
+        for idx, token in enumerate(task_tokens, start=1):
+            try:
+                bot_client = Client(f"task_bot_{uid}_{idx}", api_id=API_ID, api_hash=API_HASH, bot_token=token.strip(), workers=4, no_updates=True, ipv6=False)
+                await bot_client.start()
+                USER_TASK_BOTS[uid].append(bot_client)
+                logger.info(f"🚀 Task Bot {idx} active for user {uid}")
+            except Exception as e:
+                logger.warning(f"Failed to load task token {idx} for {uid}: {e}")
 
 async def _api_get_worker_tokens(request):
     uid = int(request.query.get("user_id", 0))
@@ -13857,9 +13876,14 @@ async def _api_get_worker_tokens(request):
     if not doc or doc.get("web_token") != token:
         return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
         
+    # 🟢 FIX: Auto-load your old "bot_tokens" into the streaming box if you haven't saved new ones yet!
+    stream_tokens = doc.get("stream_tokens", [])
+    if not stream_tokens and doc.get("bot_tokens"):
+        stream_tokens = doc.get("bot_tokens")
+        
     return web.json_response({
         "status": "success", 
-        "stream_tokens": doc.get("stream_tokens", []) if doc else [],
+        "stream_tokens": stream_tokens,
         "task_tokens": doc.get("task_tokens", []) if doc else []
     })
 
@@ -13906,7 +13930,7 @@ async def _api_network_stats(request):
         "status": "success",
         "active": active_list,
         "recent": recent_list,
-        "worker_bots_count": len(USER_WORKER_BOTS.get(uid, []))
+        "worker_bots_count": len(USER_STREAM_BOTS.get(uid, [])) + len(USER_TASK_BOTS.get(uid, []))
     })
 
 # --- NEW: NATIVE IMAGE PROXY TO BYPASS HUGGINGFACE CSP ---
