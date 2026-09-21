@@ -6433,14 +6433,22 @@ HTML_DASHBOARD = """
                     </div>
                 </div>
 
-                <div class="section-title">Multi-Bot Worker Pool (Speed Multiplier)</div>
+                <div class="section-title">Multi-Bot Worker Pools (Separation of Concerns)</div>
                 <div class="card" style="margin-bottom: 20px;">
-                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">Auxiliary Bot Tokens</h3>
-                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 12px;">Add extra bot tokens (one per line or comma-separated) to enable parallel chunk downloads and eliminate 1080p/4K buffering.</p>
+                    <h3 style="margin-top: 0; font-size: 16px; color: #fff;">1. Streaming & Editor Bots</h3>
+                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 12px;">Used strictly for the Media Theater, Spectrograms, and Media Editor. Handles heavy parallel chunk downloads without affecting tasks.</p>
                     <div class="input-group">
-                        <textarea id="worker-tokens-input" rows="3" placeholder="123456:ABC-DEF...&#10;789012:GHI-JKL..." style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); font-family: monospace; font-size: 12px; outline: none;"></textarea>
+                        <textarea id="stream-tokens-input" rows="2" placeholder="123456:ABC-DEF... (One per line)" style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); font-family: monospace; font-size: 12px; outline: none;"></textarea>
                     </div>
-                    <button class="primary-btn" style="padding: 10px; width: auto;" onclick="saveWorkerTokens()">Save Worker Tokens</button>
+                    
+                    <h3 style="margin-top: 15px; font-size: 16px; color: #fff;">2. Task & Watcher Bots</h3>
+                    <p style="font-size: 12px; color: #94a3b8; margin-bottom: 12px;">Used strictly for /dl batch tasks and live /watch auto-forwarders.</p>
+                    <div class="input-group">
+                        <textarea id="task-tokens-input" rows="2" placeholder="987654:XYZ-UVW... (One per line)" style="width: 100%; padding: 12px; border-radius: 12px; border: 1px solid var(--card-border); background: var(--bg); color: var(--text); font-family: monospace; font-size: 12px; outline: none;"></textarea>
+                    </div>
+                    
+                    <p style="font-size: 11px; color: var(--accent); margin-bottom: 15px;">⚠️ <b>Note:</b> Do not use the exact same bot token in both boxes to avoid session lockouts.</p>
+                    <button class="primary-btn" style="padding: 10px; width: auto;" onclick="saveWorkerTokens()">Save All Worker Tokens</button>
                 </div>
 
                 <div class="section-title">Telegram Session Management</div>
@@ -7264,29 +7272,40 @@ HTML_DASHBOARD = """
             try {
                 const res = await fetch(`/api/settings/tokens?user_id=${currentUser}&token=${currentToken}`);
                 const data = await res.json();
-                if (data.status === 'success' && data.tokens) {
-                    const el = document.getElementById('worker-tokens-input');
-                    if (el) el.value = data.tokens.join('\\n');
+                if (data.status === 'success') {
+                    const sEl = document.getElementById('stream-tokens-input');
+                    const tEl = document.getElementById('task-tokens-input');
+                    if (sEl) sEl.value = (data.stream_tokens || []).join('\n');
+                    if (tEl) tEl.value = (data.task_tokens || []).join('\n');
                 }
             } catch (_) {}
         }
 
         async function saveWorkerTokens() {
-            const raw = document.getElementById('worker-tokens-input').value;
-            const tokens = raw.split(/[\\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
+            const sRaw = document.getElementById('stream-tokens-input').value;
+            const tRaw = document.getElementById('task-tokens-input').value;
+            const stream_tokens = sRaw.split(/[\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
+            const task_tokens = tRaw.split(/[\n,]+/).map(t => t.trim()).filter(t => t.includes(':'));
+            
+            const btn = document.querySelector('button[onclick="saveWorkerTokens()"]');
+            const origText = btn.innerText;
+            btn.innerText = "Saving...";
+            
             try {
                 const res = await fetch('/api/settings/tokens', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({user_id: currentUser, token: currentToken, tokens})
+                    body: JSON.stringify({user_id: currentUser, token: currentToken, stream_tokens, task_tokens})
                 });
                 const data = await res.json();
                 alert(data.message || "Tokens updated.");
             } catch (e) {
                 alert("Failed to save tokens.");
+            } finally {
+                btn.innerText = origText;
             }
         }
-        
+
         async function fetchStats() {
             if (!currentUser) return;
             try {
@@ -13836,21 +13855,31 @@ async def _api_get_worker_tokens(request):
     if not doc or doc.get("web_token") != token:
         return web.json_response({"status": "error", "message": "Unauthorized: Invalid or expired Web Token."})
         
-    return web.json_response({"status": "success", "tokens": doc.get("bot_tokens", []) if doc else []})
+    return web.json_response({
+        "status": "success", 
+        "stream_tokens": doc.get("stream_tokens", []) if doc else [],
+        "task_tokens": doc.get("task_tokens", []) if doc else []
+    })
 
 async def _api_save_worker_tokens(request):
     data = await request.json()
     uid = int(data.get("user_id", 0))
-    tokens = [t.strip() for t in data.get("tokens", []) if ":" in t]
+    
+    stream_tokens = [t.strip() for t in data.get("stream_tokens", []) if ":" in t]
+    task_tokens = [t.strip() for t in data.get("task_tokens", []) if ":" in t]
     
     # Save directly to the User's Database Object
-    await db.col.update_one({"id": uid}, {"$set": {"bot_tokens": tokens}}, upsert=True)
+    await db.col.update_one(
+        {"id": uid}, 
+        {"$set": {"stream_tokens": stream_tokens, "task_tokens": task_tokens}}, 
+        upsert=True
+    )
     asyncio.create_task(init_worker_bots(uid))
     
     # Clear access cache so the new bots are used immediately
     TG_ACCESS_CACHE.clear()
     
-    return web.json_response({"status": "success", "message": f"Saved {len(tokens)} worker token(s) for your account. Pool reloading."})
+    return web.json_response({"status": "success", "message": f"Saved {len(stream_tokens)} Stream Bots and {len(task_tokens)} Task Bots. Pools reloading."})
 
 async def _api_network_stats(request):
     try: uid = int(request.query.get("user_id", 0))
